@@ -1,0 +1,66 @@
+# demonolith CLI release workflow.
+name: Release
+
+# On every push to main, GitVersion computes the next SemVer, a matching tag is
+# created and pushed, then GoReleaser builds the CLI binaries and publishes a
+# GitHub release.
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/**'
+
+# Releases need permissions to read and write the repository contents.
+# GitHub considers creating releases and uploading assets as writing contents.
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for GitVersion to analyze history
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3.1.11
+        with:
+          versionSpec: 5.x
+
+      - name: Determine Version
+        uses: gittools/actions/gitversion/execute@v3.1.11
+        id: gitversion
+        with:
+          useConfigFile: true
+          configFilePath: gitversion.yaml
+
+      - name: Display GitVersion outputs
+        run: |
+          echo "Version: ${{ steps.gitversion.outputs.SemVer }}"
+          echo "CommitsSinceVersionSource: ${{ steps.gitversion.outputs.CommitsSinceVersionSource }}"
+
+      - name: Create and Push Tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG="v${{ steps.gitversion.outputs.SemVer }}"
+          git tag $TAG
+          git push origin $TAG
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@9ed2f89a662bf1735a48bc8557fd212fa902bebf # v6.1.0
+        with:
+          args: release --clean
+        env:
+          # GitHub sets the GITHUB_TOKEN secret automatically.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
