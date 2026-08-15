@@ -53,6 +53,9 @@ type Plan struct {
 	// Remainder is the catchall module name; its resources stay in the
 	// carved-down monolith state rather than being moved.
 	Remainder string
+	// AdoptRemainder is true when the remainder holds stateful blocks, so the
+	// carved-down monolith state must be adopted as its state file.
+	AdoptRemainder bool
 }
 
 // Move is one resource relocation.
@@ -89,6 +92,9 @@ func BuildPlan(p *placement.Placement) *Plan {
 			}
 			a := addr.String()
 			plan.Moves[module] = append(plan.Moves[module], Move{SourceAddr: a, DestAddr: a})
+			if module == p.Remainder {
+				plan.AdoptRemainder = true
+			}
 		}
 	}
 	for m := range plan.Moves {
@@ -99,16 +105,34 @@ func BuildPlan(p *placement.Placement) *Plan {
 	return plan
 }
 
-// Carve executes the plan against local state copies and writes one state file
-// per non-empty module into workDir. srcDir is the monolith root (used to pull
-// state when SourceStatePath is empty).
-func Carve(ctx context.Context, srcDir, workDir string, plan *Plan, opts Options) (*Result, error) {
+// Prepared is the local working state Prepare established.
+type Prepared struct {
+	// MonolithState is the local working copy the moves mutate.
+	MonolithState string
+	// BackupPath is the pre-carve snapshot of the source state.
+	BackupPath string
+	// Resumed is true when a prior run's working state was reused.
+	Resumed bool
+}
+
+// Prepare obtains the monolith state as a local working file in workDir and
+// backs it up. If a prior run left a working state in workDir it is reused and
+// the existing backup preserved — the working copy is partially carved, so
+// re-obtaining the source would make already-executed moves fail or duplicate.
+func Prepare(ctx context.Context, srcDir, workDir string, opts Options) (*Prepared, error) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, err
 	}
-
-	// 1. Obtain the monolith state as a local file.
 	monolithState := filepath.Join(workDir, "monolith.tfstate")
+	// "demono-backup" (not terraform's default ".backup") so its provenance is
+	// unambiguous: this is the deliberate pre-carve snapshot, not one of
+	// terraform's automatic per-mutation .tfstate.<ts>.backup files.
+	backup := filepath.Join(workDir, "monolith.demono-backup.tfstate")
+
+	if _, err := os.Stat(monolithState); err == nil {
+		return &Prepared{MonolithState: monolithState, BackupPath: backup, Resumed: true}, nil
+	}
+
 	if opts.SourceStatePath != "" {
 		if err := copyFile(opts.SourceStatePath, monolithState); err != nil {
 			return nil, fmt.Errorf("copy source state: %w", err)
@@ -118,17 +142,27 @@ func Carve(ctx context.Context, srcDir, workDir string, plan *Plan, opts Options
 			return nil, fmt.Errorf("pull monolith state: %w", err)
 		}
 	}
-
-	// 2. Back up the working monolith state before any mutation. Named
-	//    "demono-backup" (not the default terraform ".backup") so its provenance
-	//    is unambiguous: this is demonolith's deliberate pre-carve snapshot, not
-	//    one of terraform's automatic per-mutation .tfstate.<ts>.backup files.
-	backup := filepath.Join(workDir, "monolith.demono-backup.tfstate")
 	if err := copyFile(monolithState, backup); err != nil {
 		return nil, fmt.Errorf("backup state: %w", err)
 	}
+	return &Prepared{MonolithState: monolithState, BackupPath: backup}, nil
+}
 
-	res := &Result{ModuleStates: map[string]string{}, BackupPath: backup}
+// Carve executes the plan against local state copies and writes one state file
+// per non-empty module into workDir. srcDir is the monolith root (used to pull
+// state when SourceStatePath is empty).
+func Carve(ctx context.Context, srcDir, workDir string, plan *Plan, opts Options) (*Result, error) {
+	prep, err := Prepare(ctx, srcDir, workDir, opts)
+	if err != nil {
+		return nil, err
+	}
+	return Execute(ctx, srcDir, workDir, prep, plan, opts)
+}
+
+// Execute runs the plan's moves against the prepared working state.
+func Execute(ctx context.Context, srcDir, workDir string, prep *Prepared, plan *Plan, opts Options) (*Result, error) {
+	monolithState := prep.MonolithState
+	res := &Result{ModuleStates: map[string]string{}, BackupPath: prep.BackupPath}
 
 	// 3. A tfexec instance rooted at srcDir drives the moves; -state/-state-out
 	//    make the operation entirely file-local.
@@ -170,7 +204,7 @@ func Carve(ctx context.Context, srcDir, workDir string, plan *Plan, opts Options
 
 	// After carving out every non-remainder module, the monolith state holds
 	// exactly the remainder module's resources. Adopt it as that module's state.
-	if _, hasRemainder := plan.Moves[plan.Remainder]; hasRemainder {
+	if plan.AdoptRemainder {
 		remState := filepath.Join(workDir, plan.Remainder+".tfstate")
 		if remState != monolithState {
 			if err := copyFile(monolithState, remState); err != nil {

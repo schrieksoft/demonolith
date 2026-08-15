@@ -1,0 +1,121 @@
+version: 1
+created: "2026-08-15T13:52:30Z"
+tool: demonolith dev
+source:
+    root: /home/karl/code/snapcd-all/misc/demonolith/testdata/e2e-split/out/cli-verify-ephemeral/src
+    remainder_module: monolith
+output:
+    dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/e2e-split/out/cli-verify-ephemeral/modules
+modules:
+    app:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/e2e-split/out/cli-verify-ephemeral/modules/app
+        blocks:
+            - random_pet.instance
+            - tls_private_key.cert
+            - tls_private_key.cert_by_module
+            - tls_private_key.cert_by_resource
+    data:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/e2e-split/out/cli-verify-ephemeral/modules/data
+        blocks:
+            - data.tls_public_key.pub
+            - random_pet.fp_tag
+            - random_string.token
+            - tls_private_key.signer
+    monolith:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/e2e-split/out/cli-verify-ephemeral/modules/monolith
+        blocks:
+            - random_pet.unmanaged_extra
+    network:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/e2e-split/out/cli-verify-ephemeral/modules/network
+        blocks:
+            - module.idgen
+            - random_integer.net_id
+            - random_pet.net_name
+catchall:
+    - random_pet.unmanaged_extra
+state_moves:
+    - address: random_pet.instance
+      module: app
+    - address: tls_private_key.cert
+      module: app
+    - address: tls_private_key.cert_by_module
+      module: app
+    - address: tls_private_key.cert_by_resource
+      module: app
+    - address: random_pet.fp_tag
+      module: data
+    - address: random_string.token
+      module: data
+    - address: tls_private_key.signer
+      module: data
+    - address: module.idgen
+      module: network
+    - address: random_integer.net_id
+      module: network
+    - address: random_pet.net_name
+      module: network
+cross_edges:
+    - producer_module: data
+      producer: data.tls_public_key.pub
+      attribute: public_key_fingerprint_md5
+      output: data_tls_public_key_pub
+      consumer_module: app
+      consumer: random_pet.instance
+      input: data_tls_public_key_pub
+    - producer_module: data
+      producer: data.tls_public_key.pub
+      attribute: public_key_fingerprint_md5
+      output: data_tls_public_key_pub
+      consumer_module: app
+      consumer: local.local_from_data
+      input: data_tls_public_key_pub
+    - producer_module: network
+      producer: module.idgen
+      attribute: id
+      output: module_idgen
+      consumer_module: app
+      consumer: random_pet.instance
+      input: module_idgen
+    - producer_module: network
+      producer: module.idgen
+      attribute: id
+      output: module_idgen
+      consumer_module: app
+      consumer: provider.tls.by_module
+      input: module_idgen
+    - producer_module: network
+      producer: random_integer.net_id
+      attribute: result
+      output: random_integer_net_id
+      consumer_module: app
+      consumer: local.local_from_resource
+      input: random_integer_net_id
+    - producer_module: network
+      producer: random_integer.net_id
+      attribute: result
+      output: random_integer_net_id
+      consumer_module: app
+      consumer: random_pet.instance
+      input: random_integer_net_id
+    - producer_module: network
+      producer: random_pet.net_name
+      attribute: id
+      output: random_pet_net_name
+      consumer_module: app
+      consumer: provider.tls.by_resource
+      input: random_pet_net_name
+    - producer_module: data
+      producer: random_string.token
+      attribute: result
+      output: random_string_token
+      consumer_module: app
+      consumer: random_pet.instance
+      input: random_string_token
+    - producer_module: data
+      producer: data.tls_public_key.pub
+      attribute: public_key_fingerprint_md5
+      output: data_tls_public_key_pub
+      consumer_module: network
+      consumer: module.idgen
+      input: data_tls_public_key_pub
+emit_checksum: sha256:00178d1258d3d55e184a59affff021250c4f468df5816bf80b230aa6bba0e72e

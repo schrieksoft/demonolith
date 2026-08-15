@@ -1,0 +1,40 @@
+version: 1
+created: "2026-08-15T13:52:23Z"
+tool: demonolith dev
+source:
+    root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-end-to-end/src
+    remainder_module: monolith
+output:
+    dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-end-to-end/modules
+modules:
+    a:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-end-to-end/modules/a
+        blocks:
+            - random_integer.seed
+            - random_pet.name_a
+    b:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-end-to-end/modules/b
+        blocks:
+            - random_pet.name_b
+    monolith:
+        dir: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-end-to-end/modules/monolith
+        blocks:
+            - random_pet.leftover
+catchall:
+    - random_pet.leftover
+state_moves:
+    - address: random_integer.seed
+      module: a
+    - address: random_pet.name_a
+      module: a
+    - address: random_pet.name_b
+      module: b
+cross_edges:
+    - producer_module: a
+      producer: random_integer.seed
+      attribute: result
+      output: random_integer_seed
+      consumer_module: b
+      consumer: random_pet.name_b
+      input: random_integer_seed
+emit_checksum: sha256:ee3ba558935769d1a5de4fc4106bea937b1779cf99af330ba5dc692f35b7db0a

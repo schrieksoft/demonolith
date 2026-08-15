@@ -1,20 +1,17 @@
-// Package cli defines the demonolith command tree.
+// Package cli defines the demonolith command tree: refactor (code only),
+// migrate (state only), and verify (the zero-diff proof), connected by the
+// manifest. One command per side of the code/state line.
 package cli
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-
-	"github.com/schrieksoft/demonolith/internal/emit"
-	"github.com/schrieksoft/demonolith/internal/pipeline"
-	"github.com/schrieksoft/demonolith/internal/proof"
-	"github.com/schrieksoft/demonolith/internal/statemove"
-	"github.com/schrieksoft/demonolith/internal/statevars"
+	"golang.org/x/term"
 )
 
 // version and commit are injected from main via SetVersion at startup.
@@ -28,197 +25,104 @@ func SetVersion(v, c string) {
 	version, commit = v, c
 }
 
+func toolString() string {
+	return "demonolith " + version
+}
+
+// Exit codes, uniform across commands: 0 success, 1 operational error, 2 a
+// negative verdict — the run worked but the answer is "no" (drift, a module
+// plans changes, a stale or inapplicable manifest). Pipelines can therefore
+// distinguish "the split is wrong" from "the job broke".
+const (
+	ExitOK      = 0
+	ExitError   = 1
+	ExitVerdict = 2
+)
+
+// VerdictError marks a negative verdict (exit 2).
+type VerdictError struct{ msg string }
+
+func (e *VerdictError) Error() string { return e.msg }
+
+// verdictf builds a negative-verdict error.
+func verdictf(format string, a ...any) error {
+	return &VerdictError{msg: fmt.Sprintf(format, a...)}
+}
+
+// ExitCode maps an Execute error to the process exit code.
+func ExitCode(err error) int {
+	if err == nil {
+		return ExitOK
+	}
+	var v *VerdictError
+	if errors.As(err, &v) {
+		return ExitVerdict
+	}
+	return ExitError
+}
+
 // Root builds the root command.
 func Root() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "demono",
+		Use:           "demonolith",
 		Short:         "Refactor a monolithic Terraform root into per-module roots",
 		Version:       fmt.Sprintf("%s (%s)", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(splitCmd())
+	root.AddCommand(refactorCmd())
+	root.AddCommand(migrateCmd())
+	root.AddCommand(verifyCmd())
 	return root
 }
 
-type splitFlags struct {
-	out        string
-	remainder  string
-	engine     string
-	execPath   string
-	withState  bool
-	withProof  bool
-	withTfvars bool
-	refresh    bool
-	statePath  string
+// outputMode is the report format shared by all commands.
+type outputMode string
+
+const (
+	outputText outputMode = "text"
+	outputJSON outputMode = "json"
+)
+
+func parseOutput(s string) (outputMode, error) {
+	switch outputMode(s) {
+	case outputText, outputJSON:
+		return outputMode(s), nil
+	}
+	return "", fmt.Errorf("invalid --output %q (want text or json)", s)
 }
 
-func splitCmd() *cobra.Command {
-	var f splitFlags
-	cmd := &cobra.Command{
-		Use:   "split <root-dir>",
-		Short: "Split a monolith into carved per-module roots",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSplit(cmd.Context(), args[0], f)
-		},
+// engineExecPath resolves the binary for --engine/--exec-path. --engine has no
+// default: the terraform-vs-tofu choice must be explicit.
+func engineExecPath(engine, execPath string) (string, error) {
+	if execPath != "" {
+		return execPath, nil
 	}
-	flags := cmd.Flags()
-	flags.StringVar(&f.out, "out", "", "output directory for carved roots (default <root-dir>/.demono/modules)")
-	flags.StringVar(&f.remainder, "remainder-module", "monolith", "catchall module name for unannotated blocks")
-	flags.StringVar(&f.engine, "engine", "terraform", "state engine: terraform or tofu")
-	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.BoolVar(&f.withState, "state", false, "carve state into per-module local files (needs a terraform/tofu binary)")
-	flags.StringVar(&f.statePath, "state-file", "", "local monolith state file to carve (default: pull from backend)")
-	flags.BoolVar(&f.withTfvars, "tfvars", false, "write generated.auto.tfvars into each module, populated from the applied source state (implies --state)")
-	flags.BoolVar(&f.withProof, "proof", false, "run the graph-threaded zero-diff proof (implies --state)")
-	flags.BoolVar(&f.refresh, "refresh", false, "refresh state during proof (authoritative but needs credentials)")
-	return cmd
+	switch engine {
+	case "terraform", "tofu":
+		return exec.LookPath(engine)
+	case "":
+		return "", fmt.Errorf("--engine is required (terraform or tofu), or pass --exec-path")
+	}
+	return "", fmt.Errorf("invalid --engine %q (want terraform or tofu)", engine)
 }
 
-func runSplit(ctx context.Context, srcDir string, f splitFlags) error {
-	if ctx == nil {
-		ctx = context.Background()
+// resolveRoot makes the --root-dir flag absolute (default current directory).
+// Downstream paths derived from it are handed to tfexec instances rooted at
+// module dirs, where a relative path would resolve against the wrong base.
+func resolveRoot(rootDir string) string {
+	if rootDir == "" {
+		rootDir = "."
 	}
-	srcDir = filepath.Clean(srcDir)
-
-	// 1. Analyze: parse -> decorators -> placement -> boundary -> cycle gate.
-	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: f.remainder})
-	if err != nil {
-		return err
+	if abs, err := filepath.Abs(rootDir); err == nil {
+		return abs
 	}
-	reportPlacement(a)
-
-	// 2. Emit carved roots.
-	outDir := f.out
-	if outDir == "" {
-		outDir = filepath.Join(srcDir, ".demono", "modules")
-	}
-	e := &emit.Emitter{SrcDir: srcDir, OutDir: outDir, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary}
-	ems, err := e.Emit()
-	if err != nil {
-		return err
-	}
-	moduleDirs := map[string]string{}
-	outln("\nEmitted roots:")
-	for _, em := range ems {
-		moduleDirs[em.Module] = em.Dir
-		outf("  %-16s %s (%d files)\n", em.Module, displayPath(srcDir, em.Dir), len(em.Files))
-	}
-
-	if !f.withState && !f.withProof && !f.withTfvars {
-		outln("\nCode emitted. Re-run with --state to carve state, --tfvars to populate inputs, --proof to validate.")
-		return nil
-	}
-
-	// 3. Carve state into per-module local files.
-	stateWork := filepath.Join(outDir, ".state")
-	plan := statemove.BuildPlan(a.Placement)
-	opts := statemove.Options{
-		ExecPath:        f.execPath,
-		Engine:          statemove.Engine(f.engine),
-		SourceStatePath: f.statePath,
-	}
-	carve, err := statemove.Carve(ctx, srcDir, stateWork, plan, opts)
-	if err != nil {
-		return fmt.Errorf("state carve: %w", err)
-	}
-	outln("\nCarved state (local copies, nothing pushed):")
-	for _, em := range ems {
-		if p, ok := carve.ModuleStates[em.Module]; ok {
-			outf("  %-16s %s\n", em.Module, displayPath(srcDir, p))
-		}
-	}
-	outf("  backup: %s\n", carve.BackupPath)
-
-	// 4. Materialize per-module .tfvars from the applied source state, so each
-	//    carved module is self-contained and provable standalone.
-	if f.withTfvars || f.withProof {
-		sourceState := f.statePath
-		if sourceState == "" {
-			// The carve's backup is the pre-mutation source state snapshot.
-			sourceState = carve.BackupPath
-		}
-		st, err := statevars.LoadState(sourceState)
-		if err != nil {
-			return fmt.Errorf("tfvars: %w", err)
-		}
-		sv, err := statevars.Generate(st, a.Boundary, moduleDirs, statevars.Options{SourceDir: srcDir})
-		if err != nil {
-			return fmt.Errorf("tfvars: %w", err)
-		}
-		if len(sv.Files) > 0 {
-			outln("\nGenerated input values (from applied state):")
-			for _, em := range ems {
-				if p, ok := sv.Files[em.Module]; ok {
-					outf("  %-16s %s\n", em.Module, displayPath(srcDir, p))
-				}
-			}
-		}
-	}
-
-	if !f.withProof {
-		return nil
-	}
-
-	// 4. Graph-threaded zero-diff proof.
-	pres, err := proof.Run(ctx, moduleDirs, carve.ModuleStates, a.Boundary, proof.Options{
-		ExecPath: resolveExec(f),
-		Refresh:  f.refresh,
-	})
-	if err != nil {
-		return fmt.Errorf("proof: %w", err)
-	}
-	reportProof(pres)
-	if !pres.OK {
-		return fmt.Errorf("proof failed: at least one module plans changes against carved state")
-	}
-	return nil
+	return filepath.Clean(rootDir)
 }
 
-func resolveExec(f splitFlags) string {
-	if f.execPath != "" {
-		return f.execPath
-	}
-	// Let tfexec resolve from PATH via the engine name.
-	if p, err := lookEngine(f.engine); err == nil {
-		return p
-	}
-	return f.engine
-}
-
-func reportPlacement(a *pipeline.Analysis) {
-	outln("Placement:")
-	for _, m := range a.Placement.ModuleNames() {
-		outf("  %-16s %d resources/data\n", m, len(a.Placement.Modules[m]))
-	}
-	if len(a.Placement.Catchall) > 0 {
-		outf("\nCatchall (%s) holds %d unannotated block(s):\n", a.Placement.Remainder, len(a.Placement.Catchall))
-		for _, addr := range a.Placement.Catchall {
-			outf("  %s\n", addr)
-		}
-	}
-	if edges := a.Boundary.OrderingEdges; len(edges) > 0 {
-		outln("\nCross-module depends_on (ordering must be enforced by the control plane):")
-		for _, oe := range edges {
-			outf("  %s → %s (%s depends_on %s)\n", oe.ConsumerModule, oe.ProducerModule, oe.Consumer, oe.Producer)
-		}
-	}
-}
-
-func reportProof(res *proof.Result) {
-	outln("\nProof (per-module plan against carved state, inputs threaded from upstream outputs):")
-	for _, m := range res.Order {
-		mp := res.Modules[m]
-		status := "zero-diff"
-		if !mp.ZeroDiff {
-			status = fmt.Sprintf("CHANGES +%d -%d", mp.AddCount, mp.Destroy)
-		}
-		outf("  %-16s %s (~%d in-place)\n", m, status, mp.Change)
-	}
-	if res.OK {
-		outf("\n✓ %d modules, each plans to zero create/destroy with real threaded inputs.\n", len(res.Order))
-	}
+// stdinIsTTY reports whether stdin is an interactive terminal.
+func stdinIsTTY() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // outln / outf write progress output to stdout, ignoring the write error: this
@@ -234,12 +138,4 @@ func displayPath(base, p string) string {
 		return p
 	}
 	return rel
-}
-
-// lookEngine resolves the engine name (terraform/tofu) to a binary path.
-func lookEngine(name string) (string, error) {
-	if name == "" {
-		name = "terraform"
-	}
-	return exec.LookPath(name)
 }

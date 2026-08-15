@@ -420,22 +420,24 @@ operationally *and* that the computed wiring is correct — because a wrong
 
 ## 11. The CLI  `[internal/cli]`
 
-One command, staged by flags:
+Three commands split at the code/state line, connected by a versioned manifest
+(`internal/manifest`); the full design and its user stories are in
+`REDESIGN.md`:
 
 ```bash
-demonolith split ./infra                 # analyze + emit code (offline, no binary)
-demonolith split ./infra --state         # + carve state into local per-module files
-demonolith split ./infra --state --proof # + graph-threaded zero-diff proof
+demonolith refactor                  # analyze + emit code + write the manifest (offline)
+demonolith migrate --engine tofu     # execute the manifest's state moves (local copies)
+demonolith verify  --engine tofu     # graph-threaded zero-diff proof + verdict sidecar
 ```
 
-`runSplit` runs `pipeline.Analyze` (which includes the cycle gate), then emits,
-then — if requested — carves state and runs the proof, reporting placement,
-carved state paths, and the per-module proof verdict. A failed proof (any module
-plans a change) is a non-zero exit.
-
-Key flags: `--out`, `--remainder-module` (default `monolith`), `--engine
-{terraform|tofu}`, `--exec-path`, `--state`, `--state-file`, `--proof`,
-`--refresh`.
+`refactor` runs `pipeline.Analyze` (which includes the cycle gate), emits, and
+writes `demonolith-refactor-{datetime}.yaml`; `--check` is the CI drift gate.
+`migrate` replays the manifest's moves without re-analyzing, guarded by a
+staleness check and an idempotent resume, and writes a receipt sidecar.
+`verify` re-analyzes, threads inputs, and proves zero create/destroy — against
+the receipt's carved states when a migration has run, or an ephemeral throwaway
+carve when not. Exit codes: 0 success, 1 operational error, 2 negative verdict;
+`--output json` emits machine-readable reports.
 
 ---
 
