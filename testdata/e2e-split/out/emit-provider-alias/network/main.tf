@@ -24,11 +24,11 @@ locals {
 
 # Child module call (module-output producer). Its inputs exercise:
 #   module input → RESOURCE (seed = net_id, same module)
-#   module input → DATA SOURCE (tag = data.pub, cross-module from `data`)
+#   module input → RESOURCE (tag = token, cross-module from `data`)
 module "idgen" {
   source = "./modules/idgen"
   seed   = random_integer.net_id.result
-  tag    = var.data_tls_public_key_pub
+  tag    = var.random_string_token
 }
 
 resource "random_integer" "net_id" {

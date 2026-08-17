@@ -1,6 +1,7 @@
 // Package cli defines the demonolith command tree: refactor (code only),
-// migrate (state only), and verify (the zero-diff proof), connected by the
-// manifest. One command per side of the code/state line.
+// diff (the sync gate), migrate (state only), and prove (the zero-diff
+// proof), connected by the manifest. One command per side of the code/state
+// line.
 package cli
 
 import (
@@ -30,7 +31,7 @@ func toolString() string {
 }
 
 // Exit codes, uniform across commands: 0 success, 1 operational error, 2 a
-// negative verdict — the run worked but the answer is "no" (drift, a module
+// negative verdict — the run worked but the answer is "no" (the committed output differs, a module
 // plans changes, a stale or inapplicable manifest). Pipelines can therefore
 // distinguish "the split is wrong" from "the job broke".
 const (
@@ -71,8 +72,9 @@ func Root() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(refactorCmd())
+	root.AddCommand(diffCmd())
 	root.AddCommand(migrateCmd())
-	root.AddCommand(verifyCmd())
+	root.AddCommand(proveCmd())
 	return root
 }
 

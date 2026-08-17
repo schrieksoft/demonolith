@@ -14,7 +14,7 @@ import (
 // Receipt filename layout mirrors the manifest's.
 const (
 	ReceiptPrefix = "demonolith-migrate-"
-	VerdictPrefix = "demonolith-verify-"
+	VerdictPrefix = "demonolith-prove-"
 )
 
 // MoveOutcome is what happened to one state move.
@@ -33,7 +33,11 @@ type Receipt struct {
 	Tool    string `yaml:"tool"`
 	// Manifest is the filename (not path) of the manifest that was executed.
 	Manifest string `yaml:"manifest"`
-	Engine   string `yaml:"engine,omitempty"`
+	// ManifestChecksum is the executed manifest's emit_checksum; the manifest
+	// filename is constant, so the checksum is what ties a receipt to one
+	// manifest generation.
+	ManifestChecksum string `yaml:"manifest_checksum"`
+	Engine           string `yaml:"engine,omitempty"`
 	// Complete is true when every manifest move is accounted for.
 	Complete bool `yaml:"complete"`
 	// ModuleStates maps a module to its carved state file, relative to root dir.
@@ -75,8 +79,9 @@ func LoadReceipt(path string) (*Receipt, error) {
 }
 
 // LatestReceiptFor finds the newest receipt in rootDir recording an execution
-// of the named manifest file, or nil when none exists.
-func LatestReceiptFor(rootDir, manifestFile string) (*Receipt, error) {
+// of the manifest generation with the given emit checksum, or nil when none
+// exists. Receipts from earlier generations are ignored.
+func LatestReceiptFor(rootDir, manifestChecksum string) (*Receipt, error) {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
 		return nil, err
@@ -94,7 +99,7 @@ func LatestReceiptFor(rootDir, manifestFile string) (*Receipt, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r.Manifest == manifestFile {
+		if r.ManifestChecksum == manifestChecksum {
 			return r, nil
 		}
 	}
@@ -111,7 +116,7 @@ type ModuleVerdict struct {
 	Update int `yaml:"update" json:"update"`
 }
 
-// Verdict is the verify sidecar: the proof result as an artifact rather than
+// Verdict is the prove sidecar: the proof result as an artifact rather than
 // terminal scrollback. External input values never appear here, only names.
 type Verdict struct {
 	Version  int             `yaml:"version"`

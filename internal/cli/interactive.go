@@ -68,12 +68,13 @@ func runRefactorInteractive(rootDir string, f refactorFlags) error {
 			}
 			if triage {
 				for _, addr := range a.Placement.Catchall {
-					isData := strings.HasPrefix(addr.String(), "data.")
-					hint := "module name, Enter = keep in " + f.remainder
-					if isData {
-						hint += ", several comma-separated to duplicate"
+					if strings.HasPrefix(addr.String(), "data.") {
+						// Data sources are never decorated: they follow their
+						// consumers. One in the catchall has no placed consumer.
+						outf("  %s: data source with no placed consumer; stays in %s (it will follow wherever a consumer is placed)\n", addr, f.remainder)
+						continue
 					}
-					s, err := promptLine(fmt.Sprintf("  %s (%s): ", addr, hint))
+					s, err := promptLine(fmt.Sprintf("  %s (module name, Enter = keep in %s): ", addr, f.remainder))
 					if err != nil {
 						return err
 					}
@@ -81,7 +82,7 @@ func runRefactorInteractive(rootDir string, f refactorFlags) error {
 						continue
 					}
 					targets := splitTargets(s)
-					if !isData && len(targets) > 1 {
+					if len(targets) > 1 {
 						outf("    %s is stateful and takes exactly one target; keeping it in %s\n", addr, f.remainder)
 						continue
 					}
@@ -237,32 +238,29 @@ func promptEngine() (string, error) {
 	}
 }
 
-// confirmMigrate previews the pending manifests' move plans and asks for one
-// whole-run confirmation.
-func confirmMigrate(rootDir string, paths []string, f migrateFlags) (bool, error) {
-	outln("Manifests to execute, in date order:")
+// confirmMigrate previews the manifest's move plan and asks for one whole-run
+// confirmation.
+func confirmMigrate(rootDir, path string, f migrateFlags) (bool, error) {
+	name := filepath.Base(path)
+	m, err := manifest.Load(path)
+	if err != nil {
+		return false, err
+	}
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum)
+	if err != nil {
+		return false, err
+	}
+	status := fmt.Sprintf("%d move(s)", len(m.StateMoves))
+	if receipt != nil && receipt.Complete {
+		status = "already applied; will skip"
+	}
+	outf("%s — %s\n", name, status)
 	total := 0
-	for _, path := range paths {
-		name := filepath.Base(path)
-		m, err := manifest.Load(path)
-		if err != nil {
-			return false, err
+	if receipt == nil || !receipt.Complete {
+		for _, mv := range m.StateMoves {
+			outf("  state mv %-40s -> %s\n", mv.Address, mv.Module)
 		}
-		receipt, err := manifest.LatestReceiptFor(rootDir, name)
-		if err != nil {
-			return false, err
-		}
-		status := fmt.Sprintf("%d move(s)", len(m.StateMoves))
-		if receipt != nil && receipt.Complete {
-			status = "already applied; will skip"
-		}
-		outf("  %s — %s\n", name, status)
-		if receipt == nil || !receipt.Complete {
-			for _, mv := range m.StateMoves {
-				outf("    state mv %-40s -> %s\n", mv.Address, mv.Module)
-			}
-			total += len(m.StateMoves)
-		}
+		total = len(m.StateMoves)
 	}
 	if f.dryRun {
 		return true, nil

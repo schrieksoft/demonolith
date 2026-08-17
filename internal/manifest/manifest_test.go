@@ -58,8 +58,8 @@ func TestBuildWriteLoad_Roundtrip(t *testing.T) {
 		t.Errorf("module dir stored as %q, want root-relative %q", got, "modules/a")
 	}
 
-	path := filepath.Join(rootDir, FileName(created))
-	if filepath.Base(path) != "demonolith-refactor-20260815-143000.yaml" {
+	path := Path(rootDir)
+	if filepath.Base(path) != "demonolith-refactor.yaml" {
 		t.Errorf("unexpected manifest filename %s", filepath.Base(path))
 	}
 	if err := Write(m, path); err != nil {
@@ -131,45 +131,9 @@ func TestChecksum_IgnoresLaterStageArtifacts(t *testing.T) {
 	}
 }
 
-func TestDiscover_DateOrder(t *testing.T) {
-	dir := t.TempDir()
-	names := []string{
-		FilePrefix + "20260815-143000.yaml",
-		FilePrefix + "20250101-000000.yaml",
-		FilePrefix + "20260101-120000.yaml",
-	}
-	for _, n := range names {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte("version: 1\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Non-manifest noise must be ignored.
-	if err := os.WriteFile(filepath.Join(dir, ReceiptPrefix+"20260815-150000.yaml"), []byte("version: 1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := Discover(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("discovered %d manifests, want 3", len(got))
-	}
-	want := []string{
-		FilePrefix + "20250101-000000.yaml",
-		FilePrefix + "20260101-120000.yaml",
-		FilePrefix + "20260815-143000.yaml",
-	}
-	for i := range want {
-		if filepath.Base(got[i]) != want[i] {
-			t.Errorf("order[%d] = %s, want %s", i, filepath.Base(got[i]), want[i])
-		}
-	}
-}
-
 func TestLoad_RefusesFutureVersion(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, FilePrefix+"20260815-143000.yaml")
+	path := Path(dir)
 	if err := os.WriteFile(path, []byte("version: 99\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -183,31 +147,31 @@ func TestReceipt_LatestFor(t *testing.T) {
 	early := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	late := time.Date(2026, 8, 15, 11, 0, 0, 0, time.UTC)
 
-	r1 := &Receipt{Version: 1, Manifest: "demonolith-refactor-a.yaml", Complete: false}
-	r2 := &Receipt{Version: 1, Manifest: "demonolith-refactor-a.yaml", Complete: true}
-	other := &Receipt{Version: 1, Manifest: "demonolith-refactor-b.yaml", Complete: true}
+	r1 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Complete: false}
+	r2 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Complete: true}
+	older := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:bbb", Complete: true}
 	if _, err := WriteReceipt(r1, dir, early); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := WriteReceipt(r2, dir, late); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := WriteReceipt(other, dir, late.Add(time.Hour)); err != nil {
+	if _, err := WriteReceipt(older, dir, late.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := LatestReceiptFor(dir, "demonolith-refactor-a.yaml")
+	got, err := LatestReceiptFor(dir, "sha256:aaa")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == nil || !got.Complete {
-		t.Errorf("latest receipt for manifest a should be the later, complete one; got %+v", got)
+		t.Errorf("latest receipt for checksum aaa should be the later, complete one; got %+v", got)
 	}
-	none, err := LatestReceiptFor(dir, "demonolith-refactor-c.yaml")
+	none, err := LatestReceiptFor(dir, "sha256:ccc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if none != nil {
-		t.Errorf("expected no receipt for manifest c, got %+v", none)
+		t.Errorf("a receipt from a different manifest generation must not match; got %+v", none)
 	}
 }

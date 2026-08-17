@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,7 +18,6 @@ type refactorFlags struct {
 	rootDir     string
 	out         string
 	remainder   string
-	check       bool
 	output      string
 	interactive bool
 }
@@ -38,7 +36,6 @@ func refactorCmd() *cobra.Command {
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.out, "out", "", "output directory for carved roots (default <root-dir>/.demono/modules)")
 	flags.StringVar(&f.remainder, "remainder-module", "monolith", "catchall module name for unannotated blocks")
-	flags.BoolVar(&f.check, "check", false, "drift gate: re-run analysis+emit in memory and compare against the committed roots and manifest; writes nothing")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: triage the catchall, write assignments back as decorators, confirm before emitting")
 	return cmd
@@ -53,14 +50,6 @@ type refactorReport struct {
 	ManifestPath  string         `json:"manifest_path"`
 }
 
-// checkReport is the machine-facing result of refactor --check.
-type checkReport struct {
-	Drift        bool     `json:"drift"`
-	Manifest     string   `json:"manifest,omitempty"`
-	ChangedFiles []string `json:"changed_files,omitempty"`
-	Reasons      []string `json:"reasons,omitempty"`
-}
-
 func runRefactor(f refactorFlags) error {
 	mode, err := parseOutput(f.output)
 	if err != nil {
@@ -71,12 +60,6 @@ func runRefactor(f refactorFlags) error {
 	}
 	rootDir := resolveRoot(f.rootDir)
 
-	if f.check {
-		if f.interactive {
-			return fmt.Errorf("--check does not support --interactive")
-		}
-		return runRefactorCheck(rootDir, f, mode)
-	}
 	if f.interactive {
 		return runRefactorInteractive(rootDir, f)
 	}
@@ -106,7 +89,7 @@ func runRefactor(f refactorFlags) error {
 	return nil
 }
 
-// emitAndWriteManifest is the shared back half of a (non-check) refactor run.
+// emitAndWriteManifest is the shared back half of a (non-interactive) refactor run.
 func emitAndWriteManifest(a *pipeline.Analysis, rootDir, outDir string) ([]emit.EmittedModule, *manifest.Manifest, string, error) {
 	e := &emit.Emitter{SrcDir: rootDir, OutDir: outDir, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary}
 	ems, err := e.Emit()
@@ -118,7 +101,7 @@ func emitAndWriteManifest(a *pipeline.Analysis, rootDir, outDir string) ([]emit.
 	if err != nil {
 		return nil, nil, "", err
 	}
-	path := filepath.Join(rootDir, manifest.FileName(now))
+	path := manifest.Path(rootDir)
 	if err := manifest.Write(m, path); err != nil {
 		return nil, nil, "", err
 	}
@@ -140,121 +123,6 @@ func buildRefactorReport(a *pipeline.Analysis, ems []emit.EmittedModule, manifes
 		r.EmittedDirs[em.Module] = em.Dir
 	}
 	return r
-}
-
-// runRefactorCheck re-runs analysis+emit into a temp dir and compares against
-// the committed roots and the newest committed manifest. Nothing is written to
-// the root or output dirs; any mismatch is a negative verdict.
-func runRefactorCheck(rootDir string, f refactorFlags, mode outputMode) error {
-	a, err := pipeline.Analyze(rootDir, pipeline.Options{Remainder: f.remainder})
-	if err != nil {
-		return err
-	}
-	tmp, err := os.MkdirTemp("", "demono-check-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(tmp) }()
-
-	e := &emit.Emitter{SrcDir: rootDir, OutDir: tmp, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary}
-	ems, err := e.Emit()
-	if err != nil {
-		return err
-	}
-	freshDirs := map[string]string{}
-	for _, em := range ems {
-		freshDirs[em.Module] = em.Dir
-	}
-	fresh, err := manifest.Build(a, rootDir, tmp, ems, time.Now(), toolString())
-	if err != nil {
-		return err
-	}
-
-	rep := checkReport{}
-	paths, err := manifest.Discover(rootDir)
-	if err != nil {
-		return err
-	}
-	if len(paths) == 0 {
-		rep.Drift = true
-		rep.Reasons = append(rep.Reasons, "no committed manifest found; run `demonolith refactor` and commit its output")
-		return reportCheck(rep, mode)
-	}
-	newest := paths[len(paths)-1]
-	rep.Manifest = filepath.Base(newest)
-	committed, err := manifest.Load(newest)
-	if err != nil {
-		return err
-	}
-
-	committedHashes, err := manifest.FileHashes(committed.ModuleDirs(rootDir))
-	if err != nil {
-		rep.Drift = true
-		rep.Reasons = append(rep.Reasons, fmt.Sprintf("committed roots unreadable: %v", err))
-		return reportCheck(rep, mode)
-	}
-	freshHashes, err := manifest.FileHashes(freshDirs)
-	if err != nil {
-		return err
-	}
-
-	rep.ChangedFiles = diffHashes(freshHashes, committedHashes)
-	if len(rep.ChangedFiles) > 0 {
-		rep.Drift = true
-		rep.Reasons = append(rep.Reasons, "committed roots differ from what the committed source produces")
-	}
-	if committed.EmitChecksum != manifest.ChecksumOf(committedHashes) {
-		rep.Drift = true
-		rep.Reasons = append(rep.Reasons, "committed roots were edited after the manifest was written (emit_checksum mismatch)")
-	}
-	if !manifest.SemanticEqual(fresh, committed) {
-		rep.Drift = true
-		rep.Reasons = append(rep.Reasons, "manifest content differs from what the committed source produces")
-	}
-	return reportCheck(rep, mode)
-}
-
-// diffHashes lists "<module>/<relpath>" entries that differ between the fresh
-// and committed trees, tagging additions and removals.
-func diffHashes(fresh, committed map[string]string) []string {
-	var out []string
-	for k, fv := range fresh {
-		cv, ok := committed[k]
-		if !ok {
-			out = append(out, k+" (missing from committed roots)")
-		} else if cv != fv {
-			out = append(out, k)
-		}
-	}
-	for k := range committed {
-		if _, ok := fresh[k]; !ok {
-			out = append(out, k+" (not produced by source)")
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-func reportCheck(rep checkReport, mode outputMode) error {
-	if mode == outputJSON {
-		if err := printJSON(rep); err != nil {
-			return err
-		}
-	} else if rep.Drift {
-		outln("Drift detected:")
-		for _, r := range rep.Reasons {
-			outf("  - %s\n", r)
-		}
-		for _, f := range rep.ChangedFiles {
-			outf("    %s\n", f)
-		}
-	} else {
-		outf("No drift: committed roots and manifest %s match the committed source.\n", rep.Manifest)
-	}
-	if rep.Drift {
-		return verdictf("drift detected; re-run `demonolith refactor` and commit its output")
-	}
-	return nil
 }
 
 // reportAnalysis prints the placement, catchall, and ordering-edge summary.

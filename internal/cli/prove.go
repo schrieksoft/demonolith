@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -17,11 +16,10 @@ import (
 	"github.com/schrieksoft/demonolith/internal/statevars"
 )
 
-type verifyFlags struct {
+type proveFlags struct {
 	rootDir      string
 	engine       string
 	execPath     string
-	file         string
 	stateFile    string
 	refresh      bool
 	keepTfvars   bool
@@ -31,21 +29,20 @@ type verifyFlags struct {
 	output       string
 }
 
-func verifyCmd() *cobra.Command {
-	var f verifyFlags
+func proveCmd() *cobra.Command {
+	var f proveFlags
 	cmd := &cobra.Command{
-		Use:   "verify",
+		Use:   "prove",
 		Short: "Prove the split is inert: per-module zero-diff plans with threaded inputs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVerify(cmd.Context(), f)
+			return runProve(cmd.Context(), f)
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.StringVar(&f.file, "file", "", "verify exactly this manifest (default: the newest)")
 	flags.StringVar(&f.stateFile, "state-file", "", "source state snapshot for the ephemeral carve (default: pull from backend)")
 	flags.BoolVar(&f.refresh, "refresh", false, "refresh state during the proof (authoritative but needs credentials)")
 	flags.BoolVar(&f.keepTfvars, "keep-tfvars", false, "keep the generated.auto.tfvars files after the proof (they are the wiring for detached roots)")
@@ -56,9 +53,9 @@ func verifyCmd() *cobra.Command {
 	return cmd
 }
 
-// verifyReport is the machine-facing proof result. External input values are
+// proveReport is the machine-facing proof result. External input values are
 // deliberately absent — names only.
-type verifyReport struct {
+type proveReport struct {
 	Manifest       string                   `json:"manifest"`
 	Mode           string                   `json:"mode"` // post-migrate | ephemeral
 	OK             bool                     `json:"ok"`
@@ -69,7 +66,7 @@ type verifyReport struct {
 	VerdictPath    string                   `json:"verdict_path"`
 }
 
-func runVerify(ctx context.Context, f verifyFlags) error {
+func runProve(ctx context.Context, f proveFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -86,10 +83,15 @@ func runVerify(ctx context.Context, f verifyFlags) error {
 		return err
 	}
 
-	m, name, err := loadNewestOrGiven(rootDir, f.file)
+	path := manifest.Path(rootDir)
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("no %s manifest found in %s; run `demonolith refactor` first", manifest.FileName, rootDir)
+	}
+	m, err := manifest.Load(path)
 	if err != nil {
 		return err
 	}
+	name := manifest.FileName
 
 	// Staleness: the roots being proven must be the ones the manifest describes.
 	moduleDirs := m.ModuleDirs(rootDir)
@@ -113,7 +115,7 @@ func runVerify(ctx context.Context, f verifyFlags) error {
 
 	// State sourcing: post-migrate when a receipt with intact carved states
 	// exists; otherwise an ephemeral throwaway carve.
-	moduleStates, sourceState, srcMode, cleanup, err := verifyStates(ctx, rootDir, name, m, execPath, f)
+	moduleStates, sourceState, srcMode, cleanup, err := proveStates(ctx, rootDir, name, m, execPath, f)
 	if err != nil {
 		return err
 	}
@@ -124,7 +126,7 @@ func runVerify(ctx context.Context, f verifyFlags) error {
 		return err
 	}
 
-	rep := verifyReport{Manifest: name, Mode: srcMode, ExternalInputs: extNames}
+	rep := proveReport{Manifest: name, Mode: srcMode, ExternalInputs: extNames}
 
 	if !f.noTfvarsFile {
 		st, err := statevars.LoadState(sourceState)
@@ -186,7 +188,7 @@ func runVerify(ctx context.Context, f verifyFlags) error {
 			return err
 		}
 	} else {
-		printVerifyReport(rootDir, rep)
+		printProveReport(rootDir, rep)
 	}
 	if !pres.OK {
 		return verdictf("proof failed: at least one module plans a create or destroy against carved state")
@@ -194,32 +196,15 @@ func runVerify(ctx context.Context, f verifyFlags) error {
 	return nil
 }
 
-// loadNewestOrGiven loads --file, or the newest manifest in rootDir.
-func loadNewestOrGiven(rootDir, file string) (*manifest.Manifest, string, error) {
-	paths, err := selectManifests(rootDir, file)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(paths) == 0 {
-		return nil, "", fmt.Errorf("no demonolith-refactor-*.yaml manifest found in %s; run `demonolith refactor` first", rootDir)
-	}
-	path := paths[len(paths)-1]
-	m, err := manifest.Load(path)
-	if err != nil {
-		return nil, "", err
-	}
-	return m, filepath.Base(path), nil
-}
-
-// verifyStates decides where the carved states come from. Post-migrate mode
+// proveStates decides where the carved states come from. Post-migrate mode
 // proves the actual migration output; ephemeral mode carves a throwaway local
 // copy so a proof can run before any real migration (safe by construction —
 // carving is local-only). The returned source state is the pre-carve applied
 // snapshot tfvars extraction reads.
-func verifyStates(ctx context.Context, rootDir, name string, m *manifest.Manifest, execPath string, f verifyFlags) (map[string]string, string, string, func(), error) {
+func proveStates(ctx context.Context, rootDir, name string, m *manifest.Manifest, execPath string, f proveFlags) (map[string]string, string, string, func(), error) {
 	noop := func() {}
 
-	receipt, err := manifest.LatestReceiptFor(rootDir, name)
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum)
 	if err != nil {
 		return nil, "", "", noop, err
 	}
@@ -243,7 +228,7 @@ func verifyStates(ctx context.Context, rootDir, name string, m *manifest.Manifes
 		}
 	}
 
-	tmp, err := os.MkdirTemp("", "demono-verify-*")
+	tmp, err := os.MkdirTemp("", "demono-prove-*")
 	if err != nil {
 		return nil, "", "", noop, err
 	}
@@ -261,7 +246,7 @@ func verifyStates(ctx context.Context, rootDir, name string, m *manifest.Manifes
 	return carve.ModuleStates, carve.BackupPath, "ephemeral", cleanup, nil
 }
 
-func printVerifyReport(rootDir string, rep verifyReport) {
+func printProveReport(rootDir string, rep proveReport) {
 	outf("Proof (%s mode; per-module plan against carved state, inputs threaded from upstream outputs):\n", rep.Mode)
 	for _, mv := range rep.Modules {
 		status := "zero-diff"

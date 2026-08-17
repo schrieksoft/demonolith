@@ -188,7 +188,8 @@ func scanComments(filename string, lines []string) (map[int]Decorator, error) {
 }
 
 // validateArity enforces target arity: resource/module take exactly one target
-// (stateful singleton); data may take one or more (duplicated into each).
+// (stateful singleton); data takes none — a data source is a stateless read
+// that follows its consumers automatically.
 func validateArity(blockType string, bd BlockDecorators, rng hcl.Range) error {
 	total := 0
 	for _, d := range bd.Decorators {
@@ -196,6 +197,9 @@ func validateArity(blockType string, bd BlockDecorators, rng hcl.Range) error {
 	}
 	if total == 0 {
 		return nil // no decorator -> catchall, handled downstream
+	}
+	if blockType == "data" {
+		return &Error{Range: rng, Msg: fmt.Sprintf("data %v carries a move decorator; data sources are placed automatically wherever they are referenced — remove the decorator", bd.Labels)}
 	}
 	if blockType == "resource" || blockType == "module" {
 		if len(bd.Decorators) > 1 || total > 1 {

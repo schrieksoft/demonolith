@@ -30,9 +30,8 @@ locals {
   proxy_host    = "proxy.internal"
 }
 
-# data-source argument → RESOURCE (same module): reads signer's PEM. The data
-# source's RESULT is a cross-module producer (D) consumed by network (module
-# input), app (resource body), and locals.
+# data-source argument → RESOURCE (same module): reads signer's PEM. Never
+# decorated — it follows its one consumer (fp_tag) into `data`.
 data "tls_public_key" "pub" {
   private_key_pem = tls_private_key.signer.private_key_pem
 }

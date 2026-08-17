@@ -43,26 +43,26 @@ variable "name_prefix" {
 
 locals {
   common_length       = 3
-  local_from_data     = var.data_tls_public_key_pub
+  local_from_data_tag = var.random_pet_fp_tag
   local_from_module   = var.module_idgen
   local_from_resource = var.random_integer_net_id
   proxy_host          = "proxy.internal"
   tagged              = "${var.name_prefix}-instance"
 }
 
-# resource body → RESOURCE / MODULE OUTPUT / DATA SOURCE (all cross-module).
+# resource body → RESOURCE / MODULE OUTPUT (cross-module).
 resource "random_pet" "instance" {
   length    = local.common_length
   separator = "-"
   keepers = {
-    net    = var.random_integer_net_id   # R
-    token  = var.random_string_token     # R (other module)
-    gen    = var.module_idgen            # M
-    fp     = var.data_tls_public_key_pub # D
-    tagged = local.tagged                # local (same module)
-    lr     = local.local_from_resource   # local → R
-    lm     = local.local_from_module     # local → M
-    ld     = local.local_from_data       # local → D
+    net    = var.random_integer_net_id # R
+    token  = var.random_string_token   # R (other module)
+    gen    = var.module_idgen          # M
+    fp     = var.random_pet_fp_tag     # R (data module)
+    tagged = local.tagged              # local (same module)
+    lr     = local.local_from_resource # local → R
+    lm     = local.local_from_module   # local → M
+    ld     = local.local_from_data_tag # local → R
   }
 }
 

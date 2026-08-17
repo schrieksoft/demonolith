@@ -52,40 +52,41 @@ oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
 
 ## 2. The pipeline at a glance
 
+What a user runs is four commands, two doing and two judging, connected by the
+manifest:
+
 ```
-                 ┌──────────┐
-   monolith/  →  │  Parse   │  *.tf → reference graph            [hclgraph]
-                 └────┬─────┘
-                      │  Graph{Nodes, Refs, DependsOnOnly, RefAttrs}
-                 ┌────▼─────┐
-                 │Decorators│  # @demono:move <module> comments    [decorator]
-                 └────┬─────┘
-                      │  []BlockDecorators
-                 ┌────▼─────┐
-                 │Placement │  every resource/data → one module  [placement]
-                 └────┬─────┘
-                      │  Placement{Modules, Owner, Duplicated, Catchall}
-                 ┌────▼─────┐
-                 │ Boundary │  cross-module refs → input/output  [boundary]
-                 └────┬─────┘
-                      │  Result{CrossEdges, OrderingEdges, Boundaries}
-                 ┌────▼─────┐
-                 │Cycle gate│  refuse impossible splits          [cycle]
-                 └────┬─────┘
-      ════════════════╪════════════════  (pipeline.Analyze ends here)
-                      │
-        ┌─────────────┼──────────────┐
-   ┌────▼────┐   ┌────▼─────┐    ┌────▼────┐
-   │  Emit   │   │StateCarve│    │  Proof  │
-   │  [emit] │   │[statemove]│   │ [proof] │
-   └─────────┘   └──────────┘    └─────────┘
-    per-module     per-module      per-module zero-diff
-    roots (code)   state files     plan bundle
+   decorate sources
+        │
+   ┌────▼─────┐  emits carved roots            ┌──────────┐
+   │ refactor │ ────────────────────────────►  │   diff   │  does the committed
+   │  (code)  │  writes the manifest           │ (judge)  │  plan match the
+   └────┬─────┘                                └──────────┘  committed source?
+        │
+        │   demonolith-refactor.yaml — the reviewable contract
+        │
+   ┌────▼─────┐  carves state (local copies)   ┌──────────┐
+   │ migrate  │ ────────────────────────────►  │  prove   │  zero-diff proof: does
+   │ (state)  │  writes a receipt              │ (judge)  │  every root plan inert?
+   └──────────┘                                └──────────┘  writes a verdict
 ```
 
-The front half (Parse → Cycle gate) is pure, offline, and deterministic; it is
-packaged as `pipeline.Analyze` and shared by the CLI and tests. The back half
-(Emit / Carve / Proof) does I/O — writing files, and (for Carve/Proof) shelling
+Underneath, the code side is one shared analysis pipeline, `pipeline.Analyze` —
+pure, offline, deterministic — run by `refactor` (to emit), by `diff` (to
+re-derive and compare), and by `prove` (to recover the boundary the proof
+threads values over):
+
+```
+Parse       *.tf → reference graph                     [hclgraph]
+Decorators  # @demono:move <module> comments           [decorator]
+Placement   resources/modules by decorator;            [placement]
+            data sources follow their consumers
+Boundary    cross-module refs → input/output wiring    [boundary]
+Cycle gate  refuse impossible splits                   [cycle]
+```
+
+The stages that do I/O sit behind the commands: Emit (`refactor`) writes the
+carved roots via `hclwrite`; StateCarve (`migrate`) and Proof (`prove`) shell
 out to a real `terraform`/`tofu` binary via `terraform-exec`.
 
 Module layout mirrors these stages one-package-per-stage under `internal/`.
@@ -175,8 +176,10 @@ Four design commitments:
 2. **Arity encodes state semantics.**
    - `resource` / `module` → **exactly one** target. A managed resource is a
      stateful singleton; it cannot live in two roots.
-   - `data` → **one or more** targets. A data source is a stateless read; it is
-     *duplicated* into each target and re-read there.
+   - `data` → **no decorator, ever** (a hard error). A data source is a
+     stateless read and follows its consumers automatically (§5) — duplicated
+     into every module that references it, like locals and variables. There is
+     nothing for a human to decide, so a decorator would only mislead.
 
 3. **Attaches to an address, not a line.** A decorator binds to the resolved
    block address (matching `hclgraph.Address.String()`), so downstream stages
@@ -195,10 +198,16 @@ happen.
 
 ## 5. Core concept: placement  `[internal/placement]`
 
-**Placement** turns the graph + decorators into a *total assignment* of nodes to
-modules. Only **resource** and **data** nodes are placed directly — `variable`,
-`local`, `output`, and `module`-call nodes are *structural*: a variable/local is
-materialized wherever its consumers land, an output is generated at a boundary.
+**Placement** turns the graph + decorators into a *total assignment* of nodes
+to modules, in two passes. **Resources and module calls** are placed by
+decorator (or fall to the catchall). **Data sources** are then placed
+automatically: a data source is copied into every module that references it —
+directly, or transitively through locals and other data sources — computed by
+walking the reference graph backwards from the data node to its placed
+consumers. One consuming module → single home; several → duplicated into each;
+none → the remainder, reported. `variable`, `local`, and `output` nodes are
+*structural*: a variable/local is materialized wherever its consumers land, an
+output is generated at a boundary.
 
 The resulting `Placement` carries:
 
@@ -224,7 +233,7 @@ classifies each of its references:
 | Reference from consumer in module C… | Result |
 |---|---|
 | to a producer **in the same module** | internal — relocates unchanged, no wiring |
-| to a resource/data producer **in another module** P | P gets an `output`; C gets a `variable`; a **CrossEdge** records the wiring |
+| to a resource producer **in another module** P | P gets an `output`; C gets a `variable`; a **CrossEdge** records the wiring |
 | to a `var.*` (a former monolith root variable) | C gets an **external** input (a root variable each module re-declares) |
 | to a `local.*` | resolved by following the local's *own* upstream refs into C (a local is inlined, so its dependencies become C's boundary edges) |
 | a cross-module **`depends_on`** (from `DependsOnOnly`) | an **OrderingEdge** — whole-module apply-order, no value wiring |
@@ -244,10 +253,12 @@ The key output types:
   external) and `Outputs` it must declare. This is the module's wiring surface,
   consumed directly by Emit.
 
-Duplication interacts cleanly here: if a producer is a duplicated data source and
-one of its copies already lives in the consumer's module, the reference is
-satisfied **locally** and induces no edge; only genuinely-remote producers wire
-across.
+Duplication interacts cleanly here — and, since data sources follow their
+consumers (§5), by construction: every consumer of a data source has a copy in
+its own module, so **a data-source result never crosses a boundary** and never
+generates wiring. What a data source *can* contribute cross-module is its
+argument side: a copy whose argument reads a resource in another module gets an
+input for it like any other consumer.
 
 The separation of `CrossEdge` (value) from `OrderingEdge` (ordering) is why a
 `depends_on` never produces a meaningless "pass this value" input — a subtle but
@@ -420,38 +431,177 @@ operationally *and* that the computed wiring is correct — because a wrong
 
 ## 11. The CLI  `[internal/cli]`
 
-Three commands split at the code/state line, connected by a versioned manifest
-(`internal/manifest`); the full design and its user stories are in
-`REDESIGN.md`:
+Two pipeline commands split exactly at the code/state line, each with a gate
+command that judges its output, connected by the manifest (§12):
 
 ```bash
-demonolith refactor                  # analyze + emit code + write the manifest (offline)
-demonolith migrate --engine tofu     # execute the manifest's state moves (local copies)
-demonolith verify  --engine tofu     # graph-threaded zero-diff proof + verdict sidecar
+demonolith refactor                  # code only: analyze + emit + write the manifest (offline)
+demonolith diff                      # gate: committed roots + manifest match the committed source? (offline)
+demonolith migrate --engine tofu     # state only: execute the manifest's state moves (local copies)
+demonolith prove   --engine tofu     # gate: zero-diff proof — graph-threaded plans + verdict sidecar
 ```
 
-`refactor` runs `pipeline.Analyze` (which includes the cycle gate), emits, and
-writes `demonolith-refactor-{datetime}.yaml`; `--check` is the CI drift gate.
-`migrate` replays the manifest's moves without re-analyzing, guarded by a
-staleness check and an idempotent resume, and writes a receipt sidecar.
-`verify` re-analyzes, threads inputs, and proves zero create/destroy — against
-the receipt's carved states when a migration has run, or an ephemeral throwaway
-carve when not. Exit codes: 0 success, 1 operational error, 2 negative verdict;
-`--output json` emits machine-readable reports.
+There are no positional arguments; every command takes `--root-dir`, defaulting
+to the current directory — matching the engines' own convention, so the normal
+invocation is bare from inside the monolith root, and CI jobs running from a
+repo root pass the flag. `--engine {terraform|tofu}` has **no default**: the
+choice of binary is always explicit (`--exec-path` overrides resolution).
+
+- **`refactor`** runs `pipeline.Analyze` (which includes the cycle gate), emits
+  the carved roots (default `<root>/.demono/modules`), and writes the manifest.
+  Pure and offline — no engine, no state, safe to re-run while iterating on
+  decorators.
+- **`diff`** re-runs analysis+emit **in memory** and compares against the
+  committed roots and manifest. It writes nothing and takes no placement flags —
+  the remainder-module name comes from the committed manifest, so nothing can
+  skew the comparison. Exit 0 means the committed plan is exactly what the
+  committed source produces; exit 2 means they differ, with a per-file summary
+  of what changed. This is the CI proof that a PR's migration plan is honest.
+- **`migrate`** executes the manifest's state moves (§9 mechanics) against
+  local copies, backup first, and writes a receipt. `--dry-run` prints the
+  resolved `state mv` operation list without an engine or any file touched.
+- **`prove`** runs the proof oracle (§10) as a standalone command, writing a
+  verdict sidecar. It sources carved state in two modes, chosen automatically:
+  **post-migrate** (from an intact receipt — proving the actual migration
+  output) or **ephemeral** (its own throwaway carve into a temp dir, discarded
+  after — what lets a credential-free PR job prove a split whose real migration
+  hasn't happened yet; safe by construction since carving is local-only).
+
+**External inputs** (the monolith's own `var.*`) resolve for the proof the way
+the monolith resolved them, in ascending precedence: the root's auto-loaded
+`terraform.tfvars` / `*.auto.tfvars`(.json), explicit `--var-file` files in the
+order given (a named file that is missing is an error, unlike the auto-loaded
+set), `TF_VAR_*` environment variables, `--var k=v` flags. Only names the
+boundary declares as external are collected; cross-module inputs are **never**
+user-suppliable — the proof threads them from producer outputs itself, so a
+wrong wiring cannot be papered over with a hand-supplied value. `--no-tfvars-file`
+keeps every value in memory (for credentialed CI where secrets must not land in
+a working tree); `--keep-tfvars` retains the `generated.auto.tfvars` files as
+the permanent wiring for detached roots.
+
+**Machine interface.** Exit codes are uniform: `0` success, `1` operational
+error (bad flags, missing binary, engine failure), `2` **negative verdict** —
+the run worked but the answer is "no" (the committed output differs from the
+source, a module plans a create/destroy, a stale or inapplicable manifest). Pipelines can therefore distinguish "the
+split is wrong" from "the job broke". `--output json` on `diff`/`migrate`/`prove`
+replaces the human report with one JSON document on stdout. Without a TTY
+nothing ever prompts; `--interactive` is an error rather than a silent
+fallback.
+
+**Interactive mode** (`refactor --interactive`, `migrate --interactive`) is a
+front-end, not a parallel channel: every choice resolves to something that
+exists non-interactively. Refactor's guided loop triages the catchall and
+writes accepted assignments **back into the source as decorators** — the source
+stays the single source of truth, the session's outcome is reviewable in git,
+and the next run reproduces it. Migrate previews the resolved move plan and
+confirms once before executing. Every prompt defaults to the non-destructive
+answer.
+
+Not yet built, by design: `migrate --push` (guarded `state push` into new,
+empty backends — local-only remains the only mode, per §9), `attach`
+(unnecessary for a control plane that ingests the manifest directly), and
+interactive cycle resolution (a cycle is reported, the breaking moves are not
+yet offered).
 
 ---
 
-## 12. Testing & fixtures
+## 12. The manifest and its sidecars  `[internal/manifest]`
 
-Tests live beside each package (`internal/*/*_test.go`). Three self-contained
-fixtures under `testdata/` drive them, all built on the `random`/`time`
-providers so the entire pipeline — **including the proof oracle** — runs
-**offline with zero credentials**:
+The manifest is the durable contract between the code side and the state side:
+`refactor` computes *what* must move and *how* modules wire together;
+`migrate` and `prove` replay that plan without re-deriving it. That indirection
+is what lets a different actor — CI, a control plane — execute a plan someone
+else computed and reviewed.
+
+**One manifest per root.** `refactor` writes `demonolith-refactor.yaml` into
+the root dir, overwriting it each run. The monolith root is the single refactor
+source: the plan is always re-derived from it in full, so there is no
+meaningful sequence of manifests — history lives in version control, and
+re-refactoring an already-carved root (decorating inside emitted output) is
+deliberately out of scope.
+
+**Contents:** module assignments (`modules`, with root-relative dirs), the
+`catchall` list, `duplicated_data`, `state_moves` (managed addresses only;
+remainder resources are absent because the carved-down monolith state *becomes*
+the remainder's state), `cross_edges` (the value wiring a control plane needs
+at adoption time, attribute included), `ordering_edges`, and `emit_checksum` —
+a hash over the emitted roots that excludes later-stage artifacts (lock files,
+state files, plan files, generated tfvars), so running the pipeline never
+invalidates its own manifest.
+
+**The schema is a public, versioned API.** PR reviewers read it, CI parses it,
+a control plane may ingest it. Changes within a major version are additive
+only — new optional keys, never renamed or removed ones; a breaking change
+bumps `version`, and every consumer refuses a manifest whose major version it
+doesn't know rather than guessing. External input *names* may appear in
+manifest or sidecars; input *values* never do.
+
+**Sidecars** record execution, timestamped (`{datetime}` is compact UTC so
+lexical order is date order):
+
+- **Receipt** (`demonolith-migrate-{datetime}.yaml`) — which moves ran and with
+  what outcome, the carved state paths, the backup path, and the executed
+  manifest's `emit_checksum`. The checksum is what ties a receipt to one
+  manifest *generation* (the filename is constant), so re-running `refactor`
+  invalidates old receipts. The idempotency check consults the receipt first; a
+  complete receipt for the current generation skips the run. On resume after a
+  partial failure, migrate reuses the working monolith state (never re-pulls —
+  that would corrupt a partial carve), classifies each move as pending or
+  already-applied by inspecting state addresses, and refuses a manifest whose
+  moves match neither side.
+- **Verdict** (`demonolith-prove-{datetime}.yaml`) — per-module
+  create/destroy/update counts, the proof order, and external input names.
+  "This split was proven inert" is an artifact, not terminal scrollback.
+
+Plan, receipt, proof: the migration's audit trail is three files.
+
+---
+
+## 13. Usage patterns
+
+The spine is the same everywhere — decorate → `refactor` → review → validate
+(`diff` + `migrate --dry-run` + `prove`) → `migrate` → adopt — and only two
+things vary: who executes each step, and where external input values come from.
+Where the monolith's state lives is deliberately not an axis: migrate takes a
+local `--state-file` or pulls read-only from whatever backend the root
+configures.
+
+- **Solo.** One person runs the whole spine from inside the root; external
+  inputs come from the root's own tfvars files (auto-loaded, nothing passed by
+  hand); `--keep-tfvars` makes the generated wiring files the permanent
+  value-passing mechanism for the detached roots.
+- **Team CI.** The dev authors the plan (`refactor`, decorators, committed
+  roots + manifest in the PR); PR CI judges it credential-free — `diff` gates
+  honesty, `--dry-run` renders the move list into the job log, `prove` in
+  ephemeral mode gates inertness — with external inputs injected via `TF_VAR_*`
+  or `--var` and `--no-tfvars-file` keeping secrets off disk; a post-merge job
+  executes the reviewed manifest verbatim (`migrate`, then `prove` in
+  post-migrate mode) and archives the receipt and verdict.
+- **Control plane.** Same as team CI through the merge; the migration itself is
+  executed by a control plane that ingests the manifest — `cross_edges` become
+  input-from-output wirings, `ordering_edges` become dependency edges, and the
+  ordering the detached stories could only report is enforced natively. Needs
+  nothing from demonolith beyond the versioned manifest, the JSON verdicts, and
+  the exit-code contract.
+
+---
+
+## 14. Testing & fixtures
+
+Tests live beside each package (`internal/*/*_test.go`). Four self-contained
+fixtures under `testdata/` drive them, built on credential-free providers so
+the entire pipeline — **including the proof oracle** — runs **offline with zero
+credentials**:
 
 - **`monolith/`** — the full-featured fixture: cross-module value edge, a
-  cross-module `depends_on`, catchall resources, and a multi-target data source.
+  cross-module `depends_on`, catchall resources, and a data source duplicated
+  into two modules by its consumers.
 - **`statefix/`** — a fast `random`-only fixture (producer module `a` → consumer
-  module `b`, plus a catchall), used by the end-to-end state+proof test.
+  module `b`, plus a catchall), used by the end-to-end CLI and state+proof tests.
+- **`e2e-split/`** — the full cross-reference matrix: every producer kind
+  (resource, module output, data result) consumed from every consumer position
+  (resource body, module input, provider config, local, data argument), applied
+  and proven zero-diff.
 - **`cyclic/`** — two mutually-referencing resources in different modules; proves
   the cycle gate refuses.
 
@@ -467,7 +617,7 @@ go test ./...   # state/proof tests skip without a terraform/tofu binary
 
 ---
 
-## 13. Design principles, distilled
+## 15. Design principles, distilled
 
 - **Reason over a graph, never over text.** Every decision joins on
   `Address.String()`; edges come from AST traversal so nothing hidden in a
@@ -485,4 +635,7 @@ go test ./...   # state/proof tests skip without a terraform/tofu binary
 - **Prove, don't assert.** Inertness is demonstrated by a real graph-threaded
   plan bundle against real state, not asserted from the model — which is what
   makes the tool trustworthy for a production migration.
-```
+- **The manifest is the contract.** The plan is computed once, reviewed as an
+  artifact, and replayed verbatim — never silently recomputed by the actor
+  executing it; guards (checksums, versioning) make a mismatch a refusal, not a
+  guess.

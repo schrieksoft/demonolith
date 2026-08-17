@@ -1,5 +1,5 @@
-variable "data_tls_public_key_pub" {
+variable "random_string_token" {
   type        = string
-  description = "Upstream input from module \"data\" output \"data_tls_public_key_pub\""
+  description = "Upstream input from module \"data\" output \"random_string_token\""
 }
 

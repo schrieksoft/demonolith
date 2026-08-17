@@ -4,7 +4,7 @@
 // moves against local copies, and `verify` proves the split inert via a
 // graph-threaded zero-diff plan bundle.
 //
-// Exit codes: 0 success, 1 operational error, 2 a negative verdict (drift,
+// Exit codes: 0 success, 1 operational error, 2 a negative verdict (the committed output differs,
 // a failed proof, a stale manifest).
 package main
 

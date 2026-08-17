@@ -1,6 +1,6 @@
 // Package manifest defines the demonolith-refactor manifest: the durable,
 // versioned contract between `refactor` (which computes what must move and how
-// modules wire together) and `migrate`/`verify` (which replay that plan without
+// modules wire together) and `migrate`/`prove` (which replay that plan without
 // re-deriving it). The schema is a public API: PR reviewers read it, CI parses
 // it, and a control plane may ingest it, so changes within a major version must
 // be additive only.
@@ -26,13 +26,14 @@ import (
 // manifest whose version they do not know rather than guessing.
 const SchemaVersion = 1
 
-// Prefix and timestamp layout of manifest filenames. Compact UTC keeps lexical
-// order equal to date order, which is what lets migrate execute several
-// manifests chronologically.
-const (
-	FilePrefix = "demonolith-refactor-"
-	TimeLayout = "20060102-150405"
-)
+// FileName is the single canonical manifest per root: refactor always
+// re-derives the full plan from the monolith source, so each run overwrites it
+// in place and history lives in version control.
+const FileName = "demonolith-refactor.yaml"
+
+// TimeLayout is the compact UTC timestamp used in receipt and verdict
+// filenames, keeping lexical order equal to date order.
+const TimeLayout = "20060102-150405"
 
 // Manifest is the full refactor plan for one monolith root.
 type Manifest struct {
@@ -45,7 +46,8 @@ type Manifest struct {
 	Modules map[string]Module `yaml:"modules"`
 	// Catchall lists the unannotated addresses that defaulted to the remainder.
 	Catchall []string `yaml:"catchall,omitempty"`
-	// DuplicatedData maps a multi-target data source to the modules holding a copy.
+	// DuplicatedData maps a data source to the modules holding a copy, derived
+	// from where its consumers landed.
 	DuplicatedData map[string][]string `yaml:"duplicated_data,omitempty"`
 	// StateMoves lists the managed addresses migrate must relocate. Remainder
 	// resources are absent: the carved-down monolith state becomes its state.
@@ -104,9 +106,9 @@ type OrderingEdge struct {
 	Producer       string `yaml:"producer"`
 }
 
-// FileName renders the manifest filename for a timestamp.
-func FileName(t time.Time) string {
-	return FilePrefix + t.UTC().Format(TimeLayout) + ".yaml"
+// Path is the canonical manifest location for a root.
+func Path(rootDir string) string {
+	return filepath.Join(rootDir, FileName)
 }
 
 // Build assembles a manifest from an analysis and the emitted roots. rootDir is
@@ -137,8 +139,8 @@ func Build(a *pipeline.Analysis, rootDir, outDir string, ems []emit.EmittedModul
 }
 
 // FromAnalysis derives the manifest's semantic content (modules, moves, edges)
-// from an analysis, with no paths, checksum, or provenance. The drift gate and
-// verify compare this against a committed manifest via SemanticEqual.
+// from an analysis, with no paths, checksum, or provenance. diff and prove
+// compare this against a committed manifest via SemanticEqual.
 func FromAnalysis(a *pipeline.Analysis) *Manifest {
 	m := &Manifest{
 		Version: SchemaVersion,
@@ -280,24 +282,6 @@ func Load(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// Discover lists manifest files in rootDir sorted by filename, which by
-// construction is date order.
-func Discover(rootDir string) ([]string, error) {
-	entries, err := os.ReadDir(rootDir)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() && strings.HasPrefix(name, FilePrefix) && strings.HasSuffix(name, ".yaml") {
-			out = append(out, filepath.Join(rootDir, name))
-		}
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
 // Resolve joins a manifest-stored path with rootDir unless already absolute.
 func Resolve(rootDir, p string) string {
 	if p == "" || filepath.IsAbs(p) {
@@ -364,7 +348,7 @@ func ChecksumOf(files map[string]string) string {
 }
 
 // FileHashes maps "<module>/<relpath>" to a content hash for every emitted
-// file, using the same skip rules as Checksum. Used by the drift gate to name
+// file, using the same skip rules as Checksum. Used by diff to name
 // the files that differ.
 func FileHashes(moduleDirs map[string]string) (map[string]string, error) {
 	out := map[string]string{}
@@ -407,7 +391,7 @@ func FileHashes(moduleDirs map[string]string) (map[string]string, error) {
 }
 
 // SemanticEqual compares the analysis-derived content of two manifests,
-// ignoring provenance (created, tool, paths, checksum). The drift gate uses it
+// ignoring provenance (created, tool, paths, checksum). diff uses it
 // to prove a committed manifest matches what the committed source produces.
 func SemanticEqual(a, b *Manifest) bool {
 	if a.Source.RemainderModule != b.Source.RemainderModule {

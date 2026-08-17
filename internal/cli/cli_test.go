@@ -21,12 +21,12 @@ func run(t *testing.T, args ...string) error {
 	return root.Execute()
 }
 
-// TestRefactorMigrateVerify_EndToEnd drives the full redesigned lifecycle
+// TestRefactorMigrateProve_EndToEnd drives the full redesigned lifecycle
 // through the public command surface: refactor emits roots and a manifest,
 // migrate --dry-run needs no engine, migrate carves state and writes a
-// receipt, a re-run skips via the receipt, and verify proves zero-diff in
+// receipt, a re-run skips via the receipt, and prove shows zero-diff in
 // post-migrate mode and writes a verdict sidecar.
-func TestRefactorMigrateVerify_EndToEnd(t *testing.T) {
+func TestRefactorMigrateProve_EndToEnd(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
 
 	base := testsupport.OutDir(t, "statefix", "cli-end-to-end")
@@ -38,11 +38,7 @@ func TestRefactorMigrateVerify_EndToEnd(t *testing.T) {
 		t.Fatalf("refactor failed: %v", err)
 	}
 
-	manifests, err := manifest.Discover(srcDir)
-	if err != nil || len(manifests) != 1 {
-		t.Fatalf("expected exactly one manifest in %s, got %v (err %v)", srcDir, manifests, err)
-	}
-	m, err := manifest.Load(manifests[0])
+	m, err := manifest.Load(manifest.Path(srcDir))
 	if err != nil {
 		t.Fatalf("load manifest: %v", err)
 	}
@@ -79,7 +75,7 @@ func TestRefactorMigrateVerify_EndToEnd(t *testing.T) {
 			t.Errorf("expected carved state for module %q at %s: %v", module, st, err)
 		}
 	}
-	receipt, err := manifest.LatestReceiptFor(srcDir, filepath.Base(manifests[0]))
+	receipt, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum)
 	if err != nil || receipt == nil {
 		t.Fatalf("expected a migrate receipt (err %v)", err)
 	}
@@ -104,7 +100,7 @@ func TestRefactorMigrateVerify_EndToEnd(t *testing.T) {
 	if err := run(t, "migrate", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
 		t.Fatalf("resume after lost receipt should skip applied moves, got: %v", err)
 	}
-	receipt2, err := manifest.LatestReceiptFor(srcDir, filepath.Base(manifests[0]))
+	receipt2, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum)
 	if err != nil || receipt2 == nil || !receipt2.Complete {
 		t.Fatalf("resume should write a fresh complete receipt (err %v, receipt %+v)", err, receipt2)
 	}
@@ -114,23 +110,23 @@ func TestRefactorMigrateVerify_EndToEnd(t *testing.T) {
 		}
 	}
 
-	// Verify in post-migrate mode: proves the receipt's carved states.
-	if err := run(t, "verify", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
-		t.Fatalf("verify failed: %v", err)
+	// Prove in post-migrate mode: proves the receipt's carved states.
+	if err := run(t, "prove", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
+		t.Fatalf("prove failed: %v", err)
 	}
 	verdicts, _ := filepath.Glob(filepath.Join(srcDir, manifest.VerdictPrefix+"*.yaml"))
 	if len(verdicts) == 0 {
-		t.Errorf("expected a verify verdict sidecar in %s", srcDir)
+		t.Errorf("expected a prove verdict sidecar in %s", srcDir)
 	}
 }
 
-// TestVerify_EphemeralAndTfvars proves a split before any migration has run:
-// verify falls back to an ephemeral carve, and --keep-tfvars leaves the
+// TestProve_EphemeralAndTfvars proves a split before any migration has run:
+// prove falls back to an ephemeral carve, and --keep-tfvars leaves the
 // generated.auto.tfvars wiring in place with values from the applied state.
-func TestVerify_EphemeralAndTfvars(t *testing.T) {
+func TestProve_EphemeralAndTfvars(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
 
-	base := testsupport.OutDir(t, "e2e-split", "cli-verify-ephemeral")
+	base := testsupport.OutDir(t, "e2e-split", "cli-prove-ephemeral")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("e2e-split"))
 	testsupport.ApplyRoot(t, srcDir)
 
@@ -139,15 +135,15 @@ func TestVerify_EphemeralAndTfvars(t *testing.T) {
 		t.Fatalf("refactor failed: %v", err)
 	}
 
-	// No migrate: verify must carve ephemerally and still prove zero-diff.
-	if err := run(t, "verify", "--root-dir", srcDir, "--exec-path", execPath,
+	// No migrate: prove must carve ephemerally and still prove zero-diff.
+	if err := run(t, "prove", "--root-dir", srcDir, "--exec-path", execPath,
 		"--state-file", filepath.Join(srcDir, "terraform.tfstate"), "--keep-tfvars"); err != nil {
-		t.Fatalf("verify (ephemeral) failed: %v", err)
+		t.Fatalf("prove (ephemeral) failed: %v", err)
 	}
 
 	// The .state work dir must not exist: the ephemeral carve is a temp dir.
 	if _, err := os.Stat(filepath.Join(outDir, ".state")); !os.IsNotExist(err) {
-		t.Errorf("ephemeral verify must not write into the output dir's .state")
+		t.Errorf("ephemeral prove must not write into the output dir's .state")
 	}
 
 	for _, module := range []string{"app", "network"} {
@@ -178,21 +174,21 @@ func TestRefactor_RefusesCycle(t *testing.T) {
 	}
 }
 
-// TestRefactorCheck_DriftGate: a clean refactor passes --check; editing an
-// emitted root then fails it with a verdict (exit 2) error.
-func TestRefactorCheck_DriftGate(t *testing.T) {
-	base := testsupport.OutDir(t, "statefix", "cli-check-drift")
+// TestDiff_Gate: a clean refactor passes diff; editing an emitted root
+// then fails it with a verdict (exit 2) error.
+func TestDiff_Gate(t *testing.T) {
+	base := testsupport.OutDir(t, "statefix", "cli-diff-gate")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
 
 	outDir := filepath.Join(base, "modules")
 	if err := run(t, "refactor", "--root-dir", srcDir, "--out", outDir); err != nil {
 		t.Fatalf("refactor failed: %v", err)
 	}
-	if err := run(t, "refactor", "--root-dir", srcDir, "--out", outDir, "--check"); err != nil {
-		t.Fatalf("--check on a clean tree should pass: %v", err)
+	if err := run(t, "diff", "--root-dir", srcDir); err != nil {
+		t.Fatalf("diff on a clean tree should pass: %v", err)
 	}
 
-	// Hand-edit an emitted root: --check must fail with a verdict.
+	// Hand-edit an emitted root: diff must fail with a verdict.
 	mainTf := filepath.Join(outDir, "a", "main.tf")
 	b, err := os.ReadFile(mainTf)
 	if err != nil {
@@ -201,12 +197,12 @@ func TestRefactorCheck_DriftGate(t *testing.T) {
 	if err := os.WriteFile(mainTf, append(b, []byte("\n# edited\n")...), 0o644); err != nil {
 		t.Fatalf("edit emitted root: %v", err)
 	}
-	err = run(t, "refactor", "--root-dir", srcDir, "--out", outDir, "--check")
+	err = run(t, "diff", "--root-dir", srcDir)
 	if err == nil {
-		t.Fatal("--check after editing an emitted root should fail")
+		t.Fatal("diff after editing an emitted root should fail")
 	}
 	if ExitCode(err) != ExitVerdict {
-		t.Errorf("drift should be a verdict (exit %d), got exit %d: %v", ExitVerdict, ExitCode(err), err)
+		t.Errorf("a difference should be a verdict (exit %d), got exit %d: %v", ExitVerdict, ExitCode(err), err)
 	}
 }
 

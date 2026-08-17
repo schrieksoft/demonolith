@@ -18,7 +18,6 @@ type migrateFlags struct {
 	rootDir     string
 	engine      string
 	execPath    string
-	file        string
 	stateFile   string
 	dryRun      bool
 	output      string
@@ -39,7 +38,6 @@ func migrateCmd() *cobra.Command {
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required unless --dry-run)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.StringVar(&f.file, "file", "", "execute exactly this manifest instead of all, in date order")
 	flags.StringVar(&f.stateFile, "state-file", "", "carve this state snapshot instead of pulling from the configured backend")
 	flags.BoolVar(&f.dryRun, "dry-run", false, "print the resolved state-move operation list without touching anything")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
@@ -83,12 +81,9 @@ func runMigrate(ctx context.Context, f migrateFlags) error {
 	}
 	rootDir := resolveRoot(f.rootDir)
 
-	paths, err := selectManifests(rootDir, f.file)
-	if err != nil {
-		return err
-	}
-	if len(paths) == 0 {
-		return fmt.Errorf("no demonolith-refactor-*.yaml manifest found in %s; run `demonolith refactor` first", rootDir)
+	path := manifest.Path(rootDir)
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("no %s manifest found in %s; run `demonolith refactor` first", manifest.FileName, rootDir)
 	}
 
 	// The engine is only needed when moves actually execute.
@@ -108,7 +103,7 @@ func runMigrate(ctx context.Context, f migrateFlags) error {
 	}
 
 	if f.interactive {
-		ok, err := confirmMigrate(rootDir, paths, f)
+		ok, err := confirmMigrate(rootDir, path, f)
 		if err != nil {
 			return err
 		}
@@ -118,48 +113,27 @@ func runMigrate(ctx context.Context, f migrateFlags) error {
 		}
 	}
 
-	var reports []migrateManifestReport
+	rep, err := migrateOne(ctx, rootDir, path, execPath, f)
 	var verdict error
-	for _, path := range paths {
-		rep, err := migrateOne(ctx, rootDir, path, execPath, f)
-		if err != nil {
-			if ExitCode(err) == ExitVerdict {
-				reports = append(reports, migrateManifestReport{Manifest: filepath.Base(path), Skipped: true, SkipReason: err.Error()})
-				verdict = err
-				break
-			}
+	if err != nil {
+		if ExitCode(err) != ExitVerdict {
 			return err
 		}
-		reports = append(reports, *rep)
+		verdict = err
+		rep = &migrateManifestReport{Manifest: filepath.Base(path), Skipped: true, SkipReason: err.Error()}
 	}
 
 	if mode == outputJSON {
-		if err := printJSON(reports); err != nil {
+		if err := printJSON(rep); err != nil {
 			return err
 		}
 		return verdict
 	}
-	for _, rep := range reports {
-		printMigrateReport(rootDir, rep)
-	}
+	printMigrateReport(rootDir, *rep)
 	return verdict
 }
 
-// selectManifests resolves --file or discovers all manifests in date order.
-func selectManifests(rootDir, file string) ([]string, error) {
-	if file == "" {
-		return manifest.Discover(rootDir)
-	}
-	candidates := []string{file, filepath.Join(rootDir, file)}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return []string{c}, nil
-		}
-	}
-	return nil, fmt.Errorf("manifest %s not found", file)
-}
-
-// migrateOne executes (or dry-runs) a single manifest.
+// migrateOne executes (or dry-runs) the manifest.
 func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFlags) (*migrateManifestReport, error) {
 	name := filepath.Base(path)
 	rep := &migrateManifestReport{Manifest: name, DryRun: f.dryRun}
@@ -169,11 +143,11 @@ func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFl
 		return nil, err
 	}
 
-	// Idempotency: a manifest whose receipt records a complete execution is
-	// skipped, so re-running migrate resumes rather than erroring. Checked
-	// before staleness so already-applied manifests from earlier refactors
-	// don't trip the guard.
-	receipt, err := manifest.LatestReceiptFor(rootDir, name)
+	// Idempotency: a manifest generation whose receipt records a complete
+	// execution is skipped, so re-running migrate resumes rather than
+	// erroring. Receipts are tied to a generation by emit checksum, so a
+	// re-run of refactor invalidates old receipts.
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum)
 	if err != nil {
 		return nil, err
 	}
@@ -250,14 +224,15 @@ func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFl
 
 	now := time.Now()
 	r := &manifest.Receipt{
-		Version:      manifest.SchemaVersion,
-		Created:      now.UTC().Format(time.RFC3339),
-		Tool:         toolString(),
-		Manifest:     name,
-		Engine:       f.engine,
-		Complete:     true,
-		ModuleStates: map[string]string{},
-		BackupPath:   relForReceipt(rootDir, res.BackupPath),
+		Version:          manifest.SchemaVersion,
+		Created:          now.UTC().Format(time.RFC3339),
+		Tool:             toolString(),
+		Manifest:         name,
+		ManifestChecksum: m.EmitChecksum,
+		Engine:           f.engine,
+		Complete:         true,
+		ModuleStates:     map[string]string{},
+		BackupPath:       relForReceipt(rootDir, res.BackupPath),
 	}
 	for mod, st := range res.ModuleStates {
 		r.ModuleStates[mod] = relForReceipt(rootDir, st)

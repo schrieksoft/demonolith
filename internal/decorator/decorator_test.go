@@ -45,18 +45,10 @@ func TestScan_SingleTarget(t *testing.T) {
 	}
 }
 
-func TestScan_MultiTargetData(t *testing.T) {
-	bds := scanFile(t, "shared.tf")
-	got := targetsFor(bds, "data.random_id.shared_token")
-	if len(got) != 2 {
-		t.Fatalf("shared_token targets = %v, want 2", got)
-	}
-	has := map[string]bool{}
-	for _, g := range got {
-		has[g] = true
-	}
-	if !has["networking"] || !has["data"] {
-		t.Errorf("shared_token targets = %v, want networking+data", got)
+func TestScan_DataDecorator_IsHardError(t *testing.T) {
+	src := []byte("# @demono:move networking\ndata \"random_id\" \"token\" {}\n")
+	if _, err := Scan("data.tf", src); err == nil {
+		t.Fatal("a decorator on a data block must be a hard error: data sources are placed automatically")
 	}
 }
 

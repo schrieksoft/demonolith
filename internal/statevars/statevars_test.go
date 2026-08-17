@@ -213,15 +213,16 @@ func assertCrossRefMatrix(t *testing.T, edges []boundary.CrossEdge) {
 
 	// The combinations the fixture is built to cover (see testdata/e2e-split/in).
 	// Notes on what's intentionally NOT a distinct edge:
-	//   - module-input→R is same-module (idgen.seed = net_id, both in network).
-	//   - provider→D is omitted (tls proxy.url rejects the colon fingerprint).
+	//   - D producers never cross a boundary: a data source follows its
+	//     consumers, so every consumer reads a local copy.
+	//   - provider→D is therefore impossible too.
 	//   - local→M dedups into resource→M (same producer+input name); its carving
 	//     is asserted separately via app's `local_from_module = var.module_idgen`.
 	want := []string{
-		"resource→R", "resource→M", "resource→D",
-		"module-input→D",
+		"resource→R", "resource→M",
+		"module-input→R",
 		"provider→R", "provider→M",
-		"local→R", "local→D",
+		"local→R",
 	}
 	for _, w := range want {
 		if !seen[w] {
@@ -260,29 +261,30 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 	}
 	cases := map[string]expect{
 		// network owns module.idgen (carved with local source), uses name_prefix
-		// (net_name.prefix) + common_length, and consumes data.pub cross-module
-		// (idgen.tag) -> var.data_tls_public_key_pub. No tls provider (its
-		// resources are random-only).
+		// (net_name.prefix) + common_length, and consumes random_string.token
+		// cross-module (idgen.tag) -> var.random_string_token. No tls provider
+		// (its resources are random-only).
 		"network": {
 			want: []string{
 				`provider "random"`, `variable "name_prefix"`, "common_length",
 				`module "idgen"`, `source = "./modules/idgen"`,
-				"var.data_tls_public_key_pub",
+				"var.random_string_token",
 			},
 			notWant: []string{"tagged", `provider "tls"`},
 		},
-		// data owns tls_private_key.signer + data.tls_public_key.pub, so it carves
-		// the default tls provider — whose config references var.name_prefix and
-		// local.proxy_host, so those get pulled in too. Uses common_length; not the
-		// app-only tagged.
+		// data owns tls_private_key.signer + data.tls_public_key.pub (the data
+		// source follows its consumer fp_tag), so it carves the default tls
+		// provider — whose config references var.name_prefix and
+		// local.proxy_host, so those get pulled in too. Uses common_length; not
+		// the app-only tagged.
 		"data": {
-			want:    []string{`provider "random"`, `provider "tls"`, "common_length", `variable "name_prefix"`, "proxy_host"},
+			want:    []string{`provider "random"`, `provider "tls"`, "common_length", `variable "name_prefix"`, "proxy_host", `data "tls_public_key" "pub"`},
 			notWant: []string{"tagged"},
 		},
 		// app uses THREE tls providers: default (var.name_prefix + local.proxy_host)
 		// and two aliased ones referencing cross-module producers — by_resource
 		// (net_name) and by_module (module.idgen). Plus name_prefix, common_length,
-		// tagged, and locals rewritten to var.* for R/M/D producers.
+		// tagged, and locals rewritten to var.* for R/M producers.
 		"app": {
 			want: []string{
 				`provider "random"`, `provider "tls"`,
@@ -292,8 +294,9 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 				"var.module_idgen",
 				"var.random_pet_net_name",
 				"var.random_integer_net_id",
-				"var.data_tls_public_key_pub",
+				"var.random_pet_fp_tag",
 			},
+			notWant: []string{`data "tls_public_key"`},
 		},
 		// catchall uses the random provider only; no locals/vars/tls.
 		"monolith": {

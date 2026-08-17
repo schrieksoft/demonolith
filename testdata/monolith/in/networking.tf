@@ -10,5 +10,8 @@ resource "random_uuid" "vpc_id" {
 
 # @demono:move networking
 resource "random_uuid" "private_subnet_id" {
+  keepers = {
+    token = data.random_id.shared_token.hex
+  }
   depends_on = [time_sleep.wait_10s]
 }

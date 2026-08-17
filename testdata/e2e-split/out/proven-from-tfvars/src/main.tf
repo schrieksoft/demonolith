@@ -14,10 +14,9 @@ terraform {
 # ===========================================================================
 # Full cross-reference matrix fixture.
 #
-# Producers (things referenced across a module boundary) come in three kinds:
+# Producers (things referenced across a module boundary) come in two kinds:
 #   R = resource output      (random_integer.net_id, random_pet.net_name, ...)
 #   M = module-call output   (module.idgen.id)
-#   D = data-source result   (data.tls_public_key.pub.*)
 #
 # Consumers (things doing the referencing) come in five kinds:
 #   resource body, module-call input, provider config, local value,
@@ -25,14 +24,17 @@ terraform {
 #
 # Every consumer×producer combination below is a real, applied, provable
 # cross-module edge; the proof plans each carved module to zero-diff.
-# (provider→data is omitted only because tls's proxy.url rejects the
-# colon-delimited fingerprint; data-as-producer is covered by resource, local,
-# and module-input consumers instead.)
+#
+# Data sources are never producers across a boundary: a data source follows
+# its consumers automatically, so every consumer reads a local copy. Here
+# data.tls_public_key.pub has one consumer (fp_tag) and lands in `data` with
+# it, reading signer's PEM through a same-module data-source argument;
+# multi-module duplication is covered by the monolith fixture.
 #
 # Module placement:
-#   network : net_id (R), net_name (R), signer (R, a PEM source), idgen (M)
-#   data    : token (R), pub (D, reads signer's PEM cross-module), fp_tag (R)
-#   app     : consumers of R / M / D via every consumer kind
+#   network : net_id (R), net_name (R), idgen (M)
+#   data    : token (R), signer (R, the PEM source), pub (D), fp_tag (R)
+#   app     : consumers of R / M via every consumer kind
 #   monolith: unmanaged catchall
 # ===========================================================================
 
@@ -75,10 +77,10 @@ locals {
   tagged        = "${var.name_prefix}-instance"
   proxy_host    = "proxy.internal"
 
-  # local → RESOURCE / MODULE OUTPUT / DATA SOURCE (all cross-module, used in app).
+  # local → RESOURCE / MODULE OUTPUT (cross-module, used in app).
   local_from_resource = random_integer.net_id.result
   local_from_module   = module.idgen.id
-  local_from_data     = data.tls_public_key.pub.public_key_fingerprint_md5
+  local_from_data_tag = random_pet.fp_tag.id
 }
 
 # --- module: network -------------------------------------------------------
@@ -97,12 +99,12 @@ resource "random_pet" "net_name" {
 
 # Child module call (module-output producer). Its inputs exercise:
 #   module input → RESOURCE (seed = net_id, same module)
-#   module input → DATA SOURCE (tag = data.pub, cross-module from `data`)
+#   module input → RESOURCE (tag = token, cross-module from `data`)
 # @demono:move network
 module "idgen" {
   source = "./modules/idgen"
   seed   = random_integer.net_id.result
-  tag    = data.tls_public_key.pub.public_key_fingerprint_md5
+  tag    = random_string.token.result
 }
 
 # --- module: data ----------------------------------------------------------
@@ -120,10 +122,8 @@ resource "tls_private_key" "signer" {
   algorithm = "ED25519"
 }
 
-# data-source argument → RESOURCE (same module): reads signer's PEM. The data
-# source's RESULT is a cross-module producer (D) consumed by network (module
-# input), app (resource body), and locals.
-# @demono:move data
+# data-source argument → RESOURCE (same module): reads signer's PEM. Never
+# decorated — it follows its one consumer (fp_tag) into `data`.
 data "tls_public_key" "pub" {
   private_key_pem = tls_private_key.signer.private_key_pem
 }
@@ -140,7 +140,7 @@ resource "random_pet" "fp_tag" {
 
 # --- module: app -----------------------------------------------------------
 
-# resource body → RESOURCE / MODULE OUTPUT / DATA SOURCE (all cross-module).
+# resource body → RESOURCE / MODULE OUTPUT (cross-module).
 # @demono:move app
 resource "random_pet" "instance" {
   length    = local.common_length
@@ -149,11 +149,11 @@ resource "random_pet" "instance" {
     net    = random_integer.net_id.result                            # R
     token  = random_string.token.result                             # R (other module)
     gen    = module.idgen.id                                        # M
-    fp     = data.tls_public_key.pub.public_key_fingerprint_md5     # D
+    fp     = random_pet.fp_tag.id                                   # R (data module)
     tagged = local.tagged                                           # local (same module)
     lr     = local.local_from_resource                             # local → R
     lm     = local.local_from_module                               # local → M
-    ld     = local.local_from_data                                 # local → D
+    ld     = local.local_from_data_tag                             # local → R
   }
 }
 
