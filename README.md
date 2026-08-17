@@ -77,7 +77,14 @@ demonolith writes is ordinary committed files.
 **Backends** are derived, not hand-written: the monolith's `backend` block is
 carried into every carved root with its state location postfixed per module
 (`prod/terraform.tfstate` → `prod/terraform-networking.tfstate`; supported
-types: local, s3, azurerm, gcs, consul, http). `migrate run` seeds each
+types: local, s3, azurerm, gcs, consul, http). A backend configured partly or
+wholly via `-backend-config` flags works too: locations fall back to the
+init-time resolved config, other non-secret settings persist into each
+`backend.tf`, and credentials are materialized by **`migrate run`/`verify`** (refactor
+deals with code only) as **gitignored per-module `.env` files** (0600) in the
+engines' official variables (`TF_HTTP_USERNAME`, `AWS_ACCESS_KEY_ID`,
+`ARM_ACCESS_KEY`, …) — never into HCL — and sourced automatically around each
+module's init. `migrate run` seeds each
 derived location from the carved state — the target must be empty, a push is
 never forced, and the monolith's own state is never written. Retiring the
 monolith (its pipelines and its old state) is deliberately a human cutover

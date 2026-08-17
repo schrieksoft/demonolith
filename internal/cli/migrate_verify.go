@@ -64,6 +64,10 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 		return err
 	}
 
+	if err := materializeBackendEnv(rootDir, m); err != nil {
+		return err
+	}
+
 	extVals, extNames, err := collectExternalInputs(rootDir, a.Boundary, f.varFiles, f.vars)
 	if err != nil {
 		return err

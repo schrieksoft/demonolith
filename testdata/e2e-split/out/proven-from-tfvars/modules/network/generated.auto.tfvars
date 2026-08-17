@@ -1,1 +1,1 @@
-random_string_token = "802bBTrBXSv0"
+random_string_token = "x72LQtQJZDw1"

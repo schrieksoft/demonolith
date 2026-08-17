@@ -23,6 +23,7 @@ import (
 	tfjson "github.com/hashicorp/terraform-json"
 
 	"github.com/schrieksoft/demonolith/internal/boundary"
+	"github.com/schrieksoft/demonolith/internal/dotenv"
 )
 
 // Options configures a proof run.
@@ -146,6 +147,16 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 		return nil, nil, err
 	}
 	if opts.UseBackend {
+		// Source the module's .env (backend credentials) for the duration.
+		env, err := dotenv.Load(filepath.Join(dir, ".env"))
+		if err != nil {
+			return nil, nil, err
+		}
+		restore, err := dotenv.Apply(env)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer restore()
 		initOpts := []tfexec.InitOption{tfexec.Backend(true)}
 		for _, bc := range opts.BackendConfig {
 			initOpts = append(initOpts, tfexec.BackendConfig(bc))
@@ -164,6 +175,20 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 				return nil, nil, fmt.Errorf("hold backend.tf: %w", err)
 			}
 			defer func() { _ = os.Rename(hold, backendTF) }()
+		}
+		// A root previously init'd against its real backend records that in
+		// .terraform/terraform.tfstate; with backend.tf held aside the engine
+		// would demand a re-init. Hold the record aside for the same duration.
+		initRecord := filepath.Join(dir, ".terraform", "terraform.tfstate")
+		if _, err := os.Stat(initRecord); err == nil {
+			hold := initRecord + ".demono-hold"
+			if err := os.Rename(initRecord, hold); err != nil {
+				return nil, nil, fmt.Errorf("hold backend init record: %w", err)
+			}
+			defer func() {
+				_ = os.Remove(initRecord)
+				_ = os.Rename(hold, initRecord)
+			}()
 		}
 		// Stage the carved state at the module's default local state location
 		// and leave any backend block unconfigured, so the staged copy rules.

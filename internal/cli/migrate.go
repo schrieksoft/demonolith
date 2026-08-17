@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/schrieksoft/demonolith/internal/emit"
 	"github.com/schrieksoft/demonolith/internal/manifest"
 	"github.com/schrieksoft/demonolith/internal/pipeline"
 	"github.com/schrieksoft/demonolith/internal/statemove"
@@ -368,6 +369,33 @@ func filterApplied(prep *statemove.Prepared, workDir string, plan *statemove.Pla
 		}
 	}
 	return filtered, outcomes, nil
+}
+
+// materializeBackendEnv writes each module's gitignored .env from the
+// monolith root's init-time resolved backend config — credentials as the
+// engines' official environment variables, sourced by run/verify around each
+// module's init. A migration-time concern: the credentials exist because the
+// root was init'd, so the migrate family owns them, not refactor.
+func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
+	if m.Backend == nil {
+		return nil
+	}
+	block, err := emit.ParseBackend(rootDir)
+	if err != nil || block == nil {
+		return err
+	}
+	wrote := false
+	for _, dir := range m.ModuleDirs(rootDir) {
+		w, err := block.WriteEnvFile(dir)
+		if err != nil {
+			return err
+		}
+		wrote = wrote || w
+	}
+	if wrote {
+		outln("Backend credentials written to per-module .env files (0600). They hold secrets: make sure .env is gitignored.")
+	}
+	return nil
 }
 
 // relForReceipt stores receipt paths relative to rootDir when possible.

@@ -20,11 +20,19 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 ## Backend derivation covers common types only
 
-**What:** the monolith's `backend` block is carried into every carved root with the state location postfixed per module — for `local`, `s3`, `azurerm`, `gcs`, `consul`, and `http`. Other backend types, and locations supplied only via `-backend-config` (not present in HCL), are refused at plan time. A `cloud` block is not handled at all.
+**What:** the monolith's `backend` block is carried into every carved root with the state location postfixed per module — for `local`, `s3`, `azurerm`, `gcs`, `consul`, and `http`. Config supplied via `-backend-config` is handled through the init-time resolved config: locations derive from it, non-secret settings persist into each `backend.tf`, and credential-shaped attributes land in gitignored per-module `.env` files that migrate sources automatically. Other backend types are refused at plan time; a `cloud` block is not handled at all, and nested backend config (e.g. s3 `assume_role`) does not survive the flag path.
 
-**Shows up as:** `refactor plan` refusing with the backend type or attribute named.
+**Shows up as:** `refactor plan` refusing with the backend type or attribute named (for a flags-configured backend, the fix it names is initializing the root first, so the resolved config exists).
 
-**Handle it:** pass `--no-backend` to carve without backend blocks and wire the backends by hand (`tofu init -migrate-state`, or a careful `state push` into an **empty** location — never `-force`), or move the location attribute into HCL. Either way the monolith's own state is never written by demonolith; retiring it after every root proves clean is the human cutover step.
+**Handle it:** pass `--no-backend` to carve without backend blocks and wire the backends by hand (`tofu init -migrate-state`, or a careful `state push` into an **empty** location — never `-force`), or move the missing attribute into HCL. Either way the monolith's own state is never written by demonolith; retiring it after every root proves clean is the human cutover step.
+
+## A re-carve cannot re-push over its own earlier push
+
+**What:** every `migrate plan` carve mints a fresh state lineage per module file. `migrate run`'s empty-target guard treats an identical-lineage occupant as an idempotent skip — which works as long as the carve workdir (`<out>/.state/`) that produced the pushed states still exists. Lose the workdir after a successful run, re-carve, and the new files carry new lineages: the push now refuses against your own earlier (semantically identical) push as "unrelated state".
+
+**Shows up as:** `migrate run` refusing with "target … already holds unrelated state" on locations this migration itself seeded.
+
+**Handle it:** keep the workdir until the cutover is done — the receipts point at it. If it is gone and the seeded states are confirmed to be this migration's output, delete those target states (they are reproducible from the carve; the monolith backup still exists) and re-run the pipeline, which re-carves and re-pushes cleanly.
 
 ## The prove verdict ages between prove and run
 

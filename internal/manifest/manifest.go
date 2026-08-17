@@ -370,6 +370,11 @@ func checksumSkip(name string) bool {
 	if name == "demono.tfplan" || name == "generated.auto.tfvars" {
 		return true
 	}
+	// .env holds per-operator backend credentials: secret, machine-local, and
+	// deliberately outside the checksummed contract.
+	if name == ".env" {
+		return true
+	}
 	if strings.Contains(name, ".tfstate") || strings.HasSuffix(name, ".backup") {
 		return true
 	}

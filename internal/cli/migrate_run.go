@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-exec/tfexec"
 	"github.com/spf13/cobra"
 
+	"github.com/schrieksoft/demonolith/internal/dotenv"
 	"github.com/schrieksoft/demonolith/internal/manifest"
 )
 
@@ -88,6 +89,10 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		if older(v.Created, planReceipt.Created) {
 			return fmt.Errorf("the prove verdict predates the migrate plan; re-run `demonolith migrate prove` (or pass --unproven)")
 		}
+	}
+
+	if err := materializeBackendEnv(rootDir, m); err != nil {
+		return err
 	}
 
 	modules := make([]string, 0, len(moduleStates))
@@ -202,6 +207,15 @@ func seedBackend(ctx context.Context, m *manifest.Manifest, rootDir, module, car
 		return out, err
 	}
 	dir := m.ModuleDirs(rootDir)[module]
+	env, err := dotenv.Load(filepath.Join(dir, ".env"))
+	if err != nil {
+		return out, err
+	}
+	restore, err := dotenv.Apply(env)
+	if err != nil {
+		return out, err
+	}
+	defer restore()
 	tf, err := tfexec.NewTerraform(dir, execPath)
 	if err != nil {
 		return out, err

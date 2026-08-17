@@ -1,10 +1,12 @@
 package emit
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -20,6 +22,10 @@ type BackendBlock struct {
 	Type string
 	// block is the original hclwrite block, cloned per module at emit time.
 	block *hclwrite.Block
+	// resolved is the root's init-time backend config (scalars), used as the
+	// fallback for location attributes absent from HCL and as the source of
+	// credential values for per-module .env files. Never emitted into HCL.
+	resolved map[string]string
 }
 
 // locationAttrs names, per backend type, the attributes that distinguish one
@@ -62,7 +68,8 @@ func ParseBackend(srcDir string) (*BackendBlock, error) {
 			}
 			for _, inner := range blk.Body().Blocks() {
 				if inner.Type() == "backend" && len(inner.Labels()) == 1 {
-					return &BackendBlock{Type: inner.Labels()[0], block: inner}, nil
+					t := inner.Labels()[0]
+					return &BackendBlock{Type: t, block: inner, resolved: resolvedBackendConfig(srcDir, t)}, nil
 				}
 			}
 		}
@@ -99,11 +106,11 @@ func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byMo
 		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: local, s3, azurerm, gcs, consul, http — pass --no-backend to carve without backend blocks", b.Type)
 	}
 	for _, name := range attrs {
-		if _, ok := literalAttr(b.block, name); !ok {
-			return "", nil, fmt.Errorf("backend %q attribute %q is not a plain string in the HCL block (supplied via -backend-config?); the location must be present in HCL to derive per-module locations, or pass --no-backend", b.Type, name)
+		if _, ok := b.locationValue(name); !ok {
+			return "", nil, fmt.Errorf("backend %q attribute %q is neither in the HCL block nor in the root's init-time resolved config; init the root (so -backend-config values are resolved) or pass --no-backend", b.Type, name)
 		}
 	}
-	primary, _ := literalAttr(b.block, attrs[0])
+	primary, _ := b.locationValue(attrs[0])
 	byModule = map[string]string{}
 	for _, m := range modules {
 		byModule[m] = DeriveLocation(primary, m)
@@ -116,12 +123,52 @@ func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byMo
 func (b *BackendBlock) WriteBackendTF(moduleDir, module string) error {
 	f := hclwrite.NewEmptyFile()
 	tfBlk := f.Body().AppendNewBlock("terraform", nil)
-	clone := cloneBlock(b.block)
+	// Built fresh rather than cloned: a single-line source block (e.g. an
+	// empty `backend "http" {}`) cloned and mutated yields invalid HCL.
+	out := tfBlk.Body().AppendNewBlock("backend", []string{b.Type})
+	locs := map[string]bool{}
 	for _, name := range locationAttrs[b.Type] {
-		val, _ := literalAttr(clone, name)
-		clone.Body().SetAttributeValue(name, cty.StringVal(DeriveLocation(val, module)))
+		locs[name] = true
 	}
-	tfBlk.Body().AppendBlock(clone)
+	hclAttrs := b.block.Body().Attributes()
+	hclNames := make([]string, 0, len(hclAttrs))
+	for name := range hclAttrs {
+		if !locs[name] {
+			hclNames = append(hclNames, name)
+		}
+	}
+	sort.Strings(hclNames)
+	for _, name := range hclNames {
+		out.Body().SetAttributeRaw(name, hclAttrs[name].Expr().BuildTokens(nil))
+	}
+	// Non-secret settings that were supplied out-of-band (lock methods, TLS
+	// toggles, regions...) must survive into the carved roots too. Everything
+	// credential-shaped is excluded here — it goes to .env instead.
+	creds := envMapping[b.Type]
+	extras := make([]string, 0, len(b.resolved))
+	for name := range b.resolved {
+		if locs[name] {
+			continue
+		}
+		if _, isCred := creds[name]; isCred {
+			continue
+		}
+		if _, inHCL := b.block.Body().Attributes()[name]; inHCL {
+			continue
+		}
+		if b.resolved[name] == "" {
+			continue
+		}
+		extras = append(extras, name)
+	}
+	sort.Strings(extras)
+	for _, name := range extras {
+		out.Body().SetAttributeValue(name, cty.StringVal(b.resolved[name]))
+	}
+	for _, name := range locationAttrs[b.Type] {
+		val, _ := b.locationValue(name)
+		out.Body().SetAttributeValue(name, cty.StringVal(DeriveLocation(val, module)))
+	}
 	return os.WriteFile(filepath.Join(moduleDir, "backend.tf"), hclwrite.Format(f.Bytes()), 0o644)
 }
 
@@ -133,4 +180,119 @@ func literalAttr(blk *hclwrite.Block, name string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// envMapping names, per backend type, the official engine environment variable
+// for each credential-bearing config attribute. Secrets are persisted only as
+// gitignored per-module .env files in these variables — never into HCL.
+var envMapping = map[string]map[string]string{
+	"http": {
+		"username": "TF_HTTP_USERNAME",
+		"password": "TF_HTTP_PASSWORD",
+	},
+	"s3": {
+		"access_key": "AWS_ACCESS_KEY_ID",
+		"secret_key": "AWS_SECRET_ACCESS_KEY",
+		"token":      "AWS_SESSION_TOKEN",
+	},
+	"azurerm": {
+		"access_key":      "ARM_ACCESS_KEY",
+		"sas_token":       "ARM_SAS_TOKEN",
+		"client_id":       "ARM_CLIENT_ID",
+		"client_secret":   "ARM_CLIENT_SECRET",
+		"tenant_id":       "ARM_TENANT_ID",
+		"subscription_id": "ARM_SUBSCRIPTION_ID",
+	},
+	"gcs": {
+		"credentials":  "GOOGLE_BACKEND_CREDENTIALS",
+		"access_token": "GOOGLE_OAUTH_ACCESS_TOKEN",
+	},
+	"consul": {
+		"access_token": "CONSUL_HTTP_TOKEN",
+	},
+}
+
+// resolvedBackendConfig reads the root's initialized backend configuration
+// from .terraform/terraform.tfstate — the values init resolved, including
+// -backend-config flags the HCL never saw. Scalars only; absent init or a
+// type mismatch yields nil.
+func resolvedBackendConfig(srcDir, backendType string) map[string]string {
+	b, err := os.ReadFile(filepath.Join(srcDir, ".terraform", "terraform.tfstate"))
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Backend struct {
+			Type   string         `json:"type"`
+			Config map[string]any `json:"config"`
+		} `json:"backend"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil || doc.Backend.Type != backendType {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range doc.Backend.Config {
+		switch t := v.(type) {
+		case string:
+			out[k] = t
+		case bool:
+			out[k] = fmt.Sprintf("%t", t)
+		case float64:
+			if t == float64(int64(t)) {
+				out[k] = fmt.Sprintf("%d", int64(t))
+			} else {
+				out[k] = fmt.Sprintf("%g", t)
+			}
+		}
+	}
+	return out
+}
+
+// locationValue resolves a location attribute: the HCL literal, else the
+// root's resolved (init-time) value.
+func (b *BackendBlock) locationValue(name string) (string, bool) {
+	if v, ok := literalAttr(b.block, name); ok {
+		return v, true
+	}
+	v, ok := b.resolved[name]
+	return v, ok && v != ""
+}
+
+// CredentialEnv maps the resolved credential attributes that are absent from
+// HCL to their engine environment variables — the content of a module's .env.
+func (b *BackendBlock) CredentialEnv() map[string]string {
+	out := map[string]string{}
+	for attr, envVar := range envMapping[b.Type] {
+		if _, inHCL := literalAttr(b.block, attr); inHCL {
+			// An HCL-present credential is committed intent (e.g. seeded dev
+			// defaults) and travels in the emitted backend.tf clone as-is.
+			continue
+		}
+		if v, ok := b.resolved[attr]; ok && v != "" {
+			out[envVar] = v
+		}
+	}
+	return out
+}
+
+// WriteEnvFile writes the module's gitignored .env holding the backend
+// credentials as engine environment variables. No file when there is nothing
+// to write. Mode 0600: this file holds secrets.
+func (b *BackendBlock) WriteEnvFile(moduleDir string) (bool, error) {
+	env := b.CredentialEnv()
+	if len(env) == 0 {
+		return false, nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	sb.WriteString("# Backend credentials inherited from the monolith's init-time configuration.\n")
+	sb.WriteString("# This file holds secrets: it must stay gitignored.\n")
+	for _, k := range keys {
+		fmt.Fprintf(&sb, "%s=%s\n", k, env[k])
+	}
+	return true, os.WriteFile(filepath.Join(moduleDir, ".env"), []byte(sb.String()), 0o600)
 }

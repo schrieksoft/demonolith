@@ -116,8 +116,8 @@ func TestParseBackend_Refusals(t *testing.T) {
 	if err != nil || b == nil {
 		t.Fatal(err)
 	}
-	if _, _, err := b.DerivedLocations([]string{"a"}); err == nil || !strings.Contains(err.Error(), "not a plain string") {
-		t.Errorf("missing location attr must refuse, got: %v", err)
+	if _, _, err := b.DerivedLocations([]string{"a"}); err == nil || !strings.Contains(err.Error(), "neither in the HCL block nor") {
+		t.Errorf("missing location attr (and no resolved config) must refuse, got: %v", err)
 	}
 
 	// No backend at all.
@@ -125,5 +125,60 @@ func TestParseBackend_Refusals(t *testing.T) {
 	b, err = emit.ParseBackend(dir)
 	if err != nil || b != nil {
 		t.Errorf("no backend must return nil, got %v, %v", b, err)
+	}
+}
+
+func TestBackend_ResolvedConfigFallbackAndEnv(t *testing.T) {
+	dir := writeBackendFixture(t, "terraform {\n  backend \"http\" {}\n}\n")
+	// Simulate an init'd root: resolved config with locations and credentials.
+	tfDir := filepath.Join(dir, ".terraform")
+	if err := os.MkdirAll(tfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved := `{"backend":{"type":"http","config":{
+		"address":"http://host/api/state/mono",
+		"lock_address":"http://host/api/state/mono/lock",
+		"unlock_address":"http://host/api/state/mono/unlock",
+		"username":"default","password":"hunter2","lock_method":"POST"}}}`
+	if err := os.WriteFile(filepath.Join(tfDir, "terraform.tfstate"), []byte(resolved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := emit.ParseBackend(dir)
+	if err != nil || b == nil {
+		t.Fatalf("ParseBackend: %v, %v", b, err)
+	}
+	mono, byModule, err := b.DerivedLocations([]string{"app"})
+	if err != nil {
+		t.Fatalf("locations must fall back to resolved config: %v", err)
+	}
+	if mono != "http://host/api/state/mono" || byModule["app"] != "http://host/api/state/mono-app" {
+		t.Errorf("derived = %q / %v", mono, byModule)
+	}
+
+	modDir := t.TempDir()
+	if err := b.WriteBackendTF(modDir, "app"); err != nil {
+		t.Fatal(err)
+	}
+	bt, _ := os.ReadFile(filepath.Join(modDir, "backend.tf"))
+	if !strings.Contains(string(bt), "state/mono-app\"") || strings.Contains(string(bt), "hunter2") {
+		t.Errorf("backend.tf must carry derived locations and never credentials:\n%s", bt)
+	}
+
+	wrote, err := b.WriteEnvFile(modDir)
+	if err != nil || !wrote {
+		t.Fatalf("WriteEnvFile: wrote=%v err=%v", wrote, err)
+	}
+	envB, err := os.ReadFile(filepath.Join(modDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(envB)
+	if !strings.Contains(env, "TF_HTTP_USERNAME=default") || !strings.Contains(env, "TF_HTTP_PASSWORD=hunter2") {
+		t.Errorf(".env missing mapped credentials:\n%s", env)
+	}
+	info, _ := os.Stat(filepath.Join(modDir, ".env"))
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf(".env mode = %v, want 0600", info.Mode().Perm())
 	}
 }

@@ -1,14 +1,11 @@
 terraform {
-  # The Snap CD State Store as the remote backend, with the seeded
-  # default/default credentials. demonolith-e2e-1786982964507519935 is replaced by the test
-  # with a unique per-run state file name.
   backend "http" {
-    address        = "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786982964507519935-cluster"
-    lock_address   = "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786982964507519935-cluster/lock"
-    unlock_address = "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786982964507519935-cluster/unlock"
     lock_method    = "POST"
+    password       = "default"
     unlock_method  = "POST"
     username       = "default"
-    password       = "default"
+    address        = "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786989336466217277-cluster"
+    lock_address   = "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786989336466217277-cluster/lock"
+    unlock_address = "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786989336466217277-cluster/unlock"
   }
 }

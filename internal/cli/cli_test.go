@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/terraform-exec/tfexec"
 
 	"github.com/schrieksoft/demonolith/internal/manifest"
 	"github.com/schrieksoft/demonolith/internal/testsupport"
@@ -610,4 +613,100 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(target, b, info.Mode())
 	})
+}
+
+// TestSampleJourney_BackendConfigFlags: the monolith's backend is configured
+// entirely via -backend-config at init (empty HCL block). Plan falls back to
+// the init-time resolved config for locations, refactor run persists the
+// credentials as gitignored per-module .env files, and migrate sources them —
+// the whole journey runs with zero backend flags. Skips without a server.
+func TestSampleJourney_BackendConfigFlags(t *testing.T) {
+	execPath := testsupport.RequireEngine(t)
+	if !snapcdReachable() {
+		t.Skip("no Snap CD server at localhost:5000")
+	}
+
+	base := testsupport.OutDir(t, "sample-snapcd", "cli-flags-only")
+	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("sample-snapcd"))
+
+	stateName := fmt.Sprintf("demonolith-e2e-flags-%d", time.Now().UnixNano())
+	stateBase := "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/" + stateName
+
+	// Empty the backend block: everything arrives via -backend-config.
+	rootTf := filepath.Join(srcDir, "root.tf")
+	b, err := os.ReadFile(rootTf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	start := strings.Index(src, "backend \"http\" {")
+	end := strings.Index(src[start:], "\n  }") + start + len("\n  }")
+	src = src[:start] + "backend \"http\" {}" + src[end:]
+	if err := os.WriteFile(rootTf, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init + apply with the full config via flags.
+	tf, err := tfexec.NewTerraform(srcDir, execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	err = tf.Init(ctx,
+		tfexec.BackendConfig("address="+stateBase),
+		tfexec.BackendConfig("lock_address="+stateBase+"/lock"),
+		tfexec.BackendConfig("unlock_address="+stateBase+"/unlock"),
+		tfexec.BackendConfig("lock_method=POST"),
+		tfexec.BackendConfig("unlock_method=POST"),
+		tfexec.BackendConfig("username=default"),
+		tfexec.BackendConfig("password=default"),
+	)
+	if err != nil {
+		t.Fatalf("init with -backend-config: %v", err)
+	}
+	if err := tf.Apply(ctx); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
+		t.Fatalf("refactor failed: %v", err)
+	}
+	m, err := manifest.Load(manifest.Path(srcDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Backend == nil || !strings.HasSuffix(m.Backend.Modules["networking"], stateName+"-networking") {
+		t.Fatalf("locations must derive from resolved config, got %+v", m.Backend)
+	}
+	// Refactor deals with code only: no credentials materialized yet.
+	envPath := filepath.Join(srcDir, "modules", "networking", ".env")
+	if _, serr := os.Stat(envPath); !os.IsNotExist(serr) {
+		t.Error("refactor must not write .env files; that is migrate's job")
+	}
+	bt, _ := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "backend.tf"))
+	if strings.Contains(string(bt), "password") {
+		t.Errorf("backend.tf must not carry credentials:\n%s", bt)
+	}
+
+	// The whole migration with zero backend flags: migrate run materializes
+	// per-module .env from the root's resolved config and sources it.
+	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
+		t.Fatalf("bare migrate failed: %v", err)
+	}
+	envB, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("expected a per-module .env after migrate run: %v", err)
+	}
+	if !strings.Contains(string(envB), "TF_HTTP_USERNAME=default") || !strings.Contains(string(envB), "TF_HTTP_PASSWORD=default") {
+		t.Errorf(".env missing backend credentials:\n%s", envB)
+	}
+	runR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionRun)
+	if err != nil || runR == nil || !runR.Complete {
+		t.Fatalf("expected a complete run receipt (err %v)", err)
+	}
+	for _, p := range runR.Pushes {
+		if p.Outcome != "pushed" {
+			t.Errorf("module %s outcome = %q, want pushed", p.Module, p.Outcome)
+		}
+	}
 }
