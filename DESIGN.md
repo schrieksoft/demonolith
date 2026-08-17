@@ -30,19 +30,22 @@ of the code and state changes. Demonolith's job is to perform that carve and to
 
 ### v1 scope
 
-Demonolith v1 is a **one-shot splitter**. Three deliberate cuts from the fuller
-design:
+Demonolith is a **one-shot splitter**. One deliberate cut from the fuller
+design: **string-typed inputs** — every generated `variable` is
+`type = string`, matching Snap CD's stringified value-passing; richer type
+coercion is deferred.
 
-1. **Detached roots.** It emits plain Terraform roots with `variable`/`output`
-   boundaries. It does **not** generate `snapcd_*` control-plane resources yet —
-   the human (or a later tool) wires the roots into Snap CD. The cross-module
-   edges it computes are exactly the wiring Snap CD would need.
-2. **Local state only.** It carves state into per-module **local files** and
-   **never pushes** to a real backend. The carved files are both the deliverable
-   and the input the proof consumes.
-3. **String-typed inputs.** Every generated `variable` is `type = string`,
-   matching Snap CD's stringified value-passing. Richer type coercion is
-   deferred.
+State handling is staged, never destructive: `migrate plan` carves **local
+copies** (the monolith's backend is only ever read), the proof consumes those
+copies, and `migrate run` seeds each module's **new, empty** backend location
+from them — the monolith's own state is never written, and retiring it is a
+deliberate human cutover.
+
+The carved roots themselves are plain Terraform with `variable`/`output`
+boundaries — usable detached, with no control plane at all. The wiring into
+Snap CD ships alongside them: by default `refactor` also emits a **bootstrap
+module** (§12a) of `snapcd_*` resources that instructs Snap CD to deploy the
+carved modules, generated entirely from the manifest.
 
 What it keeps — and what makes it more than a code generator — is the **proof
 oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
@@ -52,29 +55,32 @@ oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
 
 ## 2. The pipeline at a glance
 
-What a user runs is four commands, two doing and two judging, connected by the
-manifest:
+What a user runs is two command families, each a produce/execute/judge
+pipeline, connected by the manifest:
 
 ```
    decorate sources
         │
-   ┌────▼─────┐  emits carved roots            ┌──────────┐
-   │ refactor │ ────────────────────────────►  │   diff   │  does the committed
-   │  (code)  │  writes the manifest           │ (judge)  │  plan match the
-   └────┬─────┘                                └──────────┘  committed source?
+   refactor plan ──► demonolith-refactor.yaml     the reviewable plan: placement,
+        │            (planned: no checksum yet)   moves, wiring, state locations
+   refactor run ───► carved roots + backends      executes the plan verbatim;
+        │            + bootstrap; checksum        refuses a drifted source
+   refactor verify   committed output ≡ source    the provenance gate (PR CI)
         │
-        │   demonolith-refactor.yaml — the reviewable contract
+   migrate plan ───► local carve + receipt        pull read-only, back up, carve
         │
-   ┌────▼─────┐  carves state (local copies)   ┌──────────┐
-   │ migrate  │ ────────────────────────────►  │  prove   │  zero-diff proof: does
-   │ (state)  │  writes a receipt              │ (judge)  │  every root plan inert?
-   └──────────┘                                └──────────┘  writes a verdict
+   migrate prove ──► prove verdict                threaded zero-diff proof over
+        │                                         plan's exact carved artifacts
+   migrate run ────► seeded backends + receipt    guarded push: empty targets
+        │                                         only, never forced
+   migrate verify ─► final verdict                the same proof against the
+                                                  real backends — reality
 ```
 
 Underneath, the code side is one shared analysis pipeline, `pipeline.Analyze` —
-pure, offline, deterministic — run by `refactor` (to emit), by `diff` (to
-re-derive and compare), and by `prove` (to recover the boundary the proof
-threads values over):
+pure, offline, deterministic — run by `refactor plan` (to compute), `refactor run` and `refactor verify` (to
+re-derive and compare), and the migrate proofs (to recover the boundary they
+thread values over):
 
 ```
 Parse       *.tf → reference graph                     [hclgraph]
@@ -85,9 +91,10 @@ Boundary    cross-module refs → input/output wiring    [boundary]
 Cycle gate  refuse impossible splits                   [cycle]
 ```
 
-The stages that do I/O sit behind the commands: Emit (`refactor`) writes the
-carved roots via `hclwrite`; StateCarve (`migrate`) and Proof (`prove`) shell
-out to a real `terraform`/`tofu` binary via `terraform-exec`.
+The stages that do I/O sit behind the commands: Emit (`refactor run`) writes
+the carved roots via `hclwrite`; StateCarve (`migrate plan`), the proofs
+(`migrate prove`/`verify`), and the push (`migrate run`) shell out to a real
+`terraform`/`tofu` binary via `terraform-exec`.
 
 Module layout mirrors these stages one-package-per-stage under `internal/`.
 
@@ -138,10 +145,11 @@ never authoritative.
 While collecting refs, each node records two extra things that later stages
 depend on:
 
-- **`RefAttrs`** — for each referenced resource/data producer, the *attribute
-  path* used at the first crossing (`result` in `random_uuid.x.result`). This is
+- **`RefAttrs`** — for each referenced resource/data/module producer, every
+  *distinct attribute path* used (`result` in `random_uuid.x.result`). This is
   what lets an emitted `output` expose `random_uuid.x.result` rather than the
-  whole object.
+  whole object — and lets a producer referenced through several attributes
+  expose one output per attribute.
 - **`DependsOnOnly`** — producers referenced **solely** from a `depends_on`
   meta-argument, and never for their value. `walkBody` intercepts the
   `depends_on` attribute and routes its refs into a separate bucket; a producer
@@ -240,11 +248,14 @@ classifies each of its references:
 
 The key output types:
 
-- **`CrossEdge`** — a value-carrying boundary crossing: *producer module exposes
-  `OutputName`, threaded into consumer module's `InputName`.* Output/input names
-  derive from the producer address (`<type>_<name>`, or `data_<type>_<name>`) so
-  they're unique within a module. The two names are independent by construction;
-  v1 keeps them aligned for readability.
+- **`CrossEdge`** — a value-carrying boundary crossing, per referenced
+  *attribute*: *producer module exposes `OutputName`, threaded into consumer
+  module's `InputName`.* Output/input names derive from the producer address
+  (`<type>_<name>`, or `data_<type>_<name>`); a producer referenced through
+  several distinct attributes gets attr-scoped names (`module_subnet_subnet_id`,
+  `module_subnet_cidr_block`) so each attribute carries its own value, while a
+  single-attribute producer keeps the plain name. The two names are independent
+  by construction; v1 keeps them aligned for readability.
 - **`OrderingEdge`** — a whole-module ordering dependency with **no**
   variable/output. It exists only to say "apply P before C." In detached v1 this
   is *reported* so the operator enforces ordering; Snap CD's graph would carry it
@@ -338,15 +349,20 @@ block travel with the module that uses them, duplicated in the same way
 `source = "./..."` directory is copied into the owning root, its input refs to
 cross-module producers rewrite to `var.<input>`, and a `module.<name>.<output>`
 consumed elsewhere becomes a CrossEdge (producer root re-exposes it as an
-`output`). State moves the whole `module.<name>.*` subtree (§9).
+`output`). State moves the whole `module.<name>.*` subtree (§9). In
+**monorepo mode** (`--monorepo`) local child-module dirs are not copied:
+the call's `source` is rewritten to the relative path from the carved root back
+to the original in-repo dir. The default carves fully standalone roots,
+shippable to separate repos.
 
 Decorator comments are stripped from moved blocks (they've served their purpose
 and would be dead noise in the output). Everything is run through
 `hclwrite.Format` before writing.
 
-**Detached, by design:** no `snapcd_*` blocks are generated. The carved roots are
-valid standalone Terraform; the CrossEdges/OrderingEdges are the recipe for
-wiring them into Snap CD later.
+**The carved roots stay plain Terraform** — no `snapcd_*` blocks inside them,
+so they are valid standalone roots. The Snap CD wiring lives in the separate
+bootstrap module (§12a), generated from the manifest's CrossEdges and
+OrderingEdges.
 
 ---
 
@@ -431,77 +447,94 @@ operationally *and* that the computed wiring is correct — because a wrong
 
 ## 11. The CLI  `[internal/cli]`
 
-Two pipeline commands split exactly at the code/state line, each with a gate
-command that judges its output, connected by the manifest (§12):
+Two command families split exactly at the code/state line, connected by the
+manifest (§12). Every verb has one meaning: `plan` produces, `run` executes
+with guards, `verify` judges the family's output, `prove` rehearses. The bare
+family commands run their steps in order and **pause for approval before the
+run step** — refactor after showing the plan, migrate after showing the proof
+— with `-y`/`--yes` approving automatically (without a TTY the pause is a
+refusal naming `-y`, never a silent proceed). `-i` on any of them is a guided
+walkthrough whose every choice resolves to a flag value or a decorator a
+non-interactive run reproduces.
 
 ```bash
-demonolith refactor                  # code only: analyze + emit + write the manifest (offline)
-demonolith diff                      # gate: committed roots + manifest match the committed source? (offline)
-demonolith migrate --engine tofu     # state only: execute the manifest's state moves (local copies)
-demonolith prove   --engine tofu     # gate: zero-diff proof — graph-threaded plans + verdict sidecar
+demonolith refactor              # plan → run → verify
+demonolith refactor plan         # analyze → write the manifest (offline)
+demonolith refactor run          # execute the manifest: emit everything (offline)
+demonolith refactor verify       # committed output ≡ committed source (offline)
+
+demonolith migrate               # plan → prove → run → verify
+demonolith migrate plan          # pull read-only, back up, carve local copies
+demonolith migrate prove         # threaded zero-diff proof over the carved copies
+demonolith migrate run           # guarded push into the derived backends
+demonolith migrate verify        # the same proof against the real backends
 ```
 
-There are no positional arguments; every command takes `--root-dir`, defaulting
-to the current directory — matching the engines' own convention, so the normal
-invocation is bare from inside the monolith root, and CI jobs running from a
-repo root pass the flag. `--engine {terraform|tofu}` has **no default**: the
-choice of binary is always explicit (`--exec-path` overrides resolution).
+There are no positional arguments; every command takes `--root-dir`,
+defaulting to the current directory. `--engine {terraform|tofu}` has **no
+default** (`--exec-path` overrides resolution).
 
-- **`refactor`** runs `pipeline.Analyze` (which includes the cycle gate), emits
-  the carved roots (default `<root>/.demono/modules`), and writes the manifest.
-  Pure and offline — no engine, no state, safe to re-run while iterating on
-  decorators.
-- **`diff`** re-runs analysis+emit **in memory** and compares against the
-  committed roots and manifest. It writes nothing and takes no placement flags —
-  the remainder-module name comes from the committed manifest, so nothing can
-  skew the comparison. Exit 0 means the committed plan is exactly what the
-  committed source produces; exit 2 means they differ, with a per-file summary
-  of what changed. This is the CI proof that a PR's migration plan is honest.
-- **`migrate`** executes the manifest's state moves (§9 mechanics) against
-  local copies, backup first, and writes a receipt. `--dry-run` prints the
-  resolved `state mv` operation list without an engine or any file touched.
-- **`prove`** runs the proof oracle (§10) as a standalone command, writing a
-  verdict sidecar. It sources carved state in two modes, chosen automatically:
-  **post-migrate** (from an intact receipt — proving the actual migration
-  output) or **ephemeral** (its own throwaway carve into a temp dir, discarded
-  after — what lets a credential-free PR job prove a split whose real migration
-  hasn't happened yet; safe by construction since carving is local-only).
-
-**External inputs** (the monolith's own `var.*`) resolve for the proof the way
-the monolith resolved them, in ascending precedence: the root's auto-loaded
-`terraform.tfvars` / `*.auto.tfvars`(.json), explicit `--var-file` files in the
-order given (a named file that is missing is an error, unlike the auto-loaded
-set), `TF_VAR_*` environment variables, `--var k=v` flags. Only names the
-boundary declares as external are collected; cross-module inputs are **never**
-user-suppliable — the proof threads them from producer outputs itself, so a
-wrong wiring cannot be papered over with a hand-supplied value. `--no-tfvars-file`
-keeps every value in memory (for credentialed CI where secrets must not land in
-a working tree); `--keep-tfvars` retains the `generated.auto.tfvars` files as
-the permanent wiring for detached roots.
+- **`refactor plan`** runs `pipeline.Analyze` (which includes the cycle gate)
+  and writes the planned manifest — nothing emitted. It owns every plan-time
+  choice as flags recorded into the manifest: `--out` (resolved against the
+  root, must be inside it; `.demono/modules` is the scratch default, `modules`
+  the canonical home for committed roots), `--remainder-module`, `--monorepo`
+  (relink in-repo child modules instead of copying, §8), `--no-bootstrap`,
+  `--no-backend`. Run's pre-flights are enforced here so a written plan is a
+  runnable plan: target-dir collisions (a dir that exists and is not
+  demonolith's own recorded output refuses the plan with nothing written),
+  backend-type support, and the reserved `snapcd` module name.
+- **`refactor run`** executes the manifest verbatim — emit carved roots,
+  derived `backend.tf` files, and the bootstrap — then finalizes the
+  `emit_checksum`. No mode flags: everything comes from the manifest. It
+  refuses when the source no longer matches the plan (semantic staleness).
+- **`refactor verify`** re-runs analysis+emit in memory and compares against
+  the committed output — the provenance gate. Default output shows the
+  committed plan being confirmed; `--quiet` is the verdict line, `--silent`
+  the exit code only. `--validate` additionally engine-validates each
+  committed root (`init -backend=false` + `validate`; needs `--engine`, still
+  credential-free). Undo on the code side is git — the carved roots and
+  manifest are ordinary committed files.
+- **`migrate plan`** is the local carve (§9 mechanics): read-only pull (or
+  `--state-file`), backup, `state mv` into per-module files under
+  `<out>/.state/`, an action-"plan" receipt. Idempotent per generation;
+  resumable after partial failure via state-address inspection.
+- **`migrate prove`** proves *plan's output*: it requires the generation's
+  complete plan receipt with intact artifacts, threads producer outputs into
+  consumer inputs (the control plane's runtime role), plans every root against
+  its carved copy, and writes a mode-"prove" verdict. External inputs resolve
+  the way the monolith resolved them — auto-loaded tfvars, `--var-file`,
+  `TF_VAR_*`, `--var`, in ascending precedence — and cross-module inputs are
+  never user-suppliable. Values are threaded in memory by default;
+  `--create-tfvars` materializes `generated.auto.tfvars` per consumer root as
+  the standalone wiring for detached use. PR CI runs plan + prove in the job
+  workspace: the artifacts die with it.
+- **`migrate run`** executes the migration. Preconditions: the plan receipt,
+  and a passing prove verdict **no older than it** — missing or stale refuses
+  with "run `demonolith migrate prove`" (`--unproven` is the explicit
+  override; run never proves on its own). Then per module: init its derived
+  backend (`--backend-config` passes out-of-band values), `state pull` to
+  confirm the target is **empty** (an identical-lineage occupant is an
+  idempotent skip), `state push` the carved file — never forced. A monolith
+  without a backend gets local seeding: each root receives its
+  `terraform.tfstate` in place. An action-"run" receipt records every
+  destination. The monolith's own state is never written.
+- **`migrate verify`** is the post-run judgment: the same threaded proof
+  executed against each root's **real backend** — full init, no staged
+  copies, refresh on — writing a mode-"final" verdict. Requires the run
+  receipt.
 
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational
-error (bad flags, missing binary, engine failure), `2` **negative verdict** —
-the run worked but the answer is "no" (the committed output differs from the
-source, a module plans a create/destroy, a stale or inapplicable manifest). Pipelines can therefore distinguish "the
-split is wrong" from "the job broke". `--output json` on `diff`/`migrate`/`prove`
-replaces the human report with one JSON document on stdout. Without a TTY
-nothing ever prompts; `--interactive` is an error rather than a silent
-fallback.
+error, `2` **negative verdict** — the run worked but the answer is "no" (the
+committed output differs, a module plans a create/destroy, a stale or
+inapplicable manifest). `--output json` replaces the human report with one
+JSON document. Without a TTY nothing ever prompts; `--interactive` is an
+error rather than a silent fallback.
 
-**Interactive mode** (`refactor --interactive`, `migrate --interactive`) is a
-front-end, not a parallel channel: every choice resolves to something that
-exists non-interactively. Refactor's guided loop triages the catchall and
-writes accepted assignments **back into the source as decorators** — the source
-stays the single source of truth, the session's outcome is reviewable in git,
-and the next run reproduces it. Migrate previews the resolved move plan and
-confirms once before executing. Every prompt defaults to the non-destructive
-answer.
-
-Not yet built, by design: `migrate --push` (guarded `state push` into new,
-empty backends — local-only remains the only mode, per §9), `attach`
-(unnecessary for a control plane that ingests the manifest directly), and
-interactive cycle resolution (a cycle is reported, the breaking moves are not
-yet offered).
+Not yet built, by design: interactive cycle resolution (a cycle is reported,
+the breaking moves are not yet offered). Remote pushes are exercised end to
+end against the Snap CD State Store's http backend; cloud backend types
+(s3/azurerm/gcs/consul) are unit-tested at the derivation level only.
 
 ---
 
@@ -513,21 +546,27 @@ The manifest is the durable contract between the code side and the state side:
 is what lets a different actor — CI, a control plane — execute a plan someone
 else computed and reviewed.
 
-**One manifest per root.** `refactor` writes `demonolith-refactor.yaml` into
-the root dir, overwriting it each run. The monolith root is the single refactor
+**One manifest per root, two states.** `refactor plan` writes
+`demonolith-refactor.yaml` into the root dir, overwriting it each run; a
+*planned* manifest has no `emit_checksum` yet, and every downstream command
+refuses it until `refactor run` executes the plan and finalizes the checksum. The monolith root is the single refactor
 source: the plan is always re-derived from it in full, so there is no
 meaningful sequence of manifests — history lives in version control, and
 re-refactoring an already-carved root (decorating inside emitted output) is
 deliberately out of scope.
 
-**Contents:** module assignments (`modules`, with root-relative dirs), the
-`catchall` list, `duplicated_data`, `state_moves` (managed addresses only;
-remainder resources are absent because the carved-down monolith state *becomes*
-the remainder's state), `cross_edges` (the value wiring a control plane needs
-at adoption time, attribute included), `ordering_edges`, and `emit_checksum` —
-a hash over the emitted roots that excludes later-stage artifacts (lock files,
-state files, plan files, generated tfvars), so running the pipeline never
-invalidates its own manifest.
+**Contents:** module assignments (`modules`, with root-relative dirs and each
+module's external input *names*), the `catchall` list, `duplicated_data`,
+`state_moves` (managed addresses only; remainder resources are absent because
+the carved-down monolith state *becomes* the remainder's state), `cross_edges`
+(the value wiring a control plane needs at adoption time, attribute included),
+`ordering_edges`, the output mode (`monorepo`, `bootstrap`, `bootstrap_dir`),
+the `backend` section — the monolith's backend type and **each module's
+derived state location**, putting where every state will live into the
+reviewed plan — and `emit_checksum` — a hash over all generated output
+(carved roots plus the bootstrap module) that excludes later-stage artifacts
+(lock files, state files, plan files, generated tfvars), so running the
+pipeline never invalidates its own manifest.
 
 **The schema is a public, versioned API.** PR reviewers read it, CI parses it,
 a control plane may ingest it. Changes within a major version are additive
@@ -536,53 +575,89 @@ bumps `version`, and every consumer refuses a manifest whose major version it
 doesn't know rather than guessing. External input *names* may appear in
 manifest or sidecars; input *values* never do.
 
-**Sidecars** record execution, timestamped (`{datetime}` is compact UTC so
-lexical order is date order):
+**Sidecars** record execution in fixed-name files, like the manifest itself:
+the datetime lives *inside* each document (`created`), alongside the
+generation tie (`manifest_checksum`), so an external system can tell what
+ran, when, and for which plan without parsing filenames; history lives in
+version control:
 
-- **Receipt** (`demonolith-migrate-{datetime}.yaml`) — which moves ran and with
-  what outcome, the carved state paths, the backup path, and the executed
-  manifest's `emit_checksum`. The checksum is what ties a receipt to one
-  manifest *generation* (the filename is constant), so re-running `refactor`
-  invalidates old receipts. The idempotency check consults the receipt first; a
-  complete receipt for the current generation skips the run. On resume after a
-  partial failure, migrate reuses the working monolith state (never re-pulls —
-  that would corrupt a partial carve), classifies each move as pending or
-  already-applied by inspecting state addresses, and refuses a manifest whose
-  moves match neither side.
-- **Verdict** (`demonolith-prove-{datetime}.yaml`) — per-module
-  create/destroy/update counts, the proof order, and external input names.
-  "This split was proven inert" is an artifact, not terminal scrollback.
+- **Receipts** (`demonolith-migrate-plan.yaml`, `demonolith-migrate-run.yaml`)
+  — one canonical file per migrate step, overwritten per execution: the *plan*
+  receipt records which moves ran, the
+  carved state paths, and the backup path; a *run* receipt records where each
+  module's state was pushed. Both carry the executed manifest's
+  `emit_checksum`, which ties them to one manifest *generation* (the filename
+  is constant), so re-running `refactor` invalidates old receipts. Idempotency
+  consults the receipt first; on resume after a partial carve, migrate reuses
+  the working monolith state (never re-pulls — that would corrupt a partial
+  carve) and classifies each move by inspecting state addresses.
+- **Verdicts** — mode-"prove" (`demonolith-prove.yaml`) judges the carved
+  artifacts before the push; mode-"final" (`demonolith-verify.yaml`) judges
+  the pushed states against the real backends. Both carry per-module create/destroy/update counts, the
+  proof order, external input *names*, and the generation checksum — which is
+  what lets `migrate run` demand a verdict for exactly this plan.
 
-Plan, receipt, proof: the migration's audit trail is three files.
+Plan, receipts, verdicts: the migration's audit trail is files, not terminal
+scrollback.
+
+## 12a. The Snap CD bootstrap module  `[internal/bootstrap]`
+
+By default `refactor` emits one more root, `<out>/snapcd` (the carved-module
+name `snapcd` is reserved for it): a Terraform root of `snapcd_*` resources
+that instructs Snap CD to deploy the carved modules. It is generated **from
+the manifest alone** — proof that the public contract carries everything a
+control plane needs:
+
+- a `snapcd_namespace` (into a stack/runner looked up by name), and one
+  `snapcd_module` per carved root, its `source_subdirectory` derived from the
+  manifest's module dir (prefixed by `var.source_subdirectory_prefix` for
+  monoliths that don't sit at the repo root);
+- every cross edge realized as `snapcd_module_input_from_output` — the
+  input↔output threading the proof performed locally, now performed by Snap CD
+  at runtime;
+- every ordering edge realized as `snapcd_depends_on_module` — the dependency
+  the detached stories could only report, now enforced;
+- every external input passed through as `snapcd_module_input_from_literal`
+  bound to a variable of the bootstrap module itself, so per-environment
+  values are supplied where the bootstrap is applied (an external input whose
+  name collides with a bootstrap variable is a refusal, not a rename).
+
+The bootstrap is covered by the emit checksum (so `refactor verify` and the
+staleness guards treat it as generated output) but is **not** a placement
+module: it
+appears in no state move and is never planned by `prove` — it needs a Snap CD
+server, and applying it is the adoption step, not part of the split.
+`--no-bootstrap` skips it entirely.
 
 ---
 
 ## 13. Usage patterns
 
-The spine is the same everywhere — decorate → `refactor` → review → validate
-(`diff` + `migrate --dry-run` + `prove`) → `migrate` → adopt — and only two
-things vary: who executes each step, and where external input values come from.
-Where the monolith's state lives is deliberately not an axis: migrate takes a
-local `--state-file` or pulls read-only from whatever backend the root
-configures.
+The spine is the same everywhere — decorate → `refactor` → review →
+`migrate` — and only two things vary: who executes each step, and where
+external input values come from. Where the monolith's state lives is
+deliberately not an axis: `migrate plan` takes a local `--state-file` or pulls
+read-only from whatever backend the root configures.
 
-- **Solo.** One person runs the whole spine from inside the root; external
-  inputs come from the root's own tfvars files (auto-loaded, nothing passed by
-  hand); `--keep-tfvars` makes the generated wiring files the permanent
-  value-passing mechanism for the detached roots.
-- **Team CI.** The dev authors the plan (`refactor`, decorators, committed
-  roots + manifest in the PR); PR CI judges it credential-free — `diff` gates
-  honesty, `--dry-run` renders the move list into the job log, `prove` in
-  ephemeral mode gates inertness — with external inputs injected via `TF_VAR_*`
-  or `--var` and `--no-tfvars-file` keeping secrets off disk; a post-merge job
-  executes the reviewed manifest verbatim (`migrate`, then `prove` in
-  post-migrate mode) and archives the receipt and verdict.
-- **Control plane.** Same as team CI through the merge; the migration itself is
-  executed by a control plane that ingests the manifest — `cross_edges` become
-  input-from-output wirings, `ordering_edges` become dependency edges, and the
-  ordering the detached stories could only report is enforced natively. Needs
-  nothing from demonolith beyond the versioned manifest, the JSON verdicts, and
-  the exit-code contract.
+- **Solo.** One person runs both bare pipelines from inside the root
+  (`demonolith refactor --out modules`, then `demonolith migrate --engine
+  tofu`); external inputs come from the root's own tfvars files (auto-loaded,
+  nothing passed by hand); `--create-tfvars` on prove makes the generated
+  wiring files the permanent value-passing mechanism for detached roots.
+- **Team CI.** The dev authors the plan (decorators, `refactor`, committed
+  roots + manifest in the PR); PR CI judges it — `refactor verify` gates
+  provenance credential-free, then `migrate plan` + `migrate prove` gate
+  inertness with backend read access, the carve artifacts living and dying in
+  the job workspace; external inputs injected via `TF_VAR_*` or `--var`, nothing landing on disk
+  by default. A post-merge job executes the
+  reviewed generation verbatim: `migrate plan` → `prove` → `run` → `verify`,
+  archiving the receipts and verdicts.
+- **Control plane.** Same as team CI through the merge; adoption is applying
+  the generated bootstrap module (§12a) against the Snap CD server —
+  `cross_edges` already realized as input-from-output wirings,
+  `ordering_edges` as dependency edges, external inputs bound to the
+  bootstrap's variables. The ordering the detached stories could only report
+  is enforced natively, and the monolith retires.
 
 ---
 
@@ -604,6 +679,13 @@ credentials**:
   and proven zero-diff.
 - **`cyclic/`** — two mutually-referencing resources in different modules; proves
   the cycle gate refuses.
+- **`sample/`** — the realistic showcase monolith (local and GitHub child
+  modules, multi-consumer data sources, a config-file path dependency), driven
+  through both full pipelines end to end.
+- **`sample-snapcd/`** — the same monolith with the Snap CD State Store as its
+  remote backend and Snap CD data sources as the shared configuration:
+  exercises remote read-only pull, http backend derivation, and real pushes
+  into the state store. Self-skips without a local server.
 
 The pure stages (parse, decorator, placement, boundary, cycle, emit) run
 anywhere. The `statemove` and `proof` tests need a real `terraform`/`tofu`

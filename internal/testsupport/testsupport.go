@@ -82,8 +82,11 @@ func CopyInto(t *testing.T, dst, src string) string {
 			CopyInto(t, filepath.Join(dst, name), filepath.Join(src, name))
 			continue
 		}
-		if filepath.Ext(name) != ".tf" {
-			continue // skip lock files, state, tfvars from the committed fixture
+		switch filepath.Ext(name) {
+		case ".tf", ".tfvars", ".json":
+			// fixture content
+		default:
+			continue // skip lock files and state from the committed fixture
 		}
 		b, err := os.ReadFile(filepath.Join(src, name))
 		if err != nil {

@@ -17,7 +17,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/schrieksoft/demonolith/internal/emit"
 	"github.com/schrieksoft/demonolith/internal/pipeline"
 	"github.com/schrieksoft/demonolith/internal/statemove"
 )
@@ -30,10 +29,6 @@ const SchemaVersion = 1
 // re-derives the full plan from the monolith source, so each run overwrites it
 // in place and history lives in version control.
 const FileName = "demonolith-refactor.yaml"
-
-// TimeLayout is the compact UTC timestamp used in receipt and verdict
-// filenames, keeping lexical order equal to date order.
-const TimeLayout = "20060102-150405"
 
 // Manifest is the full refactor plan for one monolith root.
 type Manifest struct {
@@ -56,9 +51,15 @@ type Manifest struct {
 	CrossEdges []CrossEdge `yaml:"cross_edges,omitempty"`
 	// OrderingEdges are whole-module apply-order dependencies with no value.
 	OrderingEdges []OrderingEdge `yaml:"ordering_edges,omitempty"`
-	// EmitChecksum is a hash over the emitted roots, for the staleness guard.
-	EmitChecksum string `yaml:"emit_checksum"`
+	// Backend is the derived state-location plan; nil when no backend is carried.
+	Backend *Backend `yaml:"backend,omitempty"`
+	// EmitChecksum is a hash over all generated output, for the staleness
+	// guard. Empty while the manifest is only planned; run fills it.
+	EmitChecksum string `yaml:"emit_checksum,omitempty"`
 }
+
+// IsRun reports whether the manifest's plan has been executed by refactor run.
+func (m *Manifest) IsRun() bool { return m.EmitChecksum != "" }
 
 // Source identifies the monolith the manifest was computed from.
 type Source struct {
@@ -66,9 +67,29 @@ type Source struct {
 	RemainderModule string `yaml:"remainder_module"`
 }
 
-// Output records where the carved roots were emitted, relative to the root dir.
+// Output records where the carved roots are (to be) emitted, relative to the
+// root dir, and the emit-mode choices made at plan time.
 type Output struct {
 	Dir string `yaml:"dir"`
+	// Monorepo is true when local child-module calls are relinked to their
+	// original in-repo dirs instead of copied into each carved root.
+	Monorepo bool `yaml:"monorepo,omitempty"`
+	// Bootstrap is the plan-time intent to emit the Snap CD bootstrap module.
+	Bootstrap bool `yaml:"bootstrap,omitempty"`
+	// BootstrapDir is the emitted Snap CD bootstrap module dir, relative to the
+	// root dir; filled by run, empty while the manifest is only planned or when
+	// bootstrap emission is off.
+	BootstrapDir string `yaml:"bootstrap_dir,omitempty"`
+}
+
+// Backend records the state-location derivation: the monolith's backend type,
+// its primary location, and the location derived for each module. Informational
+// and reviewable — the emitted backend.tf files are the executable form. Absent
+// when the monolith has no backend block or derivation was disabled.
+type Backend struct {
+	Type     string            `yaml:"type"`
+	Monolith string            `yaml:"monolith"`
+	Modules  map[string]string `yaml:"modules"`
 }
 
 // Module is one carved root.
@@ -77,6 +98,9 @@ type Module struct {
 	Dir string `yaml:"dir"`
 	// Blocks are the assigned addresses (resource, data.*, module.*).
 	Blocks []string `yaml:"blocks"`
+	// ExternalInputs are the module's external input names (former monolith
+	// root variables) — names only, never values.
+	ExternalInputs []string `yaml:"external_inputs,omitempty"`
 }
 
 // StateMove relocates one managed address into a module's state.
@@ -111,31 +135,45 @@ func Path(rootDir string) string {
 	return filepath.Join(rootDir, FileName)
 }
 
-// Build assembles a manifest from an analysis and the emitted roots. rootDir is
-// the monolith root the manifest will live in; module dirs are stored relative
-// to it.
-func Build(a *pipeline.Analysis, rootDir, outDir string, ems []emit.EmittedModule, created time.Time, tool string) (*Manifest, error) {
+// BuildOpts carries the plan-time choices a manifest records beyond the
+// analysis itself.
+type BuildOpts struct {
+	// Monorepo mirrors emit.Emitter.Monorepo.
+	Monorepo bool
+	// Bootstrap is the intent to emit the Snap CD bootstrap module.
+	Bootstrap bool
+	// Backend is the derived state-location plan; nil for none.
+	Backend *Backend
+}
+
+// BuildPlanned assembles a planned manifest from an analysis: the full plan,
+// module dirs included (deterministically <outDir>/<name>), but no emit
+// checksum — run executes the plan and finalizes it.
+func BuildPlanned(a *pipeline.Analysis, rootDir, outDir string, created time.Time, tool string, opts BuildOpts) *Manifest {
 	m := FromAnalysis(a)
 	m.Created = created.UTC().Format(time.RFC3339)
 	m.Tool = tool
 	m.Source.Root = rootDir
-	m.Output = Output{Dir: relTo(rootDir, outDir)}
+	m.Output = Output{Dir: relTo(rootDir, outDir), Monorepo: opts.Monorepo, Bootstrap: opts.Bootstrap}
+	m.Backend = opts.Backend
 
-	dirs := map[string]string{}
-	for _, em := range ems {
-		dirs[em.Module] = em.Dir
-	}
 	for name, mod := range m.Modules {
-		mod.Dir = relTo(rootDir, dirs[name])
+		mod.Dir = relTo(rootDir, filepath.Join(outDir, name))
 		m.Modules[name] = mod
 	}
+	return m
+}
 
-	sum, err := Checksum(m.ModuleDirs(rootDir))
+// Finalize records the run's results on a planned manifest: the bootstrap dir
+// (if one was emitted) and the checksum over all generated output.
+func (m *Manifest) Finalize(rootDir, bootstrapDir string) error {
+	m.Output.BootstrapDir = relTo(rootDir, bootstrapDir)
+	sum, err := Checksum(m.ChecksumDirs(rootDir))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	m.EmitChecksum = sum
-	return m, nil
+	return nil
 }
 
 // FromAnalysis derives the manifest's semantic content (modules, moves, edges)
@@ -153,7 +191,16 @@ func FromAnalysis(a *pipeline.Analysis) *Manifest {
 		for _, addr := range a.Placement.Modules[name] {
 			blocks = append(blocks, addr.String())
 		}
-		m.Modules[name] = Module{Blocks: blocks}
+		var ext []string
+		if b := a.Boundary.Boundaries[name]; b != nil {
+			for _, in := range b.Inputs {
+				if in.External {
+					ext = append(ext, in.Name)
+				}
+			}
+			sort.Strings(ext)
+		}
+		m.Modules[name] = Module{Blocks: blocks, ExternalInputs: ext}
 	}
 
 	for _, addr := range a.Placement.Catchall {
@@ -184,16 +231,10 @@ func FromAnalysis(a *pipeline.Analysis) *Manifest {
 	}
 
 	for _, e := range a.Boundary.CrossEdges {
-		attr := ""
-		if pb := a.Boundary.Boundaries[e.ProducerModule]; pb != nil {
-			if o, ok := pb.Outputs[e.OutputName]; ok {
-				attr = o.Attr
-			}
-		}
 		m.CrossEdges = append(m.CrossEdges, CrossEdge{
 			ProducerModule: e.ProducerModule,
 			Producer:       e.Producer.String(),
-			Attribute:      attr,
+			Attribute:      e.Attr,
 			Output:         e.OutputName,
 			ConsumerModule: e.ConsumerModule,
 			Consumer:       e.Consumer.String(),
@@ -211,11 +252,23 @@ func FromAnalysis(a *pipeline.Analysis) *Manifest {
 	return m
 }
 
-// ModuleDirs resolves every module's emitted dir against rootDir.
+// ModuleDirs resolves every module's emitted dir against rootDir. The
+// bootstrap dir is deliberately absent: these are the roots migrate carves and
+// prove plans.
 func (m *Manifest) ModuleDirs(rootDir string) map[string]string {
 	out := map[string]string{}
 	for name, mod := range m.Modules {
 		out[name] = Resolve(rootDir, mod.Dir)
+	}
+	return out
+}
+
+// ChecksumDirs is ModuleDirs plus the bootstrap dir when one was emitted: the
+// full set of generated output the staleness guard and the diff gate cover.
+func (m *Manifest) ChecksumDirs(rootDir string) map[string]string {
+	out := m.ModuleDirs(rootDir)
+	if m.Output.BootstrapDir != "" {
+		out["snapcd-bootstrap"] = Resolve(rootDir, m.Output.BootstrapDir)
 	}
 	return out
 }
@@ -402,7 +455,7 @@ func SemanticEqual(a, b *Manifest) bool {
 	}
 	for name, am := range a.Modules {
 		bm, ok := b.Modules[name]
-		if !ok || !equalStrings(am.Blocks, bm.Blocks) {
+		if !ok || !equalStrings(am.Blocks, bm.Blocks) || !equalStrings(am.ExternalInputs, bm.ExternalInputs) {
 			return false
 		}
 	}
@@ -433,6 +486,22 @@ func SemanticEqual(a, b *Manifest) bool {
 	for i := range a.OrderingEdges {
 		if a.OrderingEdges[i] != b.OrderingEdges[i] {
 			return false
+		}
+	}
+	if (a.Backend == nil) != (b.Backend == nil) {
+		return false
+	}
+	if a.Backend != nil {
+		if a.Backend.Type != b.Backend.Type || a.Backend.Monolith != b.Backend.Monolith {
+			return false
+		}
+		if len(a.Backend.Modules) != len(b.Backend.Modules) {
+			return false
+		}
+		for k, v := range a.Backend.Modules {
+			if b.Backend.Modules[k] != v {
+				return false
+			}
 		}
 	}
 	return true

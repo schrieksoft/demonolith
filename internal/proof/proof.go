@@ -35,6 +35,13 @@ type Options struct {
 	// ExternalInputs supplies values for external/root inputs (former monolith
 	// var.<name>), keyed by input name.
 	ExternalInputs map[string]string
+	// UseBackend plans each root against its configured real backend instead of
+	// a staged local state copy: a full init (backend included) and no state
+	// staging. This is migrate verify's mode — judgment against reality.
+	UseBackend bool
+	// BackendConfig passes -backend-config values through to init when
+	// UseBackend is set (out-of-band backend settings never stored in HCL).
+	BackendConfig []string
 }
 
 // ModuleProof is the per-module result.
@@ -134,20 +141,57 @@ func Run(ctx context.Context, moduleDirs, moduleStates map[string]string, bound 
 // planModule inits the carved root against a copy of its state, plans with the
 // supplied input vars, asserts the change counts, and extracts output values.
 func planModule(ctx context.Context, dir, statePath string, vars map[string]string, opts Options) (*ModuleProof, map[string]string, error) {
-	// Place the carved state at the module's default local state location.
-	localState := filepath.Join(dir, "terraform.tfstate")
-	if statePath != "" {
-		if err := copyFile(statePath, localState); err != nil {
-			return nil, nil, fmt.Errorf("stage state: %w", err)
-		}
-	}
-
 	tf, err := tfexec.NewTerraform(dir, opts.ExecPath)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := tf.Init(ctx); err != nil {
-		return nil, nil, fmt.Errorf("init: %w", err)
+	if opts.UseBackend {
+		initOpts := []tfexec.InitOption{tfexec.Backend(true)}
+		for _, bc := range opts.BackendConfig {
+			initOpts = append(initOpts, tfexec.BackendConfig(bc))
+		}
+		if err := tf.Init(ctx, initOpts...); err != nil {
+			return nil, nil, fmt.Errorf("init: %w", err)
+		}
+	} else {
+		// The emitted backend.tf (if any) is held aside for the duration: the
+		// proof judges code against carved state, not backend wiring, and the
+		// engine refuses to plan a declared-but-uninitialized backend.
+		backendTF := filepath.Join(dir, "backend.tf")
+		if _, err := os.Stat(backendTF); err == nil {
+			hold := backendTF + ".demono-hold"
+			if err := os.Rename(backendTF, hold); err != nil {
+				return nil, nil, fmt.Errorf("hold backend.tf: %w", err)
+			}
+			defer func() { _ = os.Rename(hold, backendTF) }()
+		}
+		// Stage the carved state at the module's default local state location
+		// and leave any backend block unconfigured, so the staged copy rules.
+		// The staged copy is removed afterwards, and any pre-existing local
+		// state (e.g. one migrate run already seeded) is preserved and put
+		// back: the proof reads state, it does not seed or disturb roots.
+		if statePath != "" {
+			localState := filepath.Join(dir, "terraform.tfstate")
+			preserved := ""
+			if _, err := os.Stat(localState); err == nil {
+				preserved = localState + ".demono-preserve"
+				if err := os.Rename(localState, preserved); err != nil {
+					return nil, nil, fmt.Errorf("preserve existing state: %w", err)
+				}
+			}
+			if err := copyFile(statePath, localState); err != nil {
+				return nil, nil, fmt.Errorf("stage state: %w", err)
+			}
+			defer func() {
+				_ = os.Remove(localState)
+				if preserved != "" {
+					_ = os.Rename(preserved, localState)
+				}
+			}()
+		}
+		if err := tf.Init(ctx, tfexec.Backend(false)); err != nil {
+			return nil, nil, fmt.Errorf("init: %w", err)
+		}
 	}
 
 	planPath := filepath.Join(dir, "demono.tfplan")

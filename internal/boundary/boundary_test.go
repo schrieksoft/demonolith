@@ -66,6 +66,34 @@ func TestPlacement_Assignment(t *testing.T) {
 	}
 }
 
+func TestBoundary_MultiAttrProducer(t *testing.T) {
+	_, _, res := buildFixture(t)
+
+	// database_id references gateway_name through two attributes; each must
+	// get its own attr-scoped input/output so each carries its own value.
+	data := res.Boundaries["data"]
+	net := res.Boundaries["networking"]
+	for attr, name := range map[string]string{
+		"id":     "random_pet_gateway_name_id",
+		"prefix": "random_pet_gateway_name_prefix",
+	} {
+		if _, ok := data.Inputs[name]; !ok {
+			t.Errorf("data missing per-attr input %q", name)
+		}
+		out, ok := net.Outputs[name]
+		if !ok {
+			t.Errorf("networking missing per-attr output %q", name)
+			continue
+		}
+		if out.Attr != attr {
+			t.Errorf("output %q exposes attr %q, want %q", name, out.Attr, attr)
+		}
+	}
+	if _, ok := net.Outputs["random_pet_gateway_name"]; ok {
+		t.Error("multi-attr producer must not also expose a plain, ambiguous output")
+	}
+}
+
 func TestBoundary_CrossEdge(t *testing.T) {
 	_, _, res := buildFixture(t)
 

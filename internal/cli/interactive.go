@@ -24,6 +24,18 @@ func promptLine(label string) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
+// promptString asks for a value, showing the default; Enter keeps it.
+func promptString(label, def string) (string, error) {
+	s, err := promptLine(fmt.Sprintf("%s [%s]: ", label, def))
+	if err != nil {
+		return "", err
+	}
+	if s == "" {
+		return def, nil
+	}
+	return s, nil
+}
+
 // promptYesNo asks a y/n question; empty input takes the default.
 func promptYesNo(label string, def bool) (bool, error) {
 	suffix := " [y/N] "
@@ -45,18 +57,74 @@ func promptYesNo(label string, def bool) (bool, error) {
 	return false, fmt.Errorf("unrecognized answer %q", s)
 }
 
-// runRefactorInteractive is the guided refactor loop: analysis summary,
-// catchall triage, decorator write-back, re-analyze, then a confirmed emit.
-// Every accepted assignment becomes an @demono:move decorator in the source,
-// so the session leaves a state a plain non-interactive run reproduces.
-func runRefactorInteractive(rootDir string, f refactorFlags) error {
+// runRefactorPlanInteractive is the guided plan loop: the run's parameters
+// (root, output dir, remainder name, monorepo, bootstrap), then analysis
+// summary, catchall triage, decorator write-back, re-analyze, and a confirmed
+// manifest write. Every accepted assignment becomes an @demono:move decorator
+// in the source, so the session leaves a state a plain non-interactive run
+// reproduces.
+func runRefactorPlanInteractive(f refactorFlags) error {
+	_, err := refactorPlanInteractive(f)
+	return err
+}
+
+// refactorPlanInteractive returns the resolved flags so the pipeline can
+// continue with run/verify after an interactive plan.
+func refactorPlanInteractive(f refactorFlags) (refactorFlags, error) {
 	if !stdinIsTTY() {
-		return fmt.Errorf("--interactive requires a terminal")
+		return f, fmt.Errorf("--interactive requires a terminal")
 	}
+	outln("Interactive refactor plan — Enter keeps the value in brackets.")
+
+	rootIn, err := promptString("Monolith root", f.rootDir)
+	if err != nil {
+		return f, err
+	}
+	f.rootDir = rootIn
+	rootDir := resolveRoot(rootIn)
+	if _, err := os.Stat(rootDir); err != nil {
+		return f, fmt.Errorf("root %s: %w", rootDir, err)
+	}
+
+	defOut := f.out
+	if defOut == "" {
+		defOut = ".demono/modules"
+	}
+	for {
+		outIn, err := promptString("Output directory inside the root (canonical for committed roots: modules)", defOut)
+		if err != nil {
+			return f, err
+		}
+		if _, err := resolveOut(rootDir, outIn); err != nil {
+			outf("  %v\n", err)
+			continue
+		}
+		f.out = outIn
+		break
+	}
+
+	remainder, err := promptString("Catchall module name for unannotated blocks", f.remainder)
+	if err != nil {
+		return f, err
+	}
+	f.remainder = remainder
+
+	monorepo, err := promptYesNo("Link in-repo child modules by relative path instead of copying them (monorepo layout)?", f.monorepo)
+	if err != nil {
+		return f, err
+	}
+	f.monorepo = monorepo
+
+	withBootstrap, err := promptYesNo("Generate the Snap CD bootstrap module (<out>/snapcd)?", !f.noBootstrap)
+	if err != nil {
+		return f, err
+	}
+	f.noBootstrap = !withBootstrap
+
 	for {
 		a, err := pipeline.Analyze(rootDir, pipeline.Options{Remainder: f.remainder})
 		if err != nil {
-			return err
+			return f, err
 		}
 		reportAnalysis(a)
 
@@ -64,7 +132,7 @@ func runRefactorInteractive(rootDir string, f refactorFlags) error {
 		if len(a.Placement.Catchall) > 0 {
 			triage, err := promptYesNo(fmt.Sprintf("\nTriage the %d unannotated block(s)?", len(a.Placement.Catchall)), true)
 			if err != nil {
-				return err
+				return f, err
 			}
 			if triage {
 				for _, addr := range a.Placement.Catchall {
@@ -76,7 +144,7 @@ func runRefactorInteractive(rootDir string, f refactorFlags) error {
 					}
 					s, err := promptLine(fmt.Sprintf("  %s (module name, Enter = keep in %s): ", addr, f.remainder))
 					if err != nil {
-						return err
+						return f, err
 					}
 					if s == "" {
 						continue
@@ -94,7 +162,7 @@ func runRefactorInteractive(rootDir string, f refactorFlags) error {
 		if len(assignments) > 0 {
 			positions, err := blockPositions(rootDir)
 			if err != nil {
-				return err
+				return f, err
 			}
 			outln("\nDecorators to write:")
 			addrs := make([]string, 0, len(assignments))
@@ -105,48 +173,68 @@ func runRefactorInteractive(rootDir string, f refactorFlags) error {
 			for _, addr := range addrs {
 				pos, ok := positions[addr]
 				if !ok {
-					return fmt.Errorf("cannot locate block %s in the source", addr)
+					return f, fmt.Errorf("cannot locate block %s in the source", addr)
 				}
 				outf("  %s:%d  # @demono:move %s\n", displayPath(rootDir, pos.file), pos.line, strings.Join(assignments[addr], " "))
 			}
 			write, err := promptYesNo("Write these decorators into the source?", false)
 			if err != nil {
-				return err
+				return f, err
 			}
 			if !write {
 				outln("Discarded; nothing written.")
 				continue
 			}
 			if err := insertDecorators(positions, assignments); err != nil {
-				return err
+				return f, err
 			}
 			outln("Decorators written; re-analyzing.")
 			continue
 		}
 
-		outDir := f.out
-		if outDir == "" {
-			outDir = filepath.Join(rootDir, ".demono", "modules")
-		}
-		emitOK, err := promptYesNo(fmt.Sprintf("\nEmit %d module root(s) to %s and write the manifest?", len(a.Placement.ModuleNames()), displayPath(rootDir, outDir)), true)
+		writeOK, err := promptYesNo(fmt.Sprintf("\nWrite the manifest for %d module root(s)?", len(a.Placement.ModuleNames())), true)
 		if err != nil {
-			return err
+			return f, err
 		}
-		if !emitOK {
+		if !writeOK {
 			outln("Aborted; source decorators kept, nothing else written.")
+			return f, errInteractiveAborted
+		}
+		if _, err := runRefactorPlan(f, outputText); err != nil {
+			return f, err
+		}
+		return f, nil
+	}
+}
+
+// errInteractiveAborted marks a user abort inside a guided walkthrough.
+var errInteractiveAborted = fmt.Errorf("aborted")
+
+// runRefactorInteractivePipeline is the bare `refactor -i`: interactive plan,
+// then confirmed run and a quiet verify.
+func runRefactorInteractivePipeline(f refactorFlags) error {
+	resolved, err := refactorPlanInteractive(f)
+	if err != nil {
+		if err == errInteractiveAborted {
 			return nil
 		}
-		ems, m, path, err := emitAndWriteManifest(a, rootDir, outDir)
-		if err != nil {
-			return err
-		}
-		outln("\nEmitted roots:")
-		for _, em := range ems {
-			outf("  %-16s %s (%d files)\n", em.Module, displayPath(rootDir, em.Dir), len(em.Files))
-		}
-		outf("\nManifest: %s (%d state moves, %d cross edges)\n", displayPath(rootDir, path), len(m.StateMoves), len(m.CrossEdges))
+		return err
+	}
+	rootDir := resolveRoot(resolved.rootDir)
+	runOK, err := promptYesNo("Run the plan now (emit the carved roots)?", true)
+	if err != nil {
+		return err
+	}
+	if !runOK {
+		outln("Plan written; run later with `demonolith refactor run`.")
 		return nil
 	}
+	if err := runRefactorRun(rootDir, outputText); err != nil {
+		return err
+	}
+	vf := resolved
+	vf.quiet = true
+	return runRefactorVerify(rootDir, outputText, vf)
 }
 
 func splitTargets(s string) []string {
@@ -238,23 +326,18 @@ func promptEngine() (string, error) {
 	}
 }
 
-// confirmMigrate previews the manifest's move plan and asks for one whole-run
-// confirmation.
-func confirmMigrate(rootDir, path string, f migrateFlags) (bool, error) {
-	name := filepath.Base(path)
-	m, err := manifest.Load(path)
-	if err != nil {
-		return false, err
-	}
-	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum)
+// confirmMigratePlan previews the manifest's move plan and asks for one
+// whole-run confirmation.
+func confirmMigratePlan(rootDir string, m *manifest.Manifest, f migrateFlags) (bool, error) {
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionPlan)
 	if err != nil {
 		return false, err
 	}
 	status := fmt.Sprintf("%d move(s)", len(m.StateMoves))
 	if receipt != nil && receipt.Complete {
-		status = "already applied; will skip"
+		status = "already carved; will skip"
 	}
-	outf("%s — %s\n", name, status)
+	outf("%s — %s\n", manifest.FileName, status)
 	total := 0
 	if receipt == nil || !receipt.Complete {
 		for _, mv := range m.StateMoves {
@@ -262,12 +345,9 @@ func confirmMigrate(rootDir, path string, f migrateFlags) (bool, error) {
 		}
 		total = len(m.StateMoves)
 	}
-	if f.dryRun {
-		return true, nil
-	}
 	engine := f.engine
 	if engine == "" {
 		engine = f.execPath
 	}
-	return promptYesNo(fmt.Sprintf("\nExecute %d move(s) with %s (local copies only; a backup is written first)?", total, engine), false)
+	return promptYesNo(fmt.Sprintf("\nCarve %d move(s) with %s (local copies only; a backup is written first)?", total, engine), false)
 }

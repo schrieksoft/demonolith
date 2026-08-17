@@ -11,46 +11,121 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/schrieksoft/demonolith/internal/manifest"
+	"github.com/schrieksoft/demonolith/internal/pipeline"
 	"github.com/schrieksoft/demonolith/internal/statemove"
 )
 
+// migrateFlags is the union of the migrate subcommands' flags; the bare parent
+// pipeline takes them all.
 type migrateFlags struct {
-	rootDir     string
-	engine      string
-	execPath    string
-	stateFile   string
-	dryRun      bool
-	output      string
-	interactive bool
+	rootDir       string
+	engine        string
+	execPath      string
+	stateFile     string
+	output        string
+	interactive   bool
+	refresh       bool
+	createTfvars  bool
+	varFiles      []string
+	vars          []string
+	backendConfig []string
+	unproven      bool
+	yes           bool
 }
 
 func migrateCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Execute the manifest's state moves against local state copies",
+		Short: "Migrate the state: plan → prove → run → verify",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMigrate(cmd.Context(), f)
+			return runMigratePipeline(cmd.Context(), f)
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required unless --dry-run)")
+	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringVar(&f.stateFile, "state-file", "", "carve this state snapshot instead of pulling from the configured backend")
-	flags.BoolVar(&f.dryRun, "dry-run", false, "print the resolved state-move operation list without touching anything")
+	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
+	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
+	flags.BoolVar(&f.createTfvars, "create-tfvars", false, "materialize generated.auto.tfvars in each consumer root — the standalone wiring for detached use (default threads values in memory only)")
+	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
-	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: select manifests, preview the plan, confirm before executing")
+	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough of the whole migration")
+	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
+
+	cmd.AddCommand(migratePlanCmd(), migrateProveCmd(), migrateRunCmd(), migrateVerifyCmd())
 	return cmd
 }
 
-// migrateManifestReport records one manifest's execution (or dry-run) result.
-type migrateManifestReport struct {
+func migratePlanCmd() *cobra.Command {
+	var f migrateFlags
+	cmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Materialize the migration: pull read-only, back up, carve local state copies, write a receipt",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMigratePlan(cmd.Context(), f)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
+	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
+	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
+	flags.StringVar(&f.stateFile, "state-file", "", "carve this state snapshot instead of pulling from the configured backend")
+	flags.StringVar(&f.output, "output", "text", "report format: text or json")
+	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for root/engine/state source, preview the moves, confirm")
+	return cmd
+}
+
+// loadRunManifest loads the canonical manifest and requires it to be executed
+// (refactor run) and unchanged since (staleness checksum).
+func loadRunManifest(rootDir string) (*manifest.Manifest, error) {
+	path := manifest.Path(rootDir)
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("no %s manifest found in %s; run `demonolith refactor` first", manifest.FileName, rootDir)
+	}
+	m, err := manifest.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	if !m.IsRun() {
+		return nil, fmt.Errorf("manifest %s is planned but not run; run `demonolith refactor run` first", manifest.FileName)
+	}
+	sum, err := manifest.Checksum(m.ChecksumDirs(rootDir))
+	if err != nil {
+		return nil, verdictf("manifest %s: emitted roots unreadable: %v", manifest.FileName, err)
+	}
+	if sum != m.EmitChecksum {
+		return nil, verdictf("manifest %s is stale: the emitted roots changed after it was written; re-run `demonolith refactor`", manifest.FileName)
+	}
+	return m, nil
+}
+
+// analyzeMatching re-analyzes the source and requires it to still match the
+// manifest — the boundary the proof threads over must describe the same plan.
+func analyzeMatching(rootDir string, m *manifest.Manifest) (*pipeline.Analysis, error) {
+	a, err := pipeline.Analyze(rootDir, pipeline.Options{Remainder: m.Source.RemainderModule})
+	if err != nil {
+		return nil, err
+	}
+	fresh, err := freshSemantic(a, rootDir, m)
+	if err != nil {
+		return nil, err
+	}
+	if !manifest.SemanticEqual(fresh, m) {
+		return nil, verdictf("manifest %s does not match the source analysis; re-run `demonolith refactor`", manifest.FileName)
+	}
+	return a, nil
+}
+
+// migratePlanReport records the plan (carve) result.
+type migratePlanReport struct {
 	Manifest     string            `json:"manifest"`
 	Skipped      bool              `json:"skipped"`
 	SkipReason   string            `json:"skip_reason,omitempty"`
-	DryRun       bool              `json:"dry_run,omitempty"`
 	Moves        []moveReport      `json:"moves,omitempty"`
 	ModuleStates map[string]string `json:"module_states,omitempty"`
 	BackupPath   string            `json:"backup_path,omitempty"`
@@ -60,10 +135,10 @@ type migrateManifestReport struct {
 type moveReport struct {
 	Address string `json:"address"`
 	Module  string `json:"module"`
-	Outcome string `json:"outcome"` // planned | moved | skipped
+	Outcome string `json:"outcome"` // moved | skipped
 }
 
-func runMigrate(ctx context.Context, f migrateFlags) error {
+func runMigratePlan(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -78,32 +153,35 @@ func runMigrate(ctx context.Context, f migrateFlags) error {
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
+		outln("Interactive migrate plan — Enter keeps the value in brackets.")
+		rootIn, err := promptString("Monolith root", f.rootDir)
+		if err != nil {
+			return err
+		}
+		f.rootDir = rootIn
 	}
 	rootDir := resolveRoot(f.rootDir)
-
-	path := manifest.Path(rootDir)
-	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("no %s manifest found in %s; run `demonolith refactor` first", manifest.FileName, rootDir)
+	m, err := loadRunManifest(rootDir)
+	if err != nil {
+		return err
 	}
 
-	// The engine is only needed when moves actually execute.
-	execPath := ""
-	if !f.dryRun {
-		if f.interactive && f.engine == "" && f.execPath == "" {
+	if f.interactive {
+		if f.engine == "" && f.execPath == "" {
 			engine, err := promptEngine()
 			if err != nil {
 				return err
 			}
 			f.engine = engine
 		}
-		execPath, err = engineExecPath(f.engine, f.execPath)
-		if err != nil {
-			return err
+		if f.stateFile == "" {
+			sf, err := promptLine("State snapshot file (Enter = pull from the configured backend): ")
+			if err != nil {
+				return err
+			}
+			f.stateFile = sf
 		}
-	}
-
-	if f.interactive {
-		ok, err := confirmMigrate(rootDir, path, f)
+		ok, err := confirmMigratePlan(rootDir, m, f)
 		if err != nil {
 			return err
 		}
@@ -112,15 +190,19 @@ func runMigrate(ctx context.Context, f migrateFlags) error {
 			return nil
 		}
 	}
+	execPath, err := engineExecPath(f.engine, f.execPath)
+	if err != nil {
+		return err
+	}
 
-	rep, err := migrateOne(ctx, rootDir, path, execPath, f)
+	rep, err := migrateCarve(ctx, rootDir, m, execPath, f)
 	var verdict error
 	if err != nil {
 		if ExitCode(err) != ExitVerdict {
 			return err
 		}
 		verdict = err
-		rep = &migrateManifestReport{Manifest: filepath.Base(path), Skipped: true, SkipReason: err.Error()}
+		rep = &migratePlanReport{Manifest: manifest.FileName, Skipped: true, SkipReason: err.Error()}
 	}
 
 	if mode == outputJSON {
@@ -129,54 +211,27 @@ func runMigrate(ctx context.Context, f migrateFlags) error {
 		}
 		return verdict
 	}
-	printMigrateReport(rootDir, *rep)
+	printMigratePlanReport(rootDir, *rep)
 	return verdict
 }
 
-// migrateOne executes (or dry-runs) the manifest.
-func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFlags) (*migrateManifestReport, error) {
-	name := filepath.Base(path)
-	rep := &migrateManifestReport{Manifest: name, DryRun: f.dryRun}
+// migrateCarve performs the local carve and writes the plan receipt.
+func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, execPath string, f migrateFlags) (*migratePlanReport, error) {
+	rep := &migratePlanReport{Manifest: manifest.FileName}
 
-	m, err := manifest.Load(path)
-	if err != nil {
-		return nil, err
-	}
-
-	// Idempotency: a manifest generation whose receipt records a complete
-	// execution is skipped, so re-running migrate resumes rather than
-	// erroring. Receipts are tied to a generation by emit checksum, so a
-	// re-run of refactor invalidates old receipts.
-	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum)
+	// Idempotency: a generation whose plan receipt records a complete carve is
+	// skipped, so re-running resumes rather than erroring.
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionPlan)
 	if err != nil {
 		return nil, err
 	}
 	if receipt != nil && receipt.Complete {
 		rep.Skipped = true
-		rep.SkipReason = "already applied (complete receipt found)"
+		rep.SkipReason = "already carved (complete plan receipt found)"
 		return rep, nil
-	}
-
-	// Staleness: the emitted roots must be exactly what the manifest describes.
-	moduleDirs := m.ModuleDirs(rootDir)
-	sum, err := manifest.Checksum(moduleDirs)
-	if err != nil {
-		return nil, verdictf("manifest %s: emitted roots unreadable: %v", name, err)
-	}
-	if sum != m.EmitChecksum {
-		return nil, verdictf("manifest %s is stale: the emitted roots changed after it was written; re-run `demonolith refactor`", name)
 	}
 
 	plan := m.Plan()
-	if f.dryRun {
-		workDir := filepath.Join(m.OutDir(rootDir), ".state")
-		for _, mv := range m.StateMoves {
-			rep.Moves = append(rep.Moves, moveReport{Address: mv.Address, Module: mv.Module, Outcome: "planned"})
-		}
-		rep.BackupPath = filepath.Join(workDir, "monolith.demono-backup.tfstate")
-		return rep, nil
-	}
-
 	workDir := filepath.Join(m.OutDir(rootDir), ".state")
 	opts := statemove.Options{
 		ExecPath:        execPath,
@@ -191,7 +246,7 @@ func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFl
 	// Resume: filter out moves already applied in a prior partial run, and
 	// refuse a manifest whose moves match neither the working state nor a
 	// carved module state.
-	filtered, outcomes, err := filterApplied(prep, workDir, plan, name)
+	filtered, outcomes, err := filterApplied(prep, workDir, plan, manifest.FileName)
 	if err != nil {
 		return nil, err
 	}
@@ -227,8 +282,9 @@ func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFl
 		Version:          manifest.SchemaVersion,
 		Created:          now.UTC().Format(time.RFC3339),
 		Tool:             toolString(),
-		Manifest:         name,
+		Manifest:         manifest.FileName,
 		ManifestChecksum: m.EmitChecksum,
+		Action:           manifest.ActionPlan,
 		Engine:           f.engine,
 		Complete:         true,
 		ModuleStates:     map[string]string{},
@@ -240,12 +296,38 @@ func migrateOne(ctx context.Context, rootDir, path, execPath string, f migrateFl
 	for _, mv := range rep.Moves {
 		r.Moves = append(r.Moves, manifest.MoveOutcome(mv))
 	}
-	receiptPath, err := manifest.WriteReceipt(r, rootDir, now)
+	receiptPath, err := manifest.WriteReceipt(r, rootDir)
 	if err != nil {
 		return nil, err
 	}
 	rep.ReceiptPath = receiptPath
 	return rep, nil
+}
+
+// planReceiptStates loads the current generation's complete plan receipt and
+// resolves its carved state paths, requiring every file (and the backup) to be
+// intact.
+func planReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, map[string]string, string, error) {
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionPlan)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if receipt == nil || !receipt.Complete {
+		return nil, nil, "", fmt.Errorf("no complete migrate plan for this manifest generation; run `demonolith migrate plan` first")
+	}
+	states := map[string]string{}
+	for mod, p := range receipt.ModuleStates {
+		rp := manifest.Resolve(rootDir, p)
+		if _, err := os.Stat(rp); err != nil {
+			return nil, nil, "", fmt.Errorf("carved state for module %q missing (%s); re-run `demonolith migrate plan`", mod, rp)
+		}
+		states[mod] = rp
+	}
+	backup := manifest.Resolve(rootDir, receipt.BackupPath)
+	if _, err := os.Stat(backup); err != nil {
+		return nil, nil, "", fmt.Errorf("state backup missing (%s); re-run `demonolith migrate plan`", backup)
+	}
+	return receipt, states, backup, nil
 }
 
 // filterApplied drops moves a prior partial run already executed. A move whose
@@ -297,24 +379,16 @@ func relForReceipt(rootDir, p string) string {
 	return rel
 }
 
-func printMigrateReport(rootDir string, rep migrateManifestReport) {
+func printMigratePlanReport(rootDir string, rep migratePlanReport) {
 	if rep.Skipped {
 		outf("%s: skipped — %s\n", rep.Manifest, rep.SkipReason)
 		return
 	}
-	if rep.DryRun {
-		outf("%s: dry run — %d move(s):\n", rep.Manifest, len(rep.Moves))
-		for _, mv := range rep.Moves {
-			outf("  state mv %-40s -> %s\n", mv.Address, mv.Module)
-		}
-		outf("  backup would be written to %s\n", displayPath(rootDir, rep.BackupPath))
-		return
-	}
-	outf("%s: applied\n", rep.Manifest)
+	outf("%s: carved\n", rep.Manifest)
 	for _, mv := range rep.Moves {
 		outf("  %-8s %-40s -> %s\n", mv.Outcome, mv.Address, mv.Module)
 	}
-	outln("\nCarved state (local copies, nothing pushed):")
+	outln("\nCarved state (local copies, nothing pushed yet):")
 	mods := make([]string, 0, len(rep.ModuleStates))
 	for m := range rep.ModuleStates {
 		mods = append(mods, m)
@@ -325,4 +399,40 @@ func printMigrateReport(rootDir string, rep migrateManifestReport) {
 	}
 	outf("  backup:  %s\n", displayPath(rootDir, rep.BackupPath))
 	outf("  receipt: %s\n", displayPath(rootDir, rep.ReceiptPath))
+}
+
+// runMigratePipeline is the bare `demonolith migrate`: plan → prove → run →
+// verify, run's prove-verdict guard satisfied by the prove step.
+func runMigratePipeline(ctx context.Context, f migrateFlags) error {
+	steps := []struct {
+		name    string
+		fn      func() error
+		confirm bool
+	}{
+		{"migrate plan", func() error { return runMigratePlan(ctx, f) }, false},
+		{"migrate prove", func() error { return runMigrateProve(ctx, f) }, false},
+		{"migrate run", func() error { return runMigrateRun(ctx, f) }, true},
+		{"migrate verify", func() error { return runMigrateVerify(ctx, f) }, false},
+	}
+	for _, s := range steps {
+		if s.confirm && !f.yes {
+			if !stdinIsTTY() {
+				return fmt.Errorf("the pipeline pauses for approval after prove; pass -y to approve automatically, or run the subcommands individually")
+			}
+			ok, err := promptYesNo("\nProceed with the migration (seed the state destinations)?", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				outln("Stopped before migrate run; the carve and proof are in place.")
+				return nil
+			}
+		}
+		outf("── %s ──\n", s.name)
+		if err := s.fn(); err != nil {
+			return err
+		}
+		outln("")
+	}
+	return nil
 }

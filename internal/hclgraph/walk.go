@@ -93,15 +93,24 @@ func (g *Graph) recordTraversal(tr hcl.Traversal, c *refCollector) {
 
 	// Capture the attribute path following the node prefix, for resource/data/
 	// module producers, so an emitted output can expose the right attribute
-	// (e.g. module.idgen.id -> "id"). Record only the first occurrence.
+	// (e.g. module.idgen.id -> "id"). Every distinct path is recorded: a
+	// consumer may use several attributes of one producer, and each needs its
+	// own output.
 	if addr.Kind == KindResource || addr.Kind == KindData || addr.Kind == KindModule {
-		if _, have := c.attrs[key]; !have {
-			prefixLen := len(addr.refPrefix())
-			if len(segs) > prefixLen {
-				c.attrs[key] = strings.Join(segs[prefixLen:], ".")
-			} else {
-				c.attrs[key] = ""
+		prefixLen := len(addr.refPrefix())
+		attr := ""
+		if len(segs) > prefixLen {
+			attr = strings.Join(segs[prefixLen:], ".")
+		}
+		found := false
+		for _, a := range c.attrs[key] {
+			if a == attr {
+				found = true
+				break
 			}
+		}
+		if !found {
+			c.attrs[key] = append(c.attrs[key], attr)
 		}
 	}
 }

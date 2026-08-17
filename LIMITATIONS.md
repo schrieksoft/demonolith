@@ -1,30 +1,38 @@
 # Limitations
 
-Inherent limits of the carve — things demonolith cannot make true on its own, because the information isn't in the graph or the fix would require judgment. Each entry says what breaks, how it shows up, and how to handle it manually. The proof (`demonolith prove`) is the net under all of them: a split that hits one of these and isn't handled surfaces as a plan error or a non-zero diff, not as silent corruption.
+Inherent limits of the carve — things demonolith cannot make true on its own, because the information isn't in the graph or the fix would require judgment. Each entry says what breaks, how it shows up, and how to handle it manually. The proofs (`migrate prove` and `migrate verify`) are the net under all of them: a split that hits one of these and isn't handled surfaces as a plan error or a non-zero diff, not as silent corruption.
 
 ## Path-relative references
 
 **What:** `path.module` / `path.root`, relative paths in `file()` / `templatefile()`, and file-reading data sources (`local_file`) resolve against the root that evaluates them. Carved roots live in a different directory, and demonolith neither copies referenced files nor rewrites paths.
 
-**Shows up as:** `prove` (or any plan of a carved root) failing with file-not-found. Because data sources follow their consumers automatically, one file-reading data source can land in several carved roots — every one of them needs the file.
+**Shows up as:** `migrate prove` (or any plan of a carved root) failing with file-not-found. Because data sources follow their consumers automatically, one file-reading data source can land in several carved roots — every one of them needs the file.
 
-**Handle it:** before refactoring, either restructure the monolith to pass file *content* through a variable (`var.environment_json` + `jsondecode`) so nothing path-relative crosses the carve, or after refactoring copy the referenced files into each carved root that holds a copy of the reading block. The restructure is the durable fix; the copy has to be repeated after every re-emit.
+**Handle it:** the durable fix is restructuring the monolith before refactoring to pass file *content* through a variable (`var.environment_json` + `jsondecode`) so nothing path-relative crosses the carve. Copying the referenced files into the carved roots also works, but interacts with the guards: files added after `refactor run` invalidate the emit checksum, so the migrate family refuses. The sequence that works is copy the files into the emitted roots, then `refactor run` **again** so the checksum includes them — migrate then passes, but `refactor verify` still refuses (a fresh emit does not produce the copies), so a team flow gated on verify needs the restructure, not the copy.
 
 ## Sensitive values crossing a boundary
 
 **What:** cross-module wiring is generated `output` / `variable` pairs, and generated outputs are plain — no `sensitive = true`. A provider-marked sensitive value (a private key, a password) that crosses a boundary makes the engine refuse the producer root ("Output refers to sensitive values"). The same applies when a data source's copies read a sensitive value from another module.
 
-**Shows up as:** the producer module erroring at plan time during `prove`.
+**Shows up as:** the producer module erroring at plan time during `migrate prove`.
 
-**Handle it:** prefer placement that keeps the sensitive edge inside one module (decorate producer and consumer into the same module — for a data source, that means keeping its consumers with the resource it reads). Hand-editing `sensitive = true` into an emitted root works mechanically but makes `diff` and the staleness checksum refuse by design; if you must, do it as a documented post-adoption edit, after `migrate` and `prove` have run.
+**Handle it:** prefer placement that keeps the sensitive edge inside one module (decorate producer and consumer into the same module — for a data source, that means keeping its consumers with the resource it reads). Hand-editing `sensitive = true` into an emitted root works mechanically but makes `refactor verify` and the staleness checksum refuse by design; if you must, do it as a documented post-adoption edit, after `migrate` and `prove` have run.
 
-## No backend configuration is carried
+## Backend derivation covers common types only
 
-**What:** carved roots get no `backend`/`cloud` block; `migrate` writes local state files and never pushes.
+**What:** the monolith's `backend` block is carried into every carved root with the state location postfixed per module — for `local`, `s3`, `azurerm`, `gcs`, `consul`, and `http`. Other backend types, and locations supplied only via `-backend-config` (not present in HCL), are refused at plan time. A `cloud` block is not handled at all.
 
-**Shows up as:** carved roots operating on local state until you say otherwise.
+**Shows up as:** `refactor plan` refusing with the backend type or attribute named.
 
-**Handle it:** after `prove`, add a backend config to each root, then move its carved state in with `tofu init -migrate-state` (or a careful `state push` into an **empty** backend location — never `-force`). Do the monolith's backend teardown last, after every root is proven against its new home.
+**Handle it:** pass `--no-backend` to carve without backend blocks and wire the backends by hand (`tofu init -migrate-state`, or a careful `state push` into an **empty** location — never `-force`), or move the location attribute into HCL. Either way the monolith's own state is never written by demonolith; retiring it after every root proves clean is the human cutover step.
+
+## The prove verdict ages between prove and run
+
+**What:** `migrate prove` judges the carved artifacts against the state as it was when `migrate plan` pulled it; `migrate run` pushes at a later moment. Real infrastructure drifting in between is invisible to the verdict — the same plan/apply gap every plan-then-execute system has.
+
+**Shows up as:** `migrate verify` (which plans against the real backends, refresh on) reporting diffs that prove did not.
+
+**Handle it:** keep the plan→prove→run window short (the bare `demonolith migrate` pipeline makes it seconds), run the migration inside a change freeze for the monolith, and treat `migrate verify` as the final authority.
 
 ## Whole-block placement only
 
@@ -58,15 +66,23 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 **What:** a cross-module `depends_on` becomes an ordering edge — recorded in the manifest, enforced by nothing in detached use. Value edges self-enforce (a consumer can't plan without its input); ordering edges don't.
 
-**Handle it:** apply the roots in the manifest's order (`prove` prints the topo order), wire the ordering into your pipeline, or adopt into a control plane whose dependency graph carries it natively.
+**Handle it:** apply the roots in the manifest's order (the proofs print the topo order), wire the ordering into your pipeline, or adopt into a control plane whose dependency graph carries it natively.
 
 ## Cross-module values are strings
 
 **What:** every generated variable is `type = string`, matching stringified value-passing: scalars arrive bare, composites as compact JSON.
 
-**Shows up as:** a consumer that indexes into a composite (`producer.list[0]`) receiving a JSON string instead — a plan error or a diff at `prove` time.
+**Shows up as:** a consumer that indexes into a composite (`producer.list[0]`) receiving a JSON string instead — a plan error or a diff at proof time.
 
 **Handle it:** keep composite-shaped edges inside one module, or adapt the consumer to `jsondecode(var.<input>)` in the monolith before refactoring so the same expression survives on both sides of the carve.
+
+## Expression-valued module outputs cannot be materialized from state
+
+**What:** the generated `generated.auto.tfvars` files resolve cross-module input values from the *applied* state. Child-module outputs are not stored in state, so a module-call output can only be resolved when it is a bare passthrough of a resource attribute; an output built from an expression (`"https://${random_uuid.x.result}..."`) cannot.
+
+**Shows up as:** `migrate prove --create-tfvars` erroring with "cannot resolve module.<name>.<output> from state". The default in-memory threading is unaffected — it evaluates *planned* values, expressions included.
+
+**Handle it:** skip `--create-tfvars` (the default proof works); for detached adoption, where the tfvars files were going to be the permanent wiring, supply the affected inputs by hand — or let a control plane thread them at runtime, which is not subject to this at all.
 
 ## Data sources are re-read in every module that holds a copy
 

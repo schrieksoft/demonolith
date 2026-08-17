@@ -11,6 +11,7 @@ package statemove
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,6 +131,14 @@ func Prepare(ctx context.Context, srcDir, workDir string, opts Options) (*Prepar
 	backup := filepath.Join(workDir, "monolith.demono-backup.tfstate")
 
 	if _, err := os.Stat(monolithState); err == nil {
+		// Resuming an interrupted carve: the working copy is the truth (a
+		// re-pull would resurrect already-moved entries). But it must be the
+		// same state we would be carving now — a leftover workDir from an
+		// earlier backend or source is a silent wrong-world carve. Verify the
+		// lineage against the current source before trusting it.
+		if err := verifySameLineage(ctx, srcDir, monolithState, backup, opts); err != nil {
+			return nil, err
+		}
 		return &Prepared{MonolithState: monolithState, BackupPath: backup, Resumed: true}, nil
 	}
 
@@ -146,6 +155,62 @@ func Prepare(ctx context.Context, srcDir, workDir string, opts Options) (*Prepar
 		return nil, fmt.Errorf("backup state: %w", err)
 	}
 	return &Prepared{MonolithState: monolithState, BackupPath: backup}, nil
+}
+
+// verifySameLineage compares the resumable working state's lineage against
+// the current source state (the --state-file, or a read-only pull to a temp
+// file). A mismatch means the workDir is stale — from another backend, or an
+// earlier life of this root — and resuming would carve the wrong world.
+func verifySameLineage(ctx context.Context, srcDir, monolithState, backupState string, opts Options) error {
+	tmp, err := os.CreateTemp("", "demono-lineage-*.tfstate")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if opts.SourceStatePath != "" {
+		if err := copyFile(opts.SourceStatePath, tmpPath); err != nil {
+			return err
+		}
+	} else if err := pullState(ctx, srcDir, tmpPath, opts); err != nil {
+		return fmt.Errorf("pull state for resume check: %w", err)
+	}
+
+	srcLineage, err := stateLineage(tmpPath)
+	if err != nil {
+		return err
+	}
+	// The working copy's lineage matches the backup taken at carve start; use
+	// the backup (the working copy legitimately diverges in serial as moves
+	// are applied, but never in lineage).
+	workLineage, err := stateLineage(backupState)
+	if err != nil {
+		workLineage, err = stateLineage(monolithState)
+		if err != nil {
+			return err
+		}
+	}
+	if srcLineage == "" || srcLineage != workLineage {
+		return fmt.Errorf("the working state in %s has a different lineage than the current source state — it is stale (an earlier backend or source?); delete the directory to carve fresh", filepath.Dir(monolithState))
+	}
+	return nil
+}
+
+// stateLineage reads the lineage of a state file.
+func stateLineage(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var s struct {
+		Lineage string `json:"lineage"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return "", fmt.Errorf("parse state %s: %w", path, err)
+	}
+	return s.Lineage, nil
 }
 
 // Carve executes the plan against local state copies and writes one state file

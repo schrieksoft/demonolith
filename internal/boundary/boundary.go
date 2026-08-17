@@ -33,6 +33,7 @@ type CrossEdge struct {
 	ConsumerModule string
 	Producer       hclgraph.Address // the referenced node
 	Consumer       hclgraph.Address // the referencing node
+	Attr           string           // referenced attribute path; "" = whole object
 	OutputName     string           // output declared in producer module
 	InputName      string           // variable declared in consumer module
 }
@@ -69,7 +70,8 @@ type Output struct {
 	// Node is the address whose value the output exposes.
 	Node hclgraph.Address
 	// Attr is the referenced attribute path (e.g. "result"); empty means the
-	// whole object. v1 records the first crossing attribute for naming.
+	// whole object. A producer referenced through several attributes exposes
+	// one output per attribute, each with its own name.
 	Attr string
 }
 
@@ -89,11 +91,15 @@ type Result struct {
 	Boundaries    map[string]*ModuleBoundary
 	CrossEdges    []CrossEdge
 	OrderingEdges []OrderingEdge
+	// multiAttr marks producers referenced through more than one distinct
+	// attribute anywhere in the root; their outputs/inputs get attr-scoped
+	// names so each attribute carries its own value.
+	multiAttr map[string]bool
 }
 
 // Compute derives the boundary surface for every module in the placement.
 func Compute(g *hclgraph.Graph, p *placement.Placement) (*Result, error) {
-	res := &Result{Boundaries: map[string]*ModuleBoundary{}}
+	res := &Result{Boundaries: map[string]*ModuleBoundary{}, multiAttr: multiAttrProducers(g)}
 	for _, m := range p.ModuleNames() {
 		res.Boundaries[m] = &ModuleBoundary{
 			Module:  m,
@@ -122,10 +128,11 @@ func Compute(g *hclgraph.Graph, p *placement.Placement) (*Result, error) {
 		for _, ref := range consumer.Refs {
 			switch ref.Kind {
 			case hclgraph.KindResource, hclgraph.KindData, hclgraph.KindModule:
-				attr := consumer.RefAttrs[ref.String()]
-				for _, cm := range consumerMods {
-					if err := res.wireProducer(p, consumer.Addr, ref, cm, attr); err != nil {
-						return nil, err
+				for _, attr := range attrsOf(consumer.RefAttrs, ref) {
+					for _, cm := range consumerMods {
+						if err := res.wireProducer(p, consumer.Addr, ref, cm, attr); err != nil {
+							return nil, err
+						}
 					}
 				}
 			case hclgraph.KindVariable:
@@ -205,9 +212,10 @@ func (res *Result) wireProviders(g *hclgraph.Graph, p *placement.Placement) erro
 			for _, ref := range prov.Refs {
 				switch ref.Kind {
 				case hclgraph.KindResource, hclgraph.KindData, hclgraph.KindModule:
-					attr := prov.RefAttrs[ref.String()]
-					if err := res.wireProducer(p, providerConsumer(prov), ref, module, attr); err != nil {
-						return err
+					for _, attr := range attrsOf(prov.RefAttrs, ref) {
+						if err := res.wireProducer(p, providerConsumer(prov), ref, module, attr); err != nil {
+							return err
+						}
 					}
 				case hclgraph.KindVariable, hclgraph.KindLocal:
 					// var/local carried into the module by emit's structural pass.
@@ -265,20 +273,93 @@ func (res *Result) wireProducer(p *placement.Placement, consumer, producer hclgr
 	sort.Strings(sorted)
 	pm := sorted[0]
 
-	outName := outputName(producer)
-	inName := inputName(producer)
+	outName := res.edgeName(producer, attr)
+	inName := outName
 
 	res.Boundaries[pm].Outputs[outName] = Output{Name: outName, Node: producer, Attr: attr}
 	res.Boundaries[cm].Inputs[inName] = Input{Name: inName, FromModule: pm, FromOutput: outName}
+	for _, e := range res.CrossEdges {
+		if e.ConsumerModule == cm && e.InputName == inName && e.Consumer == consumer {
+			return nil
+		}
+	}
 	res.CrossEdges = append(res.CrossEdges, CrossEdge{
 		ProducerModule: pm,
 		ConsumerModule: cm,
 		Producer:       producer,
 		Consumer:       consumer,
+		Attr:           attr,
 		OutputName:     outName,
 		InputName:      inName,
 	})
 	return nil
+}
+
+// edgeName derives the output/input name for a producer reference. A producer
+// referenced through a single attribute everywhere keeps the plain
+// address-derived name; one referenced through several attributes gets one
+// name per attribute, so each carries its own value.
+func (res *Result) edgeName(producer hclgraph.Address, attr string) string {
+	base := outputName(producer)
+	if attr == "" || !res.multiAttr[producer.String()] {
+		return base
+	}
+	return base + "_" + sanitizeAttr(attr)
+}
+
+// sanitizeAttr turns an attribute path into a name fragment.
+func sanitizeAttr(attr string) string {
+	out := make([]byte, len(attr))
+	for i := 0; i < len(attr); i++ {
+		c := attr[i]
+		if c == '.' || c == '-' {
+			c = '_'
+		}
+		out[i] = c
+	}
+	return string(out)
+}
+
+// attrsOf returns the recorded attribute paths for a producer reference, or a
+// single whole-object entry when none were recorded.
+func attrsOf(refAttrs map[string][]string, ref hclgraph.Address) []string {
+	attrs := refAttrs[ref.String()]
+	if len(attrs) == 0 {
+		return []string{""}
+	}
+	return attrs
+}
+
+// multiAttrProducers finds producers referenced through more than one distinct
+// non-empty attribute path anywhere in the root — including from provider
+// config bodies — so their edges can be attr-scoped consistently everywhere.
+func multiAttrProducers(g *hclgraph.Graph) map[string]bool {
+	byProducer := map[string]map[string]bool{}
+	record := func(refAttrs map[string][]string) {
+		for producer, attrs := range refAttrs {
+			if byProducer[producer] == nil {
+				byProducer[producer] = map[string]bool{}
+			}
+			for _, a := range attrs {
+				if a != "" {
+					byProducer[producer][a] = true
+				}
+			}
+		}
+	}
+	for _, n := range g.SortedNodes() {
+		record(n.RefAttrs)
+	}
+	for _, prov := range g.Providers() {
+		record(prov.RefAttrs)
+	}
+	out := map[string]bool{}
+	for producer, attrs := range byProducer {
+		if len(attrs) > 1 {
+			out[producer] = true
+		}
+	}
+	return out
 }
 
 // addOrdering records a whole-module ordering edge for a cross-module
@@ -312,9 +393,11 @@ func (res *Result) resolveLocal(g *hclgraph.Graph, p *placement.Placement, local
 	}
 	for _, ref := range ln.Refs {
 		switch ref.Kind {
-		case hclgraph.KindResource, hclgraph.KindData:
-			if err := res.wireProducer(p, local, ref, cm, ln.RefAttrs[ref.String()]); err != nil {
-				return err
+		case hclgraph.KindResource, hclgraph.KindData, hclgraph.KindModule:
+			for _, attr := range attrsOf(ln.RefAttrs, ref) {
+				if err := res.wireProducer(p, local, ref, cm, attr); err != nil {
+					return err
+				}
 			}
 		case hclgraph.KindVariable:
 			// Declared root variables travel with the module (carved by emit);
@@ -352,8 +435,3 @@ func outputName(a hclgraph.Address) string {
 	}
 }
 
-// inputName mirrors outputName; the consumer's variable name is independent of
-// the producer's output name but v1 keeps them aligned for readability.
-func inputName(a hclgraph.Address) string {
-	return outputName(a)
-}

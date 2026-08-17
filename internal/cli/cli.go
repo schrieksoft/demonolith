@@ -1,7 +1,7 @@
-// Package cli defines the demonolith command tree: refactor (code only),
-// diff (the sync gate), migrate (state only), and prove (the zero-diff
-// proof), connected by the manifest. One command per side of the code/state
-// line.
+// Package cli defines the demonolith command tree: two families split at the
+// code/state line, connected by the manifest. refactor plan/run/verify carve
+// the code; migrate plan/prove/run/verify carve, prove, execute, and judge the
+// state migration. The bare family commands run their steps in order.
 package cli
 
 import (
@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -72,9 +73,7 @@ func Root() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(refactorCmd())
-	root.AddCommand(diffCmd())
 	root.AddCommand(migrateCmd())
-	root.AddCommand(proveCmd())
 	return root
 }
 
@@ -120,6 +119,25 @@ func resolveRoot(rootDir string) string {
 		return abs
 	}
 	return filepath.Clean(rootDir)
+}
+
+// resolveOut resolves the --out flag: default under the root, a relative path
+// resolved against the root (not the process cwd), and always inside the root —
+// the manifest records the output dir root-relative, so an outside dir would
+// force an absolute path into it and break every other checkout.
+func resolveOut(rootDir, out string) (string, error) {
+	if out == "" {
+		return filepath.Join(rootDir, ".demono", "modules"), nil
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(rootDir, out)
+	}
+	out = filepath.Clean(out)
+	rel, err := filepath.Rel(rootDir, out)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("--out %s is outside --root-dir %s; the manifest records the output dir relative to the root, and an outside dir would make it non-portable", out, rootDir)
+	}
+	return out, nil
 }
 
 // stdinIsTTY reports whether stdin is an interactive terminal.

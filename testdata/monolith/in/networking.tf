@@ -8,6 +8,13 @@ resource "random_uuid" "vpc_id" {
   depends_on = [time_sleep.wait_10s]
 }
 
+# Referenced from the data module through two different attributes (id and
+# prefix), so each gets its own attr-scoped output.
+# @demono:move networking
+resource "random_pet" "gateway_name" {
+  prefix = "gw"
+}
+
 # @demono:move networking
 resource "random_uuid" "private_subnet_id" {
   keepers = {

@@ -10,10 +10,10 @@ type Provider struct {
 	Alias string // alias label, or "" for the default provider
 	// Refs are the addresses referenced in the provider config body.
 	Refs []Address
-	// RefAttrs records, per referenced resource/data/module producer, the first
+	// RefAttrs records, per referenced resource/data/module producer, every
 	// attribute path used (e.g. "id"), so an emitted output/wiring exposes the
 	// right attribute.
-	RefAttrs map[string]string
+	RefAttrs map[string][]string
 }
 
 // Key is the provider's identity: "name" for the default, "name.alias" for an

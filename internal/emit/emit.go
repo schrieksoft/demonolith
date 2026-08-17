@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -31,6 +32,14 @@ type Emitter struct {
 	Graph  *hclgraph.Graph
 	Place  *placement.Placement
 	Bound  *boundary.Result
+	// Monorepo keeps local child-module calls pointing at their original
+	// in-repo directories (source rewritten to the new relative path) instead
+	// of copying the directories into each carved root. Default false: carved
+	// roots are fully standalone and shippable to separate repos.
+	Monorepo bool
+	// Backend, when set, writes each module a backend.tf derived from the
+	// monolith's backend block with per-module state locations.
+	Backend *BackendBlock
 }
 
 // EmittedModule records what was written for one module.
@@ -89,6 +98,11 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 	}
 	for _, blk := range blocks {
 		e.rewriteRefs(module, blk)
+		if e.Monorepo {
+			if err := relinkModuleSource(blk, e.SrcDir, dir); err != nil {
+				return EmittedModule{}, err
+			}
+		}
 		body.AppendBlock(blk)
 		body.AppendNewline()
 	}
@@ -136,12 +150,45 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		em.Files = append(em.Files, name)
 	}
 
+	if e.Backend != nil {
+		if err := e.Backend.WriteBackendTF(dir, module); err != nil {
+			return EmittedModule{}, err
+		}
+		em.Files = append(em.Files, "backend.tf")
+	}
+
 	// Copy any local child-module source directories this module owns, so the
-	// carved root can resolve `source = "./..."`.
-	if err := e.copyModuleSources(module, dir); err != nil {
-		return EmittedModule{}, err
+	// carved root can resolve `source = "./..."`. In monorepo mode nothing is
+	// copied: the emitted blocks were relinked to the original dirs instead.
+	if !e.Monorepo {
+		if err := e.copyModuleSources(module, dir); err != nil {
+			return EmittedModule{}, err
+		}
 	}
 	return em, nil
+}
+
+// relinkModuleSource rewrites a module call's local source path so it resolves
+// from the carved root back to the original in-repo directory. Remote sources
+// are untouched.
+func relinkModuleSource(blk *hclwrite.Block, srcDir, destDir string) error {
+	if blk.Type() != "module" {
+		return nil
+	}
+	source, ok := stringAttr(blk, "source")
+	if !ok || !isLocalSource(source) {
+		return nil
+	}
+	rel, err := filepath.Rel(destDir, filepath.Join(srcDir, source))
+	if err != nil {
+		return fmt.Errorf("relink module source %q: %w", source, err)
+	}
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, ".") {
+		rel = "./" + rel
+	}
+	blk.Body().SetAttributeValue("source", cty.StringVal(rel))
+	return nil
 }
 
 func sortedInputs(b *boundary.ModuleBoundary) []boundary.Input {

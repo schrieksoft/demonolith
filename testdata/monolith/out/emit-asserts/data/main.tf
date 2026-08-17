@@ -26,8 +26,10 @@ resource "random_password" "admin_password" {
 resource "random_uuid" "database_id" {
   # references a resource that will live in the networking module -> cross-module edge
   keepers = {
-    subnet = var.random_uuid_private_subnet_id
-    token  = data.random_id.shared_token.hex
+    subnet    = var.random_uuid_private_subnet_id
+    token     = data.random_id.shared_token.hex
+    gw_id     = var.random_pet_gateway_name_id
+    gw_prefix = var.random_pet_gateway_name_prefix
   }
 }
 

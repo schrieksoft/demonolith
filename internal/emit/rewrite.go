@@ -1,6 +1,8 @@
 package emit
 
 import (
+	"strings"
+
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 
@@ -8,13 +10,19 @@ import (
 )
 
 // crossRefMap builds, for a given consumer module, the mapping from a producer
-// address string to the input variable name it should be rewritten to.
-func (e *Emitter) crossRefMap(module string) map[string]string {
-	m := map[string]string{}
+// address string to the input variable name per referenced attribute path. A
+// producer referenced through several attributes has one input per attribute.
+func (e *Emitter) crossRefMap(module string) map[string]map[string]string {
+	m := map[string]map[string]string{}
 	for _, edge := range e.Bound.CrossEdges {
-		if edge.ConsumerModule == module {
-			m[edge.Producer.String()] = edge.InputName
+		if edge.ConsumerModule != module {
+			continue
 		}
+		key := edge.Producer.String()
+		if m[key] == nil {
+			m[key] = map[string]string{}
+		}
+		m[key][edge.Attr] = edge.InputName
 	}
 	return m
 }
@@ -25,21 +33,40 @@ func (e *Emitter) crossRefMap(module string) map[string]string {
 // those tokens (including any trailing attribute access like `.result`, and any
 // index like `[0]`) with a var reference.
 //
-// depends_on entries that point at a cross-module producer are dropped: the
-// dependency is now expressed through the input variable, and referencing a
-// resource that no longer exists in this root would be a parse error.
+// depends_on entries that point at a producer outside this module are dropped —
+// whether the producer carries a value edge (the dependency is now expressed
+// through the input variable) or an ordering-only edge (carried by an
+// OrderingEdge). Either way, referencing a block that no longer exists in this
+// root would break the root.
 func (e *Emitter) rewriteRefs(module string, blk *hclwrite.Block) {
 	xref := e.crossRefMap(module)
-	if len(xref) == 0 {
-		return
-	}
-	e.rewriteBody(blk.Body(), xref)
+	e.rewriteBody(blk.Body(), xref, e.foreignProducer(module))
 }
 
-func (e *Emitter) rewriteBody(body *hclwrite.Body, xref map[string]string) {
+// foreignProducer reports whether an address names a placed block that does not
+// live in the given module. Unknown addresses are left alone.
+func (e *Emitter) foreignProducer(module string) func(hclgraph.Address) bool {
+	return func(addr hclgraph.Address) bool {
+		mods := e.Place.ModulesOf(addr)
+		if len(mods) == 0 {
+			return false
+		}
+		for _, m := range mods {
+			if m == module {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func (e *Emitter) rewriteBody(body *hclwrite.Body, xref map[string]map[string]string, foreign func(hclgraph.Address) bool) {
 	for name, attr := range body.Attributes() {
 		if name == "depends_on" {
-			e.rewriteDependsOn(body, attr, xref)
+			e.rewriteDependsOn(body, attr, foreign)
+			continue
+		}
+		if len(xref) == 0 {
 			continue
 		}
 		toks := attr.Expr().BuildTokens(nil)
@@ -49,15 +76,15 @@ func (e *Emitter) rewriteBody(body *hclwrite.Body, xref map[string]string) {
 		}
 	}
 	for _, nested := range body.Blocks() {
-		e.rewriteBody(nested.Body(), xref)
+		e.rewriteBody(nested.Body(), xref, foreign)
 	}
 }
 
-// rewriteDependsOn removes cross-module producers from a depends_on list. If the
-// list becomes empty, the attribute is removed entirely.
-func (e *Emitter) rewriteDependsOn(body *hclwrite.Body, attr *hclwrite.Attribute, xref map[string]string) {
+// rewriteDependsOn removes out-of-module producers from a depends_on list. If
+// the list becomes empty, the attribute is removed entirely.
+func (e *Emitter) rewriteDependsOn(body *hclwrite.Body, attr *hclwrite.Attribute, foreign func(hclgraph.Address) bool) {
 	toks := attr.Expr().BuildTokens(nil)
-	kept, anyKept := filterDependsOn(toks, xref)
+	kept, anyKept := filterDependsOn(toks, foreign)
 	if !anyKept {
 		body.RemoveAttribute("depends_on")
 		return
@@ -73,7 +100,7 @@ func (e *Emitter) rewriteDependsOn(body *hclwrite.Body, attr *hclwrite.Attribute
 // the longest known producer prefix (2 segs for resource, 3 for data), then
 // consume any trailing `.attr` and `[...]` steps that belong to the same
 // reference, replacing the whole run.
-func rewriteTokens(toks hclwrite.Tokens, xref map[string]string) (hclwrite.Tokens, bool) {
+func rewriteTokens(toks hclwrite.Tokens, xref map[string]map[string]string) (hclwrite.Tokens, bool) {
 	var out hclwrite.Tokens
 	changed := false
 	i := 0
@@ -92,8 +119,10 @@ func rewriteTokens(toks hclwrite.Tokens, xref map[string]string) (hclwrite.Token
 
 // matchProducer tries to match a cross-module producer traversal starting at
 // index i. On success it returns the input variable name and how many tokens
-// the whole reference (including trailing .attr and [idx] steps) spans.
-func matchProducer(toks hclwrite.Tokens, i int, xref map[string]string) (bool, string, int) {
+// the whole reference (including trailing .attr and [idx] steps) spans. The
+// referenced attribute path (the ident segments after the producer prefix,
+// mirroring what the graph recorded) selects among per-attribute inputs.
+func matchProducer(toks hclwrite.Tokens, i int, xref map[string]map[string]string) (bool, string, int) {
 	// A traversal must start at an identifier that is not preceded by a dot
 	// (which would make it an attribute of something else).
 	if i > 0 && toks[i-1].Type == hclsyntax.TokenDot {
@@ -112,13 +141,30 @@ func matchProducer(toks hclwrite.Tokens, i int, xref map[string]string) (bool, s
 		if !ok {
 			continue
 		}
-		if input, isCross := xref[addr.String()]; isCross {
-			// Consume the whole reference: the n matched segments plus any
-			// remaining trailing .attr / [idx] steps up to segEnd, and any
-			// following index tokens.
-			end := consumeTrailing(toks, segEnd)
-			return true, input, end - i
+		byAttr, isCross := xref[addr.String()]
+		if !isCross {
+			continue
 		}
+		attr := strings.Join(segs[n:], ".")
+		input, ok := byAttr[attr]
+		if !ok {
+			// A same-module reference through an attribute nobody wires (or a
+			// whole-object edge) falls back to the sole input when unambiguous.
+			if len(byAttr) == 1 {
+				for _, v := range byAttr {
+					input = v
+				}
+			} else if v, has := byAttr[""]; has {
+				input = v
+			} else {
+				continue
+			}
+		}
+		// Consume the whole reference: the n matched segments plus any
+		// remaining trailing .attr / [idx] steps up to segEnd, and any
+		// following index tokens.
+		end := consumeTrailing(toks, segEnd)
+		return true, input, end - i
 	}
 	return false, "", 0
 }
@@ -179,9 +225,9 @@ func consumeTrailing(toks hclwrite.Tokens, j int) int {
 }
 
 // filterDependsOn rebuilds a depends_on list expression, dropping entries that
-// reference cross-module producers. Returns the rebuilt tokens and whether any
-// entry remains.
-func filterDependsOn(toks hclwrite.Tokens, xref map[string]string) (hclwrite.Tokens, bool) {
+// reference producers outside this module. Returns the rebuilt tokens and
+// whether any entry remains.
+func filterDependsOn(toks hclwrite.Tokens, foreign func(hclgraph.Address) bool) (hclwrite.Tokens, bool) {
 	// Find the bracketed list body.
 	start, end := -1, -1
 	depth := 0
@@ -229,7 +275,7 @@ func filterDependsOn(toks hclwrite.Tokens, xref map[string]string) (hclwrite.Tok
 
 	var kept []hclwrite.Tokens
 	for _, el := range elems {
-		if dependsOnRefsCross(el, xref) {
+		if dependsOnRefsCross(el, foreign) {
 			continue
 		}
 		if len(trimSpace(el)) == 0 {
@@ -255,8 +301,8 @@ func filterDependsOn(toks hclwrite.Tokens, xref map[string]string) (hclwrite.Tok
 }
 
 // dependsOnRefsCross reports whether a depends_on element references a
-// cross-module producer.
-func dependsOnRefsCross(el hclwrite.Tokens, xref map[string]string) bool {
+// producer outside this module.
+func dependsOnRefsCross(el hclwrite.Tokens, foreign func(hclgraph.Address) bool) bool {
 	trimmed := trimSpace(el)
 	segs, _ := readIdentPath(trimmed, 0)
 	for _, n := range []int{3, 2} {
@@ -264,7 +310,7 @@ func dependsOnRefsCross(el hclwrite.Tokens, xref map[string]string) bool {
 			continue
 		}
 		if addr, ok := hclgraph.ParseRefRoot(segs[:n]); ok {
-			if _, isCross := xref[addr.String()]; isCross {
+			if foreign(addr) {
 				return true
 			}
 		}

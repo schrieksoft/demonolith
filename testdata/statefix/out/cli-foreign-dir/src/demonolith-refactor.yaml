@@ -1,0 +1,42 @@
+version: 1
+created: "2026-08-17T16:07:57Z"
+tool: demonolith dev
+source:
+    root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-foreign-dir/src
+    remainder_module: monolith
+output:
+    dir: modules
+    bootstrap: true
+    bootstrap_dir: modules/snapcd
+modules:
+    a:
+        dir: modules/a
+        blocks:
+            - random_integer.seed
+            - random_pet.name_a
+    b:
+        dir: modules/b
+        blocks:
+            - random_pet.name_b
+    monolith:
+        dir: modules/monolith
+        blocks:
+            - random_pet.leftover
+catchall:
+    - random_pet.leftover
+state_moves:
+    - address: random_integer.seed
+      module: a
+    - address: random_pet.name_a
+      module: a
+    - address: random_pet.name_b
+      module: b
+cross_edges:
+    - producer_module: a
+      producer: random_integer.seed
+      attribute: result
+      output: random_integer_seed
+      consumer_module: b
+      consumer: random_pet.name_b
+      input: random_integer_seed
+emit_checksum: sha256:8c3d35e13e5d5c629e19169ab6345534907edd0a318b30aaf548cdb213d3d476

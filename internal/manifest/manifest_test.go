@@ -29,16 +29,21 @@ func TestBuildWriteLoad_Roundtrip(t *testing.T) {
 	rootDir := t.TempDir()
 	outDir := filepath.Join(rootDir, "modules")
 
-	e := &emit.Emitter{SrcDir: srcDir, OutDir: outDir, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary}
-	ems, err := e.Emit()
-	if err != nil {
-		t.Fatalf("emit: %v", err)
+	created := time.Date(2026, 8, 15, 14, 30, 0, 0, time.UTC)
+	m := BuildPlanned(a, rootDir, outDir, created, "demonolith test", BuildOpts{Bootstrap: false})
+	if m.IsRun() {
+		t.Fatal("a planned manifest must not be run")
 	}
 
-	created := time.Date(2026, 8, 15, 14, 30, 0, 0, time.UTC)
-	m, err := Build(a, rootDir, outDir, ems, created, "demonolith test")
-	if err != nil {
-		t.Fatalf("build: %v", err)
+	e := &emit.Emitter{SrcDir: srcDir, OutDir: outDir, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary}
+	if _, err := e.Emit(); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if err := m.Finalize(rootDir, ""); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if !m.IsRun() {
+		t.Fatal("finalize must set the emit checksum")
 	}
 	if m.Version != SchemaVersion {
 		t.Errorf("version = %d, want %d", m.Version, SchemaVersion)
@@ -144,34 +149,34 @@ func TestLoad_RefusesFutureVersion(t *testing.T) {
 
 func TestReceipt_LatestFor(t *testing.T) {
 	dir := t.TempDir()
-	early := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
-	late := time.Date(2026, 8, 15, 11, 0, 0, 0, time.UTC)
 
-	r1 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Complete: false}
-	r2 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Complete: true}
-	older := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:bbb", Complete: true}
-	if _, err := WriteReceipt(r1, dir, early); err != nil {
+	// The plan receipt has one canonical file; a rewrite supersedes it.
+	r1 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Action: ActionPlan, Complete: false}
+	r2 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Action: ActionPlan, Complete: true}
+	if _, err := WriteReceipt(r1, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := WriteReceipt(r2, dir, late); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := WriteReceipt(older, dir, late.Add(time.Hour)); err != nil {
+	if _, err := WriteReceipt(r2, dir); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := LatestReceiptFor(dir, "sha256:aaa")
+	got, err := LatestReceiptFor(dir, "sha256:aaa", ActionPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == nil || !got.Complete {
-		t.Errorf("latest receipt for checksum aaa should be the later, complete one; got %+v", got)
+		t.Errorf("the canonical receipt should be the superseding, complete one; got %+v", got)
 	}
-	none, err := LatestReceiptFor(dir, "sha256:ccc")
+	// A different generation's checksum must not match the same file.
+	none, err := LatestReceiptFor(dir, "sha256:ccc", ActionPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if none != nil {
 		t.Errorf("a receipt from a different manifest generation must not match; got %+v", none)
+	}
+	// Actions have separate canonical files: no run receipt exists yet.
+	if r, _ := LatestReceiptFor(dir, "sha256:aaa", ActionRun); r != nil {
+		t.Errorf("plan receipt must not satisfy a run lookup; got %+v", r)
 	}
 }

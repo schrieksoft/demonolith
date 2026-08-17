@@ -1,5 +1,0 @@
-module_idgen          = "subtle-coral"
-random_integer_net_id = "8833"
-random_pet_fp_tag     = "firstly-upward-heron"
-random_pet_net_name   = "demo-centrally-positive-burro"
-random_string_token   = "dQHvFS9fACaf"
