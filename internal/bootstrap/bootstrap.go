@@ -18,6 +18,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 
+	"github.com/schrieksoft/demonolith/internal/emit"
 	"github.com/schrieksoft/demonolith/internal/manifest"
 )
 
@@ -59,6 +60,9 @@ func Emit(m *manifest.Manifest, rootDir, outDir string) (string, error) {
 		if err := os.WriteFile(filepath.Join(dir, name), hclwrite.Format([]byte(content)), 0o644); err != nil {
 			return "", err
 		}
+	}
+	if err := emit.WriteGitignore(dir); err != nil {
+		return "", err
 	}
 	return dir, nil
 }

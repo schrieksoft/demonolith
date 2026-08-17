@@ -85,7 +85,7 @@ resource "random_uuid" "nat_gateway_id" {
 resource "random_uuid" "vpc_id" {}
 
 resource "time_sleep" "network_propagation" {
-  create_duration = "10s"
+  create_duration = "1s"
   depends_on      = [random_uuid.vpc_id, module.public_subnet, module.private_subnet]
 }
 

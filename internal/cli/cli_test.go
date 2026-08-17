@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,12 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	for _, mod := range []string{"a", "b", "monolith", "snapcd"} {
 		if _, err := os.Stat(filepath.Join(srcDir, "modules", mod, "main.tf")); err != nil {
 			t.Errorf("expected emitted root %s: %v", mod, err)
+		}
+		gi, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, ".gitignore"))
+		if err != nil {
+			t.Errorf("expected a .gitignore in emitted root %s: %v", mod, err)
+		} else if !strings.Contains(string(gi), ".env") || !strings.Contains(string(gi), "*.tfstate") {
+			t.Errorf("root %s .gitignore missing expected entries:\n%s", mod, gi)
 		}
 	}
 	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); err != nil {
@@ -347,16 +354,17 @@ func TestMigrateProve_CreateTfvars(t *testing.T) {
 		t.Fatalf("migrate plan failed: %v", err)
 	}
 
-	// Default: no tfvars files written.
+	// Default: root variable values only — this fixture has none, so no file.
+	// Cross-module values stay threaded in memory.
 	if err := run(t, "migrate", "prove", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
 		t.Fatalf("prove failed: %v", err)
 	}
 	bTfvars := filepath.Join(srcDir, "modules", "b", "generated.auto.tfvars")
 	if _, serr := os.Stat(bTfvars); !os.IsNotExist(serr) {
-		t.Error("prove must not write tfvars files by default")
+		t.Error("prove must not materialize cross-module values by default")
 	}
 
-	// Opt-in: written and kept.
+	// Opt-in: the cross-module section is written and kept.
 	if err := run(t, "migrate", "prove", "--root-dir", srcDir, "--exec-path", execPath, "--create-tfvars"); err != nil {
 		t.Fatalf("prove --create-tfvars failed: %v", err)
 	}
@@ -478,7 +486,33 @@ func TestSampleJourney_Local(t *testing.T) {
 
 	base := testsupport.OutDir(t, "sample", "cli-journey")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("sample"))
+
+	// Vars arrive through all three channels, each the sole source of its
+	// value: name_prefix from the root's terraform.tfvars,
+	// resource_group_name from TF_VAR_* env, database_port from a -var flag
+	// (tfvars files outrank env in the engine, so those two are stripped from
+	// the copied tfvars). The env var stays set for the whole journey (the
+	// documented same-shell requirement); the -var-only value is deliberately
+	// absent from env after apply and must be re-supplied to migrate as --var.
+	tfvPath := filepath.Join(srcDir, "terraform.tfvars")
+	tfvB, err := os.ReadFile(tfvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(tfvB), "\n") {
+		if strings.HasPrefix(line, "resource_group_name") || strings.HasPrefix(line, "database_port") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if err := os.WriteFile(tfvPath, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TF_VAR_resource_group_name", "env-rg")
+	t.Setenv("TF_VAR_database_port", "7777")
 	testsupport.ApplyRoot(t, srcDir)
+	os.Unsetenv("TF_VAR_database_port")
 
 	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
 		t.Fatalf("refactor failed: %v", err)
@@ -494,7 +528,7 @@ func TestSampleJourney_Local(t *testing.T) {
 		t.Fatalf("refactor run after config copies failed: %v", err)
 	}
 
-	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
+	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath, "--var", "database_port=7777"); err != nil {
 		t.Fatalf("bare migrate failed: %v", err)
 	}
 	m, err := manifest.Load(manifest.Path(srcDir))
@@ -511,6 +545,20 @@ func TestSampleJourney_Local(t *testing.T) {
 	v, err := manifest.LatestProveVerdict(srcDir, m.EmitChecksum)
 	if err != nil || v == nil || !v.OK {
 		t.Fatalf("expected a passing prove verdict (err %v)", err)
+	}
+	// All three channels land in the module's generated.auto.tfvars; .env is
+	// backend credentials only, so a backend-less monolith gets none.
+	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "database", "generated.auto.tfvars"))
+	if err != nil {
+		t.Fatalf("expected a generated.auto.tfvars after migrate: %v", err)
+	}
+	for name, val := range map[string]string{"name_prefix": "acme", "resource_group_name": "env-rg", "database_port": "7777"} {
+		if !hasAssignment(string(tfv), name, val) {
+			t.Errorf("generated.auto.tfvars missing %s = %q:\n%s", name, val, tfv)
+		}
+	}
+	if _, serr := os.Stat(filepath.Join(srcDir, "modules", "networking", ".env")); !os.IsNotExist(serr) {
+		t.Error(".env is backend-credentials only; a backend-less monolith must get none")
 	}
 }
 
@@ -594,6 +642,13 @@ func snapcdReachable() bool {
 }
 
 // copyTree recursively copies a directory tree.
+// hasAssignment reports whether content carries `name = "val"`, tolerating
+// hclwrite's column-aligned padding around the equals sign.
+func hasAssignment(content, name, val string) bool {
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*=\s*"` + regexp.QuoteMeta(val) + `"`)
+	return re.MatchString(content)
+}
+
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -617,9 +672,9 @@ func copyTree(src, dst string) error {
 
 // TestSampleJourney_BackendConfigFlags: the monolith's backend is configured
 // entirely via -backend-config at init (empty HCL block). Plan falls back to
-// the init-time resolved config for locations, refactor run persists the
-// credentials as gitignored per-module .env files, and migrate sources them —
-// the whole journey runs with zero backend flags. Skips without a server.
+// the init-time resolved config for locations; migrate materializes the
+// credentials as gitignored per-module .env files and sources them — the
+// whole journey runs with zero backend flags. Skips without a server.
 func TestSampleJourney_BackendConfigFlags(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
 	if !snapcdReachable() {
@@ -699,6 +754,16 @@ func TestSampleJourney_BackendConfigFlags(t *testing.T) {
 	}
 	if !strings.Contains(string(envB), "TF_HTTP_USERNAME=default") || !strings.Contains(string(envB), "TF_HTTP_PASSWORD=default") {
 		t.Errorf(".env missing backend credentials:\n%s", envB)
+	}
+	if strings.Contains(string(envB), "TF_VAR_") {
+		t.Errorf(".env must hold backend credentials only, variable values go to generated.auto.tfvars:\n%s", envB)
+	}
+	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "generated.auto.tfvars"))
+	if err != nil {
+		t.Fatalf("expected a generated.auto.tfvars after migrate: %v", err)
+	}
+	if !hasAssignment(string(tfv), "name_prefix", "acme") {
+		t.Errorf("generated.auto.tfvars missing root variable values:\n%s", tfv)
 	}
 	runR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionRun)
 	if err != nil || runR == nil || !runR.Complete {

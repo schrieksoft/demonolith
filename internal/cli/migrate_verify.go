@@ -28,6 +28,7 @@ func migrateVerifyCmd() *cobra.Command {
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
+	flags.BoolVar(&f.createTfvars, "create-tfvars", false, "also materialize cross-module input values into generated.auto.tfvars — the standalone wiring for detached use")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	return cmd
 }
@@ -65,6 +66,9 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	}
 
 	if err := materializeBackendEnv(rootDir, m); err != nil {
+		return err
+	}
+	if _, err := materializeTfvars(rootDir, m, a.Boundary, f); err != nil {
 		return err
 	}
 

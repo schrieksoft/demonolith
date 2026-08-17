@@ -84,7 +84,10 @@ init-time resolved config, other non-secret settings persist into each
 deals with code only) as **gitignored per-module `.env` files** (0600) in the
 engines' official variables (`TF_HTTP_USERNAME`, `AWS_ACCESS_KEY_ID`,
 `ARM_ACCESS_KEY`, …) — never into HCL — and sourced automatically around each
-module's init. `migrate run` seeds each
+module's init. Every emitted root (bootstrap included) gets its own
+`.gitignore` covering the local artifacts these steps leave behind
+(`.terraform/`, `*.tfstate`, `.env`, `generated.auto.tfvars`, …), so a carved
+root is safe to commit or ship to its own repo as-is. `migrate run` seeds each
 derived location from the carved state — the target must be empty, a push is
 never forced, and the monolith's own state is never written. Retiring the
 monolith (its pipelines and its old state) is deliberately a human cutover
@@ -98,14 +101,27 @@ cross edge as `snapcd_module_input_from_output`, ordering edges as
 bootstrap's variables. Applying it against a Snap CD server is the adoption
 step.
 
-`migrate prove` resolves external inputs the way the monolith did — the
-root's own `terraform.tfvars`/`*.auto.tfvars`, then `--var-file` files, then
-`TF_VAR_*` env, then `--var` flags — threading every value in memory by
-default; `--create-tfvars` materializes `generated.auto.tfvars` per consumer
-root as the standalone wiring for detached use. Cross-module inputs are never
-user-supplied: the proof threads them from producer outputs itself.
-`migrate run` requires a passing prove verdict no older than the plan receipt
-(`--unproven` is the explicit override).
+**Variable values** transfer in the engine's own precedence — `TF_VAR_*` env,
+then the root's `terraform.tfvars`/`*.auto.tfvars`, then `--var-file` files,
+then `--var` flags. `migrate prove`/`run`/`verify` materialize each module's
+resolved values into its `generated.auto.tfvars`: the root variable values
+the module declares in one section (declared defaults already travel in the
+carved code, so only resolved values get an entry), and with
+`--create-tfvars` the cross-module input values from the applied state in
+another — the standalone wiring for detached use. Cross-module inputs are
+never user-supplied: the proof threads them from producer outputs itself, and
+`.env` stays backend-credentials-only. A value that only ever existed as a
+`-var` flag on the original apply is not recoverable — state does not record
+inputs — so pass it again as `--var`. `migrate run` requires a passing prove
+verdict no older than the plan receipt (`--unproven` is the explicit
+override).
+
+**Prerequisite — one shell session.** The monolith root must `init` and
+`plan` cleanly before you start, and every demonolith command should run in
+that same shell session. Provider and init-time environment (`AWS_PROFILE`,
+`ARM_*`, plugin mirrors, …) is not captured: demonolith materializes only
+backend credentials (`.env`) and variable values (`generated.auto.tfvars`);
+everything else the migrate steps inherit from whatever the session has set.
 
 Key flags: `--out`, `--remainder-module`, `--monorepo` (link in-repo child
 modules instead of copying), `--no-bootstrap`, `--no-backend` (refactor plan);

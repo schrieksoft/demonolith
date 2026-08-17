@@ -1,0 +1,29 @@
+version: 1
+created: "2026-08-17T19:27:36Z"
+tool: demonolith dev
+manifest: demonolith-refactor.yaml
+manifest_checksum: sha256:89dfb43b25b4262a7db53374a41ca50370186bd3149ec29179de8494a83502e9
+action: run
+complete: true
+module_states:
+    app: modules/.state/app.tfstate
+    cluster: modules/.state/cluster.tfstate
+    database: modules/.state/database.tfstate
+    monolith: modules/.state/monolith.tfstate
+    networking: modules/.state/networking.tfstate
+pushes:
+    - module: app
+      location: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-app
+      outcome: pushed
+    - module: cluster
+      location: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-cluster
+      outcome: pushed
+    - module: database
+      location: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-database
+      outcome: pushed
+    - module: monolith
+      location: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-monolith
+      outcome: pushed
+    - module: networking
+      location: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-networking
+      outcome: pushed

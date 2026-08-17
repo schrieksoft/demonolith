@@ -1,0 +1,22 @@
+version: 1
+created: "2026-08-17T19:25:36Z"
+tool: demonolith dev
+manifest: demonolith-refactor.yaml
+manifest_checksum: sha256:5b190c3b39c95a12ef6c73e43e8bf3003b0e08a32dd77b449ff2055d090000b2
+action: plan
+complete: true
+module_states:
+    a: modules/.state/a.tfstate
+    b: modules/.state/b.tfstate
+    monolith: modules/.state/monolith.tfstate
+backup_path: modules/.state/monolith.demono-backup.tfstate
+moves:
+    - address: random_integer.seed
+      module: a
+      outcome: moved
+    - address: random_pet.name_a
+      module: a
+      outcome: moved
+    - address: random_pet.name_b
+      module: b
+      outcome: moved

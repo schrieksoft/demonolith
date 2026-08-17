@@ -1,0 +1,40 @@
+version: 1
+created: "2026-08-17T19:26:39Z"
+tool: demonolith dev
+manifest: demonolith-refactor.yaml
+manifest_checksum: sha256:0282c59e0bf8eed651eafede70007b3b0a5e3264d74f1d70114f29fdd189200a
+mode: prove
+refresh: false
+ok: true
+order:
+    - monolith
+    - networking
+    - cluster
+    - database
+    - app
+modules:
+    - module: monolith
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0
+    - module: networking
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0
+    - module: cluster
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0
+    - module: database
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0
+    - module: app
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0

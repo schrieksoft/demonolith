@@ -275,11 +275,10 @@ func (b *BackendBlock) CredentialEnv() map[string]string {
 	return out
 }
 
-// WriteEnvFile writes the module's gitignored .env holding the backend
+// WriteEnvFile writes a module's gitignored .env holding the backend
 // credentials as engine environment variables. No file when there is nothing
 // to write. Mode 0600: this file holds secrets.
-func (b *BackendBlock) WriteEnvFile(moduleDir string) (bool, error) {
-	env := b.CredentialEnv()
+func WriteEnvFile(moduleDir string, env map[string]string) (bool, error) {
 	if len(env) == 0 {
 		return false, nil
 	}

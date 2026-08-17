@@ -10,10 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/schrieksoft/demonolith/internal/boundary"
 	"github.com/schrieksoft/demonolith/internal/emit"
 	"github.com/schrieksoft/demonolith/internal/manifest"
 	"github.com/schrieksoft/demonolith/internal/pipeline"
 	"github.com/schrieksoft/demonolith/internal/statemove"
+	"github.com/schrieksoft/demonolith/internal/statevars"
 )
 
 // migrateFlags is the union of the migrate subcommands' flags; the bare parent
@@ -386,7 +388,7 @@ func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 	}
 	wrote := false
 	for _, dir := range m.ModuleDirs(rootDir) {
-		w, err := block.WriteEnvFile(dir)
+		w, err := emit.WriteEnvFile(dir, block.CredentialEnv())
 		if err != nil {
 			return err
 		}
@@ -396,6 +398,64 @@ func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 		outln("Backend credentials written to per-module .env files (0600). They hold secrets: make sure .env is gitignored.")
 	}
 	return nil
+}
+
+// materializeTfvars writes each module's generated.auto.tfvars: always the
+// root variable values the module declares, resolved in the engine's own
+// precedence (TF_VAR_* environment, root tfvars files, --var-file, --var;
+// declared defaults travel in the carved code and need no entry), and with
+// --create-tfvars also the cross-module input values resolved from the
+// applied state — the standalone wiring for detached use.
+func materializeTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Result, f migrateFlags) (*statevars.Result, error) {
+	varVals, err := collectVarValues(rootDir, f.varFiles, f.vars, nil)
+	if err != nil {
+		return nil, err
+	}
+	moduleDirs := m.ModuleDirs(rootDir)
+
+	rootVals := map[string]map[string]string{}
+	for name, dir := range moduleDirs {
+		declared, err := moduleVarNames(dir)
+		if err != nil {
+			return nil, err
+		}
+		cross := map[string]bool{}
+		if b := bound.Boundaries[name]; b != nil {
+			for inName, in := range b.Inputs {
+				if !in.External {
+					cross[inName] = true
+				}
+			}
+		}
+		for v := range declared {
+			if cross[v] {
+				continue
+			}
+			if val, ok := varVals[v]; ok {
+				if rootVals[name] == nil {
+					rootVals[name] = map[string]string{}
+				}
+				rootVals[name][v] = val
+			}
+		}
+	}
+
+	var crossVals map[string]map[string]string
+	if f.createTfvars {
+		_, _, backup, err := planReceiptStates(rootDir, m)
+		if err != nil {
+			return nil, err
+		}
+		st, err := statevars.LoadState(backup)
+		if err != nil {
+			return nil, fmt.Errorf("tfvars: %w", err)
+		}
+		crossVals, err = statevars.ResolveCross(st, bound, statevars.Options{SourceDir: rootDir})
+		if err != nil {
+			return nil, fmt.Errorf("tfvars: %w", err)
+		}
+	}
+	return statevars.Write(moduleDirs, rootVals, crossVals)
 }
 
 // relForReceipt stores receipt paths relative to rootDir when possible.

@@ -17,10 +17,7 @@ import (
 )
 
 // collectExternalInputs resolves the modules' external (former root var.*)
-// inputs the way the monolith resolved them, in ascending precedence: the
-// source root's terraform.tfvars and *.auto.tfvars (plus their .json forms),
-// then explicit --var-file files in the order given, then TF_VAR_* environment
-// variables, then explicit --var flags. Only names the boundary actually
+// inputs the way the monolith resolved them. Only names the boundary actually
 // declares as external are collected; values stay in memory. Returns the
 // values and the sorted names that were resolved.
 func collectExternalInputs(rootDir string, bound *boundary.Result, varFiles, varFlags []string) (map[string]string, []string, error) {
@@ -32,31 +29,27 @@ func collectExternalInputs(rootDir string, bound *boundary.Result, varFiles, var
 			}
 		}
 	}
-
-	vals := map[string]string{}
-
-	files, err := tfvarsFiles(rootDir)
+	vals, err := collectVarValues(rootDir, varFiles, varFlags, needed)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Auto-loaded files may be absent; an explicit --var-file must exist.
-	for _, vf := range varFiles {
-		if _, err := os.Stat(vf); err != nil {
-			return nil, nil, fmt.Errorf("--var-file %s: %w", vf, err)
-		}
+	names := make([]string, 0, len(vals))
+	for k := range vals {
+		names = append(names, k)
 	}
-	files = append(files, varFiles...)
-	for _, f := range files {
-		fileVals, err := readTfvars(f)
-		if err != nil {
-			return nil, nil, err
-		}
-		for k, v := range fileVals {
-			if needed[k] {
-				vals[k] = v
-			}
-		}
-	}
+	sort.Strings(names)
+	return vals, names, nil
+}
+
+// collectVarValues gathers variable values in the engine's own (ascending)
+// precedence: TF_VAR_* environment variables first, then the root's
+// terraform.tfvars and *.auto.tfvars (plus their .json forms) in load order,
+// then explicit --var-file files in the order given, then --var flags. A nil
+// needed set collects every name found; otherwise only the named variables
+// are kept.
+func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[string]bool) (map[string]string, error) {
+	keep := func(name string) bool { return needed == nil || needed[name] }
+	vals := map[string]string{}
 
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "TF_VAR_") {
@@ -64,28 +57,76 @@ func collectExternalInputs(rootDir string, bound *boundary.Result, varFiles, var
 		}
 		eq := strings.Index(kv, "=")
 		name := strings.TrimPrefix(kv[:eq], "TF_VAR_")
-		if needed[name] {
+		if keep(name) {
 			vals[name] = kv[eq+1:]
+		}
+	}
+
+	files, err := tfvarsFiles(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	// Auto-loaded files may be absent; an explicit --var-file must exist.
+	for _, vf := range varFiles {
+		if _, err := os.Stat(vf); err != nil {
+			return nil, fmt.Errorf("--var-file %s: %w", vf, err)
+		}
+	}
+	files = append(files, varFiles...)
+	for _, f := range files {
+		fileVals, err := readTfvars(f)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range fileVals {
+			if keep(k) {
+				vals[k] = v
+			}
 		}
 	}
 
 	for _, kv := range varFlags {
 		eq := strings.Index(kv, "=")
 		if eq < 1 {
-			return nil, nil, fmt.Errorf("invalid --var %q (want name=value)", kv)
+			return nil, fmt.Errorf("invalid --var %q (want name=value)", kv)
 		}
 		name := kv[:eq]
-		if needed[name] {
+		if keep(name) {
 			vals[name] = kv[eq+1:]
 		}
 	}
+	return vals, nil
+}
 
-	names := make([]string, 0, len(vals))
-	for k := range vals {
-		names = append(names, k)
+// moduleVarNames parses a carved root's *.tf files and returns the names of
+// the variables it declares — the duplicated root declarations plus the
+// generated boundary inputs.
+func moduleVarNames(dir string) (map[string]bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(names)
-	return vals, names, nil
+	out := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tf") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		f, diags := hclsyntax.ParseConfig(b, path, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			return nil, fmt.Errorf("parse %s: %s", path, diags.Error())
+		}
+		for _, blk := range f.Body.(*hclsyntax.Body).Blocks {
+			if blk.Type == "variable" && len(blk.Labels) == 1 {
+				out[blk.Labels[0]] = true
+			}
+		}
+	}
+	return out, nil
 }
 
 // tfvarsFiles lists the root's variable files in terraform's own load order:

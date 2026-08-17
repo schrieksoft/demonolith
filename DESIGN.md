@@ -485,7 +485,9 @@ default** (`--exec-path` overrides resolution).
   demonolith's own recorded output refuses the plan with nothing written),
   backend-type support, and the reserved `snapcd` module name.
 - **`refactor run`** executes the manifest verbatim — emit carved roots,
-  derived `backend.tf` files, and the bootstrap — then finalizes the
+  derived `backend.tf` files, a `.gitignore` per root covering the local
+  artifacts later stages leave behind (`.terraform/`, `*.tfstate`, `.env`,
+  `generated.auto.tfvars`, …), and the bootstrap — then finalizes the
   `emit_checksum`. No mode flags: everything comes from the manifest. It
   refuses when the source no longer matches the plan (semantic staleness).
 - **`refactor verify`** re-runs analysis+emit in memory and compares against
@@ -502,27 +504,34 @@ default** (`--exec-path` overrides resolution).
 - **`migrate prove`** proves *plan's output*: it requires the generation's
   complete plan receipt with intact artifacts, threads producer outputs into
   consumer inputs (the control plane's runtime role), plans every root against
-  its carved copy, and writes a mode-"prove" verdict. External inputs resolve
-  the way the monolith resolved them — auto-loaded tfvars, `--var-file`,
-  `TF_VAR_*`, `--var`, in ascending precedence — and cross-module inputs are
-  never user-suppliable. Values are threaded in memory by default;
-  `--create-tfvars` materializes `generated.auto.tfvars` per consumer root as
+  its carved copy, and writes a mode-"prove" verdict. Variable values resolve
+  in the engine's own precedence — `TF_VAR_*` env, auto-loaded tfvars,
+  `--var-file`, `--var`, ascending — and cross-module inputs are never
+  user-suppliable. Each module's resolved root values are materialized into
+  its `generated.auto.tfvars`; cross-module values are threaded in memory by
+  default, and `--create-tfvars` adds them to the file as a second section —
   the standalone wiring for detached use. PR CI runs plan + prove in the job
   workspace: the artifacts die with it.
 - **`migrate run`** executes the migration. Preconditions: the plan receipt,
   and a passing prove verdict **no older than it** — missing or stale refuses
   with "run `demonolith migrate prove`" (`--unproven` is the explicit
-  override; run never proves on its own). Then per module: init its derived
-  backend (`--backend-config` passes out-of-band values), `state pull` to
-  confirm the target is **empty** (an identical-lineage occupant is an
-  idempotent skip), `state push` the carved file — never forced. A monolith
+  override; run never proves on its own). First it materializes each module's
+  gitignored `.env` (0600) — backend credentials from the root's init-time
+  resolved config as engine environment variables — and its
+  `generated.auto.tfvars` with the module's resolved root variable values.
+  Then per module: init
+  its derived backend (`--backend-config` passes out-of-band values), `state
+  pull` to confirm the target is **empty** (an identical-lineage occupant is
+  an idempotent skip), `state push` the carved file — never forced. A monolith
   without a backend gets local seeding: each root receives its
   `terraform.tfstate` in place. An action-"run" receipt records every
   destination. The monolith's own state is never written.
 - **`migrate verify`** is the post-run judgment: the same threaded proof
-  executed against each root's **real backend** — full init, no staged
-  copies, refresh on — writing a mode-"final" verdict. Requires the run
-  receipt.
+  executed against each root's **real backend** — a full init that must find
+  the seeded state, then a refreshed plan that must show zero create/destroy
+  (a missing state would plan everything as a create) — writing a mode-"final"
+  verdict. Materializes `.env` and `generated.auto.tfvars` like run, so it
+  works standalone. Requires the run receipt.
 
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational
 error, `2` **negative verdict** — the run worked but the answer is "no" (the

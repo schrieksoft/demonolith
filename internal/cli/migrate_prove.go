@@ -10,7 +10,6 @@ import (
 
 	"github.com/schrieksoft/demonolith/internal/manifest"
 	"github.com/schrieksoft/demonolith/internal/proof"
-	"github.com/schrieksoft/demonolith/internal/statevars"
 )
 
 func migrateProveCmd() *cobra.Command {
@@ -72,7 +71,7 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 	}
 
 	// The subject of the proof: migrate plan's carved artifacts.
-	_, moduleStates, backup, err := planReceiptStates(rootDir, m)
+	_, moduleStates, _, err := planReceiptStates(rootDir, m)
 	if err != nil {
 		return err
 	}
@@ -85,17 +84,11 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 
 	rep := proveReport{Manifest: manifest.FileName, Mode: manifest.ModeProve, ExternalInputs: extNames}
 
-	if f.createTfvars {
-		st, err := statevars.LoadState(backup)
-		if err != nil {
-			return fmt.Errorf("tfvars: %w", err)
-		}
-		sv, err := statevars.Generate(st, a.Boundary, moduleDirs, statevars.Options{SourceDir: rootDir})
-		if err != nil {
-			return fmt.Errorf("tfvars: %w", err)
-		}
-		rep.TfvarsFiles = sv.Files
+	sv, err := materializeTfvars(rootDir, m, a.Boundary, f)
+	if err != nil {
+		return err
 	}
+	rep.TfvarsFiles = sv.Files
 
 	pres, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, proof.Options{
 		ExecPath:       execPath,
@@ -158,7 +151,7 @@ func printProofReport(rootDir string, rep proveReport, subject string) {
 		outf("  %-16s %s (~%d in-place)\n", mv.Module, status, mv.Update)
 	}
 	if len(rep.TfvarsFiles) > 0 {
-		outln("\nGenerated input values (from applied state):")
+		outln("\nMaterialized input values (generated.auto.tfvars):")
 		mods := make([]string, 0, len(rep.TfvarsFiles))
 		for m := range rep.TfvarsFiles {
 			mods = append(mods, m)

@@ -59,9 +59,13 @@ func TestGenerate_ResolvesFromState(t *testing.T) {
 	if err := os.MkdirAll(bDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	res, err := statevars.Generate(st, bound, map[string]string{"a": filepath.Join(base, "a"), "b": bDir}, statevars.Options{})
+	cross, err := statevars.ResolveCross(st, bound, statevars.Options{})
 	if err != nil {
-		t.Fatalf("Generate: %v", err)
+		t.Fatalf("ResolveCross: %v", err)
+	}
+	res, err := statevars.Write(map[string]string{"a": filepath.Join(base, "a"), "b": bDir}, nil, cross)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 
 	if got := res.Values["b"]["random_integer_seed"]; got != "48" {
@@ -99,7 +103,7 @@ func TestGenerate_MissingStateValueIsError(t *testing.T) {
 			OutputName: "random_integer_seed", InputName: "random_integer_seed",
 		}},
 	}
-	_, err = statevars.Generate(st, bound, map[string]string{"a": filepath.Join(base, "a"), "b": filepath.Join(base, "b")}, statevars.Options{})
+	_, err = statevars.ResolveCross(st, bound, statevars.Options{})
 	if err == nil {
 		t.Fatal("expected error for producer missing from state, got nil")
 	}

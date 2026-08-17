@@ -25,6 +25,25 @@ import (
 	"github.com/schrieksoft/demonolith/internal/placement"
 )
 
+// RootGitignore is the .gitignore written into every emitted root: the local
+// artifacts an init, plan, or migration leaves behind. The engine lock file is
+// deliberately absent — it belongs in version control.
+const RootGitignore = `.terraform/
+*.tfstate
+*.tfstate.*
+*.backup
+.env
+demono.tfplan
+generated.auto.tfvars
+crash.log
+crash.*.log
+`
+
+// WriteGitignore writes RootGitignore into dir.
+func WriteGitignore(dir string) error {
+	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(RootGitignore), 0o644)
+}
+
 // Emitter carves a monolith into per-module roots.
 type Emitter struct {
 	SrcDir string
@@ -156,6 +175,11 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		}
 		em.Files = append(em.Files, "backend.tf")
 	}
+
+	if err := WriteGitignore(dir); err != nil {
+		return EmittedModule{}, err
+	}
+	em.Files = append(em.Files, ".gitignore")
 
 	// Copy any local child-module source directories this module owns, so the
 	// carved root can resolve `source = "./..."`. In monorepo mode nothing is

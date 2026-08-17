@@ -26,6 +26,14 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 **Handle it:** pass `--no-backend` to carve without backend blocks and wire the backends by hand (`tofu init -migrate-state`, or a careful `state push` into an **empty** location — never `-force`), or move the missing attribute into HCL. Either way the monolith's own state is never written by demonolith; retiring it after every root proves clean is the human cutover step.
 
+## Provider environment is not captured
+
+**What:** demonolith materializes exactly two ambient inputs into the carved roots: backend credentials (per-module `.env`) and variable values (per-module `generated.auto.tfvars`). Everything else a plan may depend on — provider credentials (`AWS_PROFILE`, `ARM_CLIENT_SECRET`, `GOOGLE_APPLICATION_CREDENTIALS`), plugin mirrors, proxy settings — is inherited from the calling environment, never recorded.
+
+**Shows up as:** migrate steps failing at init or plan with provider authentication errors, in a session where the monolith itself was never init'd or the environment differs from the one that could.
+
+**Handle it:** treat a clean `init` + `plan` of the monolith root as the entry ticket, and run every demonolith command in that same shell session. A value passed as `-var` on the original apply is likewise not recoverable from state; re-supply it as `--var`.
+
 ## A re-carve cannot re-push over its own earlier push
 
 **What:** every `migrate plan` carve mints a fresh state lineage per module file. `migrate run`'s empty-target guard treats an identical-lineage occupant as an idempotent skip — which works as long as the carve workdir (`<out>/.state/`) that produced the pushed states still exists. Lose the workdir after a successful run, re-carve, and the new files carry new lineages: the push now refuses against your own earlier (semantically identical) push as "unrelated state".

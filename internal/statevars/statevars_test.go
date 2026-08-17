@@ -92,9 +92,13 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	sv, err := statevars.Generate(st, a.Boundary, moduleDirs, statevars.Options{SourceDir: srcDir})
+	cross, err := statevars.ResolveCross(st, a.Boundary, statevars.Options{SourceDir: srcDir})
 	if err != nil {
-		t.Fatalf("Generate: %v", err)
+		t.Fatalf("ResolveCross: %v", err)
+	}
+	sv, err := statevars.Write(moduleDirs, nil, cross)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 
 	// Every consumer module (one with >=1 cross-module input) must have a

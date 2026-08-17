@@ -31,6 +31,9 @@ func migrateRunCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required unless the monolith has no backend)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
+	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
+	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
+	flags.BoolVar(&f.createTfvars, "create-tfvars", false, "also materialize cross-module input values into generated.auto.tfvars — the standalone wiring for detached use")
 	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-verdict precondition (explicitly run an unproven migration)")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "confirm the per-module destinations before pushing")
@@ -91,7 +94,14 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 
+	a, err := analyzeMatching(rootDir, m)
+	if err != nil {
+		return err
+	}
 	if err := materializeBackendEnv(rootDir, m); err != nil {
+		return err
+	}
+	if _, err := materializeTfvars(rootDir, m, a.Boundary, f); err != nil {
 		return err
 	}
 

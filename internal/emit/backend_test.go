@@ -165,7 +165,7 @@ func TestBackend_ResolvedConfigFallbackAndEnv(t *testing.T) {
 		t.Errorf("backend.tf must carry derived locations and never credentials:\n%s", bt)
 	}
 
-	wrote, err := b.WriteEnvFile(modDir)
+	wrote, err := emit.WriteEnvFile(modDir, b.CredentialEnv())
 	if err != nil || !wrote {
 		t.Fatalf("WriteEnvFile: wrote=%v err=%v", wrote, err)
 	}

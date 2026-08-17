@@ -1,0 +1,167 @@
+version: 1
+created: "2026-08-17T19:27:03Z"
+tool: demonolith dev
+source:
+    root: /home/karl/code/snapcd-all/misc/demonolith/testdata/sample-snapcd/out/cli-journey/src
+    remainder_module: monolith
+output:
+    dir: modules
+    bootstrap: true
+    bootstrap_dir: modules/snapcd
+modules:
+    app:
+        dir: modules/app
+        blocks:
+            - data.snapcd_runner.default
+            - data.snapcd_stack.default
+            - data.tls_public_key.deploy_key
+            - module.storefront_dns
+            - random_password.app_session_secret
+            - random_pet.app_release
+            - tls_private_key.deploy_signer
+    cluster:
+        dir: modules/cluster
+        blocks:
+            - data.snapcd_runner.default
+            - module.cluster
+            - random_pet.node_pool
+    database:
+        dir: modules/database
+        blocks:
+            - data.snapcd_stack.default
+            - module.database
+            - random_uuid.database_firewall_rule
+    monolith:
+        dir: modules/monolith
+        blocks:
+            - random_pet.backup_plan
+            - random_uuid.audit_log_bucket_id
+    networking:
+        dir: modules/networking
+        blocks:
+            - data.snapcd_stack.default
+            - module.private_subnet
+            - module.public_subnet
+            - random_pet.network_name
+            - random_uuid.nat_gateway_id
+            - random_uuid.vpc_id
+            - time_sleep.network_propagation
+catchall:
+    - random_pet.backup_plan
+    - random_uuid.audit_log_bucket_id
+duplicated_data:
+    data.snapcd_runner.default:
+        - app
+        - cluster
+    data.snapcd_stack.default:
+        - app
+        - database
+        - networking
+state_moves:
+    - address: module.storefront_dns
+      module: app
+    - address: random_password.app_session_secret
+      module: app
+    - address: random_pet.app_release
+      module: app
+    - address: tls_private_key.deploy_signer
+      module: app
+    - address: module.cluster
+      module: cluster
+    - address: random_pet.node_pool
+      module: cluster
+    - address: module.database
+      module: database
+    - address: random_uuid.database_firewall_rule
+      module: database
+    - address: module.private_subnet
+      module: networking
+    - address: module.public_subnet
+      module: networking
+    - address: random_pet.network_name
+      module: networking
+    - address: random_uuid.nat_gateway_id
+      module: networking
+    - address: random_uuid.vpc_id
+      module: networking
+    - address: time_sleep.network_propagation
+      module: networking
+cross_edges:
+    - producer_module: cluster
+      producer: module.cluster
+      attribute: cluster_endpoint
+      output: module_cluster_cluster_endpoint
+      consumer_module: app
+      consumer: module.storefront_dns
+      input: module_cluster_cluster_endpoint
+    - producer_module: cluster
+      producer: module.cluster
+      attribute: cluster_id
+      output: module_cluster_cluster_id
+      consumer_module: app
+      consumer: random_pet.app_release
+      input: module_cluster_cluster_id
+    - producer_module: database
+      producer: module.database
+      attribute: database_endpoint
+      output: module_database
+      consumer_module: app
+      consumer: random_pet.app_release
+      input: module_database
+    - producer_module: networking
+      producer: random_pet.network_name
+      attribute: id
+      output: random_pet_network_name
+      consumer_module: app
+      consumer: local.network_zone
+      input: random_pet_network_name
+    - producer_module: networking
+      producer: module.private_subnet
+      attribute: subnet_id
+      output: module_private_subnet_subnet_id
+      consumer_module: cluster
+      consumer: module.cluster
+      input: module_private_subnet_subnet_id
+    - producer_module: networking
+      producer: module.public_subnet
+      attribute: subnet_id
+      output: module_public_subnet
+      consumer_module: cluster
+      consumer: module.cluster
+      input: module_public_subnet
+    - producer_module: networking
+      producer: random_uuid.vpc_id
+      attribute: result
+      output: random_uuid_vpc_id
+      consumer_module: cluster
+      consumer: module.cluster
+      input: random_uuid_vpc_id
+    - producer_module: networking
+      producer: module.private_subnet
+      attribute: cidr_block
+      output: module_private_subnet_cidr_block
+      consumer_module: database
+      consumer: random_uuid.database_firewall_rule
+      input: module_private_subnet_cidr_block
+    - producer_module: networking
+      producer: module.private_subnet
+      attribute: subnet_id
+      output: module_private_subnet_subnet_id
+      consumer_module: database
+      consumer: module.database
+      input: module_private_subnet_subnet_id
+ordering_edges:
+    - consumer_module: cluster
+      producer_module: networking
+      consumer: module.cluster
+      producer: time_sleep.network_propagation
+backend:
+    type: http
+    monolith: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289
+    modules:
+        app: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-app
+        cluster: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-cluster
+        database: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-database
+        monolith: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-monolith
+        networking: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1786994803919057289-networking
+emit_checksum: sha256:89dfb43b25b4262a7db53374a41ca50370186bd3149ec29179de8494a83502e9
