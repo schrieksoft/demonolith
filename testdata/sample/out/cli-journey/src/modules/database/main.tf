@@ -29,9 +29,9 @@ data "local_file" "environment" {
   filename = "${path.module}/config/environment.json"
 }
 
-# An external module, pulled straight from GitHub (not a Snap CD module).
+# An external-style module (local source so tests stay offline and fast).
 module "database" {
-  source              = "github.com/snapcd-samples/mock-module-database"
+  source              = "./modules/mock-database"
   resource_group_name = var.resource_group_name
   database_name       = local.database_name
   database_sku        = local.settings.database.sku

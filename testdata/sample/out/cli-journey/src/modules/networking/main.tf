@@ -48,13 +48,10 @@ resource "random_pet" "network_name" {
 }
 
 resource "random_uuid" "nat_gateway_id" {
-  depends_on = [time_sleep.network_propagation]
+  keepers = {
+    vpc = random_uuid.vpc_id.result
+  }
 }
 
 resource "random_uuid" "vpc_id" {}
-
-resource "time_sleep" "network_propagation" {
-  create_duration = "1s"
-  depends_on      = [random_uuid.vpc_id, module.public_subnet, module.private_subnet]
-}
 

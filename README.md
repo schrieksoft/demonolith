@@ -2,12 +2,12 @@
 
 A Go CLI that refactors a monolithic Terraform/OpenTofu root into independent
 per-module roots — code, state, and control-plane wiring — in two command
-families split at the code/state line, connected by a manifest:
+families split at the code/state line, connected by a map:
 
 ```
 demonolith refactor            # map → run → verify        (the code carve)
-  refactor map                 #   analyze → write the manifest (the review artifact)
-  refactor run                 #   execute the manifest: emit roots + backends + bootstrap
+  refactor map                 #   analyze → write the map (the review artifact)
+  refactor run                 #   execute the map: emit roots + backends + bootstrap
   refactor verify              #   gate: committed output ≡ committed source
 
 demonolith migrate             # map → prove → run → verify (the state migration)
@@ -23,7 +23,7 @@ proof — with `-y`/`--yes` approving automatically; each subcommand stands
 alone. `refactor map/run/verify` are pure and offline. The migrate family
 needs an engine (`--engine terraform` or `--engine tofu` — no default, the
 choice is explicit). Exit codes are uniform: `0` success, `1` operational
-error, `2` negative verdict (a difference, a failed proof, a stale manifest).
+error, `2` negative verdict (a difference, a failed proof, a stale map).
 
 ## Decorators
 
@@ -60,18 +60,19 @@ demonolith refactor                      # or: refactor map && refactor run
 demonolith migrate --engine tofu         # map → prove → run → verify
 ```
 
-The manifest is the contract: one per root, `demonolith-refactor.yaml`. A
-*mapped* manifest carries the full plan (placement, state moves, wiring
-edges, derived backend locations) for review; `refactor run` executes it
-verbatim — refusing if the source changed since — and finalizes the
-`emit_checksum` that ties every later step to this exact generation. The
-audit trail is four fixed-name sidecars, overwritten per execution —
+Every command writes a receipt, and the audit trail is five fixed-name
+receipt files, overwritten per execution. The map receipt
+(`demonolith-refactor-map.yaml`, or just "the map") is the contract: it
+carries the full plan (placement, state moves, wiring edges, derived backend
+locations) for review; `refactor run` executes it verbatim — refusing if the
+source changed since — and finalizes the `emit_checksum` that ties every
+later step to this exact generation. The migrate steps write theirs —
 `demonolith-migrate-map.yaml`, `demonolith-migrate-run.yaml`,
-`demonolith-migrate-prove.yaml`, `demonolith-migrate-verify.yaml` — each carrying its
-`created` datetime and the generation's `manifest_checksum` inside the
-document, so an external system can tell what ran, when, and for which plan;
-history lives in version control. Undo on the code side is git: everything
-demonolith writes is ordinary committed files.
+`demonolith-migrate-prove.yaml`, `demonolith-migrate-verify.yaml` — each
+carrying its `created` datetime and the generation's `map_checksum`, so an
+external system can tell what ran, when, and for which map; history lives in
+version control. Undo on the code side is git: everything demonolith writes
+is ordinary committed files.
 
 **Backends** are derived, not hand-written: the monolith's `backend` block is
 carried into every carved root with its state location postfixed per module
@@ -114,7 +115,7 @@ force-push over it, which sacrifices the occupant and is warned about
 loudly. Nothing else is ever forced.
 
 **The Snap CD bootstrap** (`<out>/snapcd`, `--no-bootstrap` to skip) is
-generated from the manifest alone: one `snapcd_module` per carved root, every
+generated from the map alone: one `snapcd_module` per carved root, every
 cross edge as `snapcd_module_input_from_output`, ordering edges as
 `snapcd_depends_on_module`, external inputs as literals bound to the
 bootstrap's variables. Applying it against a Snap CD server is the adoption
@@ -138,7 +139,7 @@ never user-supplied: the proof threads them from producer outputs itself,
 and `demono.env` stays backend-credentials-only. A value that only ever existed as a
 `-var` flag on the original apply is not recoverable — state does not record
 inputs — so pass it again as `--var`. `migrate run` requires a passing prove
-verdict no older than the plan receipt (`--unproven` is the explicit
+receipt no older than the map receipt (`--unproven` is the explicit
 override).
 
 **Prerequisite — one shell session.** The monolith root must `init` and
@@ -149,13 +150,24 @@ backend credentials (`demono.env`) and variable values (`demono.root.tfvars`,
 `demono.graph.tfvars`);
 everything else the migrate steps inherit from whatever the session has set.
 
+**Interactive migration.** `demonolith migrate -i` walks every input the
+migration consumes before anything runs: engine and state source; each
+external variable with the value and the source the engine's precedence
+resolved it from (answer `name=value` or `@file` to supply more); the derived
+backend with the credential attributes headed for `demono.env` and a prompt
+for extra `-backend-config` values; and an advisory listing of the ambient
+provider environment this shell carries for each declared provider — ending
+with the equivalent non-interactive command, since every answer resolves to
+a flag. Flags passed alongside `-i` pre-fill the answers.
+
 Key flags: `--out`, `--remainder-module`, `--monorepo` (link in-repo child
 modules instead of copying), `--no-bootstrap`, `--no-backend` (refactor map);
 `--quiet`/`--silent`, `--validate` (refactor verify: engine-validate the
 committed roots, still credential-free); `--engine`, `--exec-path`,
 `--state-file` (migrate map); `--refresh`, `--no-tfvars`, `--var-file`,
 `--var` (migrate prove);
-`--backend-config`, `--unproven`, `--overwrite` (migrate run); `--output
+`--backend-config`, `--unproven`, `--overwrite` (migrate run); `--no-color`
+(any command); `--output
 {text|json}` and `--interactive`/`-i` where applicable.
 
 ## What each stage does
@@ -172,7 +184,7 @@ committed roots, still credential-free); `--engine`, `--exec-path`,
 5. **Emit** (`refactor run`) — carve per-module roots via `hclwrite`
    (formatting preserved), generate variables/outputs, rewrite cross-module
    references to `var.<input>`, propagate providers, derive backends, strip
-   decorator comments, generate the bootstrap; record it all in the manifest.
+   decorator comments, generate the bootstrap; record it all in the map.
 6. **State carve** (`migrate map`) — `state mv -state/-state-out` over local
    copies. Backup first; a receipt records what happened and where.
 7. **Proof** (`migrate prove`) — walk modules in topo order, thread each
@@ -183,7 +195,7 @@ committed roots, still credential-free); `--engine`, `--exec-path`,
    carved state, guarded; then **judgment** (`migrate verify`) — the threaded
    proof re-run against the real backends.
 
-See `DESIGN.md` for the pipeline concepts, the CLI and manifest design, and
+See `DESIGN.md` for the pipeline concepts, the CLI and map design, and
 usage patterns; `LIMITATIONS.md` lists the carve's known limits and how to
 handle them manually.
 
@@ -355,7 +367,7 @@ backend, and a refresh-on plan must show zero changes — a plan that
 wants to create everything means the init did not find the state you pushed.
 From then on, every producer output must reach its consumers somehow:
 re-extract values by hand whenever an upstream changes, or let a control plane
-ingest the manifest's wiring and do it at runtime. Retire the monolith — its
+ingest the map's wiring and do it at runtime. Retire the monolith — its
 pipelines and its old state — only after every root proves clean.
 
 Every step is mechanical; none of it is hard — but step 3 is a hundred small

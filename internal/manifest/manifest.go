@@ -29,7 +29,7 @@ const SchemaVersion = 1
 // FileName is the single canonical manifest per root: refactor always
 // re-derives the full plan from the monolith source, so each run overwrites it
 // in place and history lives in version control.
-const FileName = "demonolith-refactor.yaml"
+const FileName = "demonolith-refactor-map.yaml"
 
 // Manifest is the full refactor map for one monolith root.
 type Manifest struct {

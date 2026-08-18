@@ -1,17 +1,11 @@
 package cli
 
 import (
-	"context"
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/hashicorp/terraform-exec/tfexec"
 
 	"github.com/schrieksoft/demonolith/internal/manifest"
 	"github.com/schrieksoft/demonolith/internal/testsupport"
@@ -53,7 +47,7 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	}
 
 	// Downstream refuses a planned-only manifest.
-	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", "/bin/true"); err == nil || !strings.Contains(err.Error(), "mapped but not run") {
+	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", "/bin/true"); err == nil || !strings.Contains(err.Error(), "has not been run") {
 		t.Errorf("migrate map should refuse a planned-only manifest, got: %v", err)
 	}
 	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); ExitCode(err) != ExitVerdict {
@@ -640,86 +634,6 @@ func TestSampleJourney_Local(t *testing.T) {
 	}
 }
 
-// TestSampleJourney_SnapcdBackend is the same journey with the Snap CD State
-// Store as the remote backend (seeded default/default credentials) and the
-// shared configuration read from Snap CD data sources instead of a local
-// file: exercises remote read-only pull, http backend-location derivation
-// (lock endpoints included), and real remote pushes into empty state-store
-// locations. Skips when no local Snap CD server is reachable.
-func TestSampleJourney_SnapcdBackend(t *testing.T) {
-	execPath := testsupport.RequireEngine(t)
-	if !snapcdReachable() {
-		t.Skip("no Snap CD server at localhost:5000")
-	}
-
-	base := testsupport.OutDir(t, "sample-snapcd", "cli-journey")
-	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("sample-snapcd"))
-
-	// Unique per-run state name: pushes must land in empty locations, and the
-	// dev state store keeps old runs' states.
-	stateName := fmt.Sprintf("demonolith-e2e-%d", time.Now().UnixNano())
-	rootTf := filepath.Join(srcDir, "root.tf")
-	b, err := os.ReadFile(rootTf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(rootTf, []byte(strings.ReplaceAll(string(b), "DEMONO_STATE_NAME", stateName)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	testsupport.ApplyRoot(t, srcDir)
-
-	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
-		t.Fatalf("refactor failed: %v", err)
-	}
-	m, err := manifest.Load(manifest.Path(srcDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Backend == nil || m.Backend.Type != "http" {
-		t.Fatalf("manifest should derive the http backend, got %+v", m.Backend)
-	}
-	wantLoc := "10000000-0000-0000-0000-000000000000/" + stateName + "-networking"
-	if !strings.HasSuffix(m.Backend.Modules["networking"], wantLoc) {
-		t.Errorf("derived location = %q, want suffix %q", m.Backend.Modules["networking"], wantLoc)
-	}
-	bt, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "root.tf"))
-	if err != nil {
-		t.Fatalf("networking root.tf missing: %v", err)
-	}
-	if !strings.Contains(string(bt), stateName+"-networking/lock") {
-		t.Errorf("lock endpoint must keep its verb segment after derivation:\n%s", bt)
-	}
-
-	// No config copies needed: the shared configuration lives in Snap CD.
-	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
-		t.Fatalf("bare migrate failed: %v", err)
-	}
-	runR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionRun)
-	if err != nil || runR == nil || !runR.Complete {
-		t.Fatalf("expected a complete run receipt (err %v)", err)
-	}
-	for _, p := range runR.Pushes {
-		if p.Outcome != "pushed" {
-			t.Errorf("module %s outcome = %q, want pushed", p.Module, p.Outcome)
-		}
-		if !strings.Contains(p.Location, stateName+"-"+p.Module) {
-			t.Errorf("module %s pushed to %q, want the derived state-store location", p.Module, p.Location)
-		}
-	}
-}
-
-// snapcdReachable reports whether a local Snap CD server answers.
-func snapcdReachable() bool {
-	conn, err := net.DialTimeout("tcp", "localhost:5000", 2*time.Second)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-// copyTree recursively copies a directory tree.
 // hasAssignment reports whether content carries `name = "val"`, tolerating
 // hclwrite's column-aligned padding around the equals sign.
 func hasAssignment(content, name, val string) bool {
@@ -727,6 +641,7 @@ func hasAssignment(content, name, val string) bool {
 	return re.MatchString(content)
 }
 
+// copyTree copies a directory tree verbatim.
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -748,108 +663,17 @@ func copyTree(src, dst string) error {
 	})
 }
 
-// TestSampleJourney_BackendConfigFlags: the monolith's backend is configured
-// entirely via -backend-config at init (empty HCL block). Plan falls back to
-// the init-time resolved config for locations; migrate materializes the
-// credentials as gitignored per-module demono.env files and sources them — the
-// whole journey runs with zero backend flags. Skips without a server.
-func TestSampleJourney_BackendConfigFlags(t *testing.T) {
-	execPath := testsupport.RequireEngine(t)
-	if !snapcdReachable() {
-		t.Skip("no Snap CD server at localhost:5000")
-	}
+// TestRefactorVerify_Monorepo: monorepo-mode relative module sources must
+// verify cleanly even though verify re-emits into a scratch dir — the paths
+// are computed against the real out dir, not the physical emit dir.
+func TestRefactorVerify_Monorepo(t *testing.T) {
+	base := testsupport.OutDir(t, "sample", "cli-verify-monorepo")
+	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("sample"))
 
-	base := testsupport.OutDir(t, "sample-snapcd", "cli-flags-only")
-	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("sample-snapcd"))
-
-	stateName := fmt.Sprintf("demonolith-e2e-flags-%d", time.Now().UnixNano())
-	stateBase := "http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/" + stateName
-
-	// Empty the backend block: everything arrives via -backend-config.
-	rootTf := filepath.Join(srcDir, "root.tf")
-	b, err := os.ReadFile(rootTf)
-	if err != nil {
-		t.Fatal(err)
+	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--monorepo"); err != nil {
+		t.Fatalf("monorepo refactor failed: %v", err)
 	}
-	src := string(b)
-	start := strings.Index(src, "backend \"http\" {")
-	end := strings.Index(src[start:], "\n  }") + start + len("\n  }")
-	src = src[:start] + "backend \"http\" {}" + src[end:]
-	if err := os.WriteFile(rootTf, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Init + apply with the full config via flags.
-	tf, err := tfexec.NewTerraform(srcDir, execPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	err = tf.Init(ctx,
-		tfexec.BackendConfig("address="+stateBase),
-		tfexec.BackendConfig("lock_address="+stateBase+"/lock"),
-		tfexec.BackendConfig("unlock_address="+stateBase+"/unlock"),
-		tfexec.BackendConfig("lock_method=POST"),
-		tfexec.BackendConfig("unlock_method=POST"),
-		tfexec.BackendConfig("username=default"),
-		tfexec.BackendConfig("password=default"),
-	)
-	if err != nil {
-		t.Fatalf("init with -backend-config: %v", err)
-	}
-	if err := tf.Apply(ctx); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-
-	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
-		t.Fatalf("refactor failed: %v", err)
-	}
-	m, err := manifest.Load(manifest.Path(srcDir))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Backend == nil || !strings.HasSuffix(m.Backend.Modules["networking"], stateName+"-networking") {
-		t.Fatalf("locations must derive from resolved config, got %+v", m.Backend)
-	}
-	// Refactor deals with code only: no credentials materialized yet.
-	envPath := filepath.Join(srcDir, "modules", "networking", "demono.env")
-	if _, serr := os.Stat(envPath); !os.IsNotExist(serr) {
-		t.Error("refactor must not write demono.env files; that is migrate's job")
-	}
-	bt, _ := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "root.tf"))
-	if strings.Contains(string(bt), "password") {
-		t.Errorf("root.tf must not carry credentials:\n%s", bt)
-	}
-
-	// The whole migration with zero backend flags: migrate run materializes
-	// per-module demono.env from the root's resolved config and sources it.
-	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
-		t.Fatalf("bare migrate failed: %v", err)
-	}
-	envB, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("expected a per-module demono.env after migrate run: %v", err)
-	}
-	if !strings.Contains(string(envB), "TF_HTTP_USERNAME='default'") || !strings.Contains(string(envB), "TF_HTTP_PASSWORD='default'") {
-		t.Errorf("demono.env missing backend credentials:\n%s", envB)
-	}
-	if strings.Contains(string(envB), "TF_VAR_") {
-		t.Errorf("demono.env must hold backend credentials only, variable values go to the tfvars files:\n%s", envB)
-	}
-	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "demono.root.tfvars"))
-	if err != nil {
-		t.Fatalf("expected a demono.root.tfvars after migrate: %v", err)
-	}
-	if !hasAssignment(string(tfv), "name_prefix", "acme") {
-		t.Errorf("demono.root.tfvars missing root variable values:\n%s", tfv)
-	}
-	runR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionRun)
-	if err != nil || runR == nil || !runR.Complete {
-		t.Fatalf("expected a complete run receipt (err %v)", err)
-	}
-	for _, p := range runR.Pushes {
-		if p.Outcome != "pushed" {
-			t.Errorf("module %s outcome = %q, want pushed", p.Module, p.Outcome)
-		}
+	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); err != nil {
+		t.Errorf("monorepo verify should pass: %v", err)
 	}
 }

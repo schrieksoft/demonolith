@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-exec/tfexec"
 	"github.com/spf13/cobra"
@@ -19,7 +21,7 @@ func refactorVerifyCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "verify",
-		Short: "Provenance gate: do the committed roots and manifest match the committed source?",
+		Short: "Gate: do the emitted roots and the map still match the source?",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -43,8 +45,9 @@ func refactorVerifyCmd() *cobra.Command {
 // verifyReport is the machine-facing result of refactor verify.
 type verifyReport struct {
 	Differs        bool     `json:"differs"`
-	Manifest       string   `json:"manifest,omitempty"`
+	Manifest       string   `json:"map,omitempty"`
 	ChangedFiles   []string `json:"changed_files,omitempty"`
+	DiffDetail     []string `json:"-"`
 	Reasons        []string `json:"reasons,omitempty"`
 	InvalidModules []string `json:"invalid_modules,omitempty"`
 }
@@ -58,7 +61,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	path := manifest.Path(rootDir)
 	if _, err := os.Stat(path); err != nil {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "no committed "+manifest.FileName+" found; run `demonolith refactor map` and commit its output")
+		rep.Reasons = append(rep.Reasons, "no "+manifest.FileName+" found; run `demonolith refactor map` first")
 		return reportRefactorVerify(rep, nil, mode, f)
 	}
 	rep.Manifest = manifest.FileName
@@ -68,7 +71,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	}
 	if !committed.IsRun() {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "manifest is mapped but not run; run `demonolith refactor run` and commit its output")
+		rep.Reasons = append(rep.Reasons, "the map has not been run yet; run `demonolith refactor run` and commit its output")
 		return reportRefactorVerify(rep, committed, mode, f)
 	}
 
@@ -89,7 +92,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 			return err
 		}
 	}
-	e := &emit.Emitter{SrcDir: rootDir, OutDir: tmp, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary, Monorepo: committed.Output.Monorepo, Backend: block}
+	e := &emit.Emitter{SrcDir: rootDir, OutDir: tmp, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary, Monorepo: committed.Output.Monorepo, Backend: block, PathBase: committed.OutDir(rootDir)}
 	ems, err := e.Emit()
 	if err != nil {
 		return err
@@ -113,7 +116,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	committedHashes, err := manifest.FileHashes(committed.ChecksumDirs(rootDir))
 	if err != nil {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, fmt.Sprintf("committed roots unreadable: %v", err))
+		rep.Reasons = append(rep.Reasons, fmt.Sprintf("roots unreadable: %v", err))
 		return reportRefactorVerify(rep, committed, mode, f)
 	}
 	freshHashes, err := manifest.FileHashes(freshDirs)
@@ -123,16 +126,17 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 
 	rep.ChangedFiles = diffHashes(freshHashes, committedHashes)
 	if len(rep.ChangedFiles) > 0 {
+		rep.DiffDetail = diffPreview(rep.ChangedFiles, committed.ChecksumDirs(rootDir), freshDirs)
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "committed roots differ from what the committed source produces")
+		rep.Reasons = append(rep.Reasons, "the roots on disk differ from what the source produces")
 	}
 	if committed.EmitChecksum != manifest.ChecksumOf(committedHashes) {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "committed roots were edited after the manifest was written (emit_checksum mismatch)")
+		rep.Reasons = append(rep.Reasons, "the roots on disk were edited after the map was written (emit_checksum mismatch)")
 	}
 	if !manifest.SemanticEqual(fresh, committed) {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "manifest content differs from what the committed source produces")
+		rep.Reasons = append(rep.Reasons, "the map differs from what the source produces")
 	}
 
 	if f.validate && !rep.Differs {
@@ -197,6 +201,70 @@ func joinComma(items []string) string {
 	return out
 }
 
+// diffPreview shows, per differing file (capped at three), the first line
+// where the content on disk and the freshly produced content diverge.
+func diffPreview(files []string, onDisk, produced map[string]string) []string {
+	var out []string
+	shown := 0
+	for _, f := range files {
+		if strings.Contains(f, " (") {
+			continue // added/removed files carry their explanation already
+		}
+		if shown == 3 {
+			out = append(out, "(further diffs omitted)")
+			break
+		}
+		name, rel, ok := strings.Cut(f, "/")
+		if !ok {
+			continue
+		}
+		line, have, want := firstLineDiff(filepath.Join(onDisk[name], filepath.FromSlash(rel)), filepath.Join(produced[name], filepath.FromSlash(rel)))
+		if line == 0 {
+			continue
+		}
+		out = append(out,
+			fmt.Sprintf("%s, first difference at line %d:", f, line),
+			"  on disk:       "+have,
+			"  source yields: "+want)
+		shown++
+	}
+	return out
+}
+
+// firstLineDiff returns the first differing line number (1-based) and the two
+// versions of that line; 0 when the files are unreadable or identical.
+func firstLineDiff(onDiskPath, producedPath string) (int, string, string) {
+	a, errA := os.ReadFile(onDiskPath)
+	b, errB := os.ReadFile(producedPath)
+	if errA != nil || errB != nil {
+		return 0, "", ""
+	}
+	al := strings.Split(string(a), "\n")
+	bl := strings.Split(string(b), "\n")
+	n := len(al)
+	if len(bl) < n {
+		n = len(bl)
+	}
+	render := func(l string) string {
+		if strings.TrimSpace(l) == "" {
+			return "<empty line>"
+		}
+		return strings.TrimSpace(l)
+	}
+	for i := 0; i < n; i++ {
+		if al[i] != bl[i] {
+			return i + 1, render(al[i]), render(bl[i])
+		}
+	}
+	if len(al) != len(bl) {
+		if len(al) > n {
+			return n + 1, strings.TrimSpace(al[n]), "<end of file>"
+		}
+		return n + 1, "<end of file>", strings.TrimSpace(bl[n])
+	}
+	return 0, "", ""
+}
+
 // diffHashes lists "<module>/<relpath>" entries that differ between the fresh
 // and committed trees, tagging additions and removals.
 func diffHashes(fresh, committed map[string]string) []string {
@@ -235,19 +303,22 @@ func reportRefactorVerify(rep verifyReport, m *manifest.Manifest, mode outputMod
 			printPlacement(m)
 		}
 		if rep.Differs {
-			outln("Committed output differs from the committed source:")
+			outln(fail("Out of sync") + " — the output on disk does not match what the source produces:")
 			for _, r := range rep.Reasons {
 				outf("  - %s\n", r)
 			}
 			for _, fl := range rep.ChangedFiles {
 				outf("    %s\n", fl)
 			}
+			for _, d := range rep.DiffDetail {
+				outf("  %s\n", d)
+			}
 		} else {
-			outf("In sync: committed roots and manifest %s match the committed source.\n", rep.Manifest)
+			outf("%s: the roots and map %s match the source.\n", success("In sync"), rep.Manifest)
 		}
 	}
 	if rep.Differs {
-		return verdictf("committed output differs from the committed source; re-run `demonolith refactor` and commit its output")
+		return verdictf("the output on disk does not match what the source produces; re-run `demonolith refactor` to regenerate it (and commit the result if the roots are tracked)")
 	}
 	return nil
 }
@@ -256,7 +327,7 @@ func reportRefactorVerify(rep verifyReport, m *manifest.Manifest, mode outputMod
 // the root it was carved into — so an in-sync verdict shows what was actually
 // confirmed.
 func printPlacement(m *manifest.Manifest) {
-	outln("Committed plan under comparison:")
+	outln("Map under comparison:")
 	names := make([]string, 0, len(m.Modules))
 	for name := range m.Modules {
 		names = append(names, name)

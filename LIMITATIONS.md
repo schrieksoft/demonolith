@@ -42,9 +42,9 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 **Handle it:** inspect the occupant (`state pull` in the module dir) and decide which side is right. If it is a stale artifact of an abandoned attempt, empty or delete that remote state and re-run — or re-run with `--overwrite` to force-push over it (the occupant is lost; the run warns loudly). The carved states are reproducible and the monolith's own state is never touched.
 
-## The prove verdict ages between prove and run
+## The prove receipt ages between prove and run
 
-**What:** `migrate prove` judges the carved artifacts against the state as it was when `migrate map` pulled it; `migrate run` pushes at a later moment. Real infrastructure drifting in between is invisible to the verdict — the same plan/apply gap every plan-then-execute system has.
+**What:** `migrate prove` judges the carved artifacts against the state as it was when `migrate map` pulled it; `migrate run` pushes at a later moment. Real infrastructure drifting in between is invisible to the proof — the same plan/apply gap every plan-then-execute system has.
 
 **Shows up as:** `migrate verify` (which plans against the real backends, refresh on) reporting diffs that prove did not.
 
@@ -52,7 +52,7 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 ## Whole-block placement only
 
-**What:** decorators, state moves, and the manifest all address whole blocks. A `count`/`for_each` resource's instances cannot be split across modules, and there is no per-instance re-addressing.
+**What:** decorators, state moves, and the map all address whole blocks. A `count`/`for_each` resource's instances cannot be split across modules, and there is no per-instance re-addressing.
 
 **Handle it:** split the block in the monolith first (separate resources, or two blocks with partitioned `for_each` sets, using `moved` blocks to keep state), apply that as an ordinary monolith change, then refactor.
 
@@ -80,9 +80,9 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 ## Ordering edges are only reported without a control plane
 
-**What:** a cross-module `depends_on` becomes an ordering edge — recorded in the manifest, enforced by nothing in detached use. Value edges self-enforce (a consumer can't plan without its input); ordering edges don't.
+**What:** a cross-module `depends_on` becomes an ordering edge — recorded in the map, enforced by nothing in detached use. Value edges self-enforce (a consumer can't plan without its input); ordering edges don't.
 
-**Handle it:** apply the roots in the manifest's order (the proofs print the topo order), wire the ordering into your pipeline, or adopt into a control plane whose dependency graph carries it natively.
+**Handle it:** apply the roots in the map's order (the proofs print the topo order), wire the ordering into your pipeline, or adopt into a control plane whose dependency graph carries it natively.
 
 ## Cross-module values are strings
 

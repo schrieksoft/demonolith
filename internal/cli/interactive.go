@@ -16,7 +16,7 @@ import (
 var stdin = bufio.NewReader(os.Stdin)
 
 func promptLine(label string) (string, error) {
-	outf("%s", label)
+	outf("%s", prompt(label))
 	s, err := stdin.ReadString('\n')
 	if err != nil {
 		return "", fmt.Errorf("read input: %w", err)
@@ -130,7 +130,8 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 
 		assignments := map[string][]string{}
 		if len(a.Placement.Catchall) > 0 {
-			triage, err := promptYesNo(fmt.Sprintf("\nTriage the %d unannotated block(s)?", len(a.Placement.Catchall)), true)
+			outf("\nThe %d block(s) above carry no @demono:move decorator; unless assigned, they stay in the catchall module %q.\n", len(a.Placement.Catchall), f.remainder)
+			triage, err := promptYesNo(fmt.Sprintf("\nAssign them to modules now? (choices are written into the source as @demono:move decorators; \"n\" keeps them in %q)", f.remainder), false)
 			if err != nil {
 				return f, err
 			}
@@ -177,7 +178,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 				}
 				outf("  %s:%d  # @demono:move %s\n", displayPath(rootDir, pos.file), pos.line, strings.Join(assignments[addr], " "))
 			}
-			write, err := promptYesNo("Write these decorators into the source?", false)
+			write, err := promptYesNo("\nWrite these decorators into the source?", false)
 			if err != nil {
 				return f, err
 			}
@@ -192,7 +193,8 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 			continue
 		}
 
-		writeOK, err := promptYesNo(fmt.Sprintf("\nWrite the manifest for %d module root(s)?", len(a.Placement.ModuleNames())), true)
+		outf("\nNext step: write the manifest (%s) recording this map of %d module root(s) — the reviewable plan that `refactor run` executes.\n", manifest.FileName, len(a.Placement.ModuleNames()))
+		writeOK, err := promptYesNo("\nWrite it? (\"n\" aborts; decorators already written stay in the source)", true)
 		if err != nil {
 			return f, err
 		}
@@ -221,7 +223,7 @@ func runRefactorInteractivePipeline(f refactorFlags) error {
 		return err
 	}
 	rootDir := resolveRoot(resolved.rootDir)
-	runOK, err := promptYesNo("Run the plan now (emit the carved roots)?", true)
+	runOK, err := promptYesNo("\nRun the refactor now?", true)
 	if err != nil {
 		return err
 	}
@@ -229,9 +231,11 @@ func runRefactorInteractivePipeline(f refactorFlags) error {
 		outln("Map written; run later with `demonolith refactor run`.")
 		return nil
 	}
+	outf("\n%s\n\n", banner("── refactor run ──"))
 	if err := runRefactorRun(rootDir, outputText); err != nil {
 		return err
 	}
+	outf("\n%s\n\n", banner("── refactor verify ──"))
 	vf := resolved
 	vf.quiet = true
 	return runRefactorVerify(rootDir, outputText, vf)
@@ -337,7 +341,7 @@ func confirmMigrateMap(rootDir string, m *manifest.Manifest, f migrateFlags) (bo
 	if receipt != nil && receipt.Complete {
 		status = "already carved; will skip"
 	}
-	outf("%s — %s\n", manifest.FileName, status)
+	outf("\n%s %s\n", heading("State moves to carve")+" ("+manifest.FileName+"):", dim(status))
 	total := 0
 	if receipt == nil || !receipt.Complete {
 		for _, mv := range m.StateMoves {
@@ -349,5 +353,5 @@ func confirmMigrateMap(rootDir string, m *manifest.Manifest, f migrateFlags) (bo
 	if engine == "" {
 		engine = f.execPath
 	}
-	return promptYesNo(fmt.Sprintf("\nCarve %d move(s) with %s (local copies only; a backup is written first)?", total, engine), false)
+	return promptYesNo(fmt.Sprintf("\nCarve %d move(s) with %s (local copies only; a backup is written first)?", total, engine), true)
 }

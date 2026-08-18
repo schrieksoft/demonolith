@@ -58,7 +58,7 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 		return err
 	}
 	if runReceipt == nil || !runReceipt.Complete {
-		return fmt.Errorf("no completed migrate run for this manifest generation; run `demonolith migrate run` first")
+		return fmt.Errorf("no completed migrate run for this map generation; run `demonolith migrate run` first")
 	}
 	a, err := analyzeMatching(rootDir, m)
 	if err != nil {
@@ -91,9 +91,9 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 		RootInputs:     rootInputs,
 	}
 	if mode == outputText {
-		outln("Verifying modules in dependency order (init + refresh plan against the real backends):")
+		outln("\n" + heading("Verifying modules in dependency order") + " (init + refresh plan against the real backends):")
 		opts.OnPlanStart = func(module string) { outf("  %s: verifying ... ", module) }
-		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", verdict) }
+		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
 	}
 	pres, err := proof.Run(ctx, m.ModuleDirs(rootDir), nil, a.Boundary, opts)
 	if err != nil {

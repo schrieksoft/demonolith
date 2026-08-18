@@ -57,11 +57,11 @@ type Receipt struct {
 	Created string `yaml:"created"`
 	Tool    string `yaml:"tool"`
 	// Manifest is the filename (not path) of the manifest that was executed.
-	Manifest string `yaml:"manifest"`
+	Manifest string `yaml:"map"`
 	// ManifestChecksum is the executed manifest's emit_checksum; the manifest
 	// filename is constant, so the checksum is what ties a receipt to one
 	// manifest generation.
-	ManifestChecksum string `yaml:"manifest_checksum"`
+	ManifestChecksum string `yaml:"map_checksum"`
 	// Action is what this receipt records: "map" (the local carve) or "run"
 	// (the push into real backends).
 	Action string `yaml:"action"`
@@ -148,9 +148,9 @@ type Verdict struct {
 	Version  int    `yaml:"version"`
 	Created  string `yaml:"created"`
 	Tool     string `yaml:"tool"`
-	Manifest string `yaml:"manifest"`
+	Manifest string `yaml:"map"`
 	// ManifestChecksum ties the verdict to one manifest generation.
-	ManifestChecksum string          `yaml:"manifest_checksum"`
+	ManifestChecksum string          `yaml:"map_checksum"`
 	Mode             string          `yaml:"mode"`
 	Refresh          bool            `yaml:"refresh"`
 	OK       bool            `yaml:"ok"`

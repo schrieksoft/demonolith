@@ -37,14 +37,14 @@ func migrateProveCmd() *cobra.Command {
 // proveReport is the machine-facing proof result. External input values are
 // deliberately absent — names only.
 type proveReport struct {
-	Manifest       string                   `json:"manifest"`
+	Manifest       string                   `json:"map"`
 	Mode           string                   `json:"mode"`
 	OK             bool                     `json:"ok"`
 	Order          []string                 `json:"order"`
 	Modules        []manifest.ModuleVerdict `json:"modules"`
 	ExternalInputs []string                 `json:"external_inputs,omitempty"`
 	TfvarsFiles    map[string]string        `json:"tfvars_files,omitempty"`
-	VerdictPath    string                   `json:"verdict_path"`
+	VerdictPath    string                   `json:"receipt_path"`
 }
 
 func runMigrateProve(ctx context.Context, f migrateFlags) error {
@@ -101,9 +101,9 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 		RootInputs:     rootInputs,
 	}
 	if mode == outputText {
-		outln("Proving modules in dependency order (plans against the carved state copies):")
-		opts.OnPlanStart = func(module string) { outf("  %s: planning ... ", module) }
-		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", verdict) }
+		outln(heading("Proving modules in dependency order") + " (plans against the carved state copies):")
+		opts.OnPlanStart = func(module string) { outf("  %s: proving ... ", module) }
+		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
 	}
 	pres, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, opts)
 	if err != nil {
@@ -159,7 +159,7 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 // already say: materialized files, unresolved inputs, the total, the verdict.
 func printProofReport(rootDir string, rep proveReport) {
 	if len(rep.TfvarsFiles) > 0 {
-		outln("\nMaterialized root variable values (demono.root.tfvars):")
+		outln("\n" + heading("Materialized root variable values (demono.root.tfvars):"))
 		mods := make([]string, 0, len(rep.TfvarsFiles))
 		for m := range rep.TfvarsFiles {
 			mods = append(mods, m)
@@ -170,7 +170,8 @@ func printProofReport(rootDir string, rep proveReport) {
 		}
 	}
 	if rep.OK {
-		outf("\n✓ %d modules, each plans to zero changes with real threaded inputs.\n", len(rep.Order))
+		outf("\n%s\n", success(fmt.Sprintf("✓ %d modules, each plans to zero changes with real threaded inputs.", len(rep.Order))))
 	}
-	outf("Verdict: %s\n", displayPath(rootDir, rep.VerdictPath))
+	outln("\n" + heading("Receipt:"))
+	outf("  %s\n", displayPath(rootDir, rep.VerdictPath))
 }

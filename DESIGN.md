@@ -46,7 +46,7 @@ The carved roots themselves are plain Terraform with `variable`/`output`
 boundaries — usable detached, with no control plane at all. The wiring into
 Snap CD ships alongside them: by default `refactor` also emits a **bootstrap
 module** (§12a) of `snapcd_*` resources that instructs Snap CD to deploy the
-carved modules, generated entirely from the manifest.
+carved modules, generated entirely from the map.
 
 What it keeps — and what makes it more than a code generator — is the **proof
 oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
@@ -57,24 +57,24 @@ oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
 ## 2. The pipeline at a glance
 
 What a user runs is two command families, each a produce/execute/judge
-pipeline, connected by the manifest:
+pipeline, connected by the map:
 
 ```
    decorate sources
         │
-   refactor map ──► demonolith-refactor.yaml     the reviewable plan: placement,
-        │            (mapped: no checksum yet)    moves, wiring, state locations
+   refactor map ──► demonolith-refactor-map.yaml     the reviewable plan: placement,
+        │            (written: no checksum yet)    moves, wiring, state locations
    refactor run ───► carved roots + backends      executes the plan verbatim;
         │            + bootstrap; checksum        refuses a drifted source
    refactor verify   committed output ≡ source    the provenance gate (PR CI)
         │
    migrate map ───► local carve + receipt        pull read-only, back up, carve
         │
-   migrate prove ──► prove verdict                threaded zero-diff proof over
+   migrate prove ──► prove receipt                threaded zero-diff proof over
         │                                         plan's exact carved artifacts
    migrate run ────► seeded backends + receipt    guarded push: empty targets
         │                                         only, never forced
-   migrate verify ─► final verdict                the same proof against the
+   migrate verify ─► final receipt                the same proof against the
                                                   real backends — reality
 ```
 
@@ -362,7 +362,7 @@ and would be dead noise in the output). Everything is run through
 
 **The carved roots stay plain Terraform** — no `snapcd_*` blocks inside them,
 so they are valid standalone roots. The Snap CD wiring lives in the separate
-bootstrap module (§12a), generated from the manifest's CrossEdges and
+bootstrap module (§12a), generated from the map's CrossEdges and
 OrderingEdges.
 
 ---
@@ -450,19 +450,26 @@ operationally *and* that the computed wiring is correct — because a wrong
 ## 11. The CLI  `[internal/cli]`
 
 Two command families split exactly at the code/state line, connected by the
-manifest (§12). Every verb has one meaning: `plan` produces, `run` executes
+map (§12). Every verb has one meaning: `plan` produces, `run` executes
 with guards, `verify` judges the family's output, `prove` rehearses. The bare
 family commands run their steps in order and **pause for approval before the
 run step** — refactor after showing the plan, migrate after showing the proof
 — with `-y`/`--yes` approving automatically (without a TTY the pause is a
 refusal naming `-y`, never a silent proceed). `-i` on any of them is a guided
 walkthrough whose every choice resolves to a flag value or a decorator a
-non-interactive run reproduces.
+non-interactive run reproduces. The bare `migrate -i` fronts the pipeline
+with a full inputs wizard: external variables shown with the value and source
+the engine's precedence resolved (accepting `name=value` / `@file`
+additions), the derived backend with its `demono.env`-bound credential
+attributes and extra `-backend-config` collection, and an advisory of the
+ambient provider environment per declared provider (best-effort prefix
+heuristic; ambient credentials stay uncaptured by design) — closing by
+printing the equivalent non-interactive command.
 
 ```bash
 demonolith refactor              # map → run → verify
-demonolith refactor map         # analyze → write the manifest (offline)
-demonolith refactor run          # execute the manifest: emit everything (offline)
+demonolith refactor map         # analyze → write the map (offline)
+demonolith refactor run          # execute the map: emit everything (offline)
 demonolith refactor verify       # committed output ≡ committed source (offline)
 
 demonolith migrate               # map → prove → run → verify
@@ -477,27 +484,27 @@ defaulting to the current directory. `--engine {terraform|tofu}` has **no
 default** (`--exec-path` overrides resolution).
 
 - **`refactor map`** runs `pipeline.Analyze` (which includes the cycle gate)
-  and writes the mapped manifest — nothing emitted. It owns every map-time
-  choice as flags recorded into the manifest: `--out` (resolved against the
+  and writes the mapped map — nothing emitted. It owns every map-time
+  choice as flags recorded into the map: `--out` (resolved against the
   root, must be inside it; default `modules`), `--remainder-module`, `--monorepo`
   (relink in-repo child modules instead of copying, §8), `--no-bootstrap`,
   `--no-backend`. Run's pre-flights are enforced here so a written plan is a
   runnable plan: target-dir collisions (a dir that exists and is not
   demonolith's own recorded output refuses the plan with nothing written),
   backend-type support, and the reserved `snapcd` module name.
-- **`refactor run`** executes the manifest verbatim — emit carved roots,
+- **`refactor run`** executes the map verbatim — emit carved roots,
   derived backends inside each root.tf, a `.gitignore` per root covering the local
   artifacts later stages leave behind (`.terraform/`, `*.tfstate`, `demono.env`,
   `demono.root.tfvars`, `demono.graph.tfvars`, …), and the bootstrap — then finalizes the
-  `emit_checksum`. No mode flags: everything comes from the manifest. It
+  `emit_checksum`. No mode flags: everything comes from the map. It
   refuses when the source no longer matches the plan (semantic staleness).
 - **`refactor verify`** re-runs analysis+emit in memory and compares against
   the committed output — the provenance gate. Default output shows the
-  committed plan being confirmed; `--quiet` is the verdict line, `--silent`
+  committed plan being confirmed; `--quiet` is the outcome line, `--silent`
   the exit code only. `--validate` additionally engine-validates each
   committed root (`init -backend=false` + `validate`; needs `--engine`, still
   credential-free). Undo on the code side is git — the carved roots and
-  manifest are ordinary committed files.
+  map are ordinary committed files.
 - **`migrate map`** is the local carve (§9 mechanics): read-only pull (or
   `--state-file`), backup, `state mv` into per-module files under
   `<out>/.demono/`, an action-"plan" receipt. Idempotent per generation;
@@ -505,7 +512,7 @@ default** (`--exec-path` overrides resolution).
 - **`migrate prove`** proves *plan's output*: it requires the generation's
   complete plan receipt with intact artifacts, threads producer outputs into
   consumer inputs (the control plane's runtime role), plans every root against
-  its carved copy, and writes a mode-"prove" verdict. Variable values resolve
+  its carved copy, and writes a mode-"prove" receipt. Variable values resolve
   in the engine's own precedence — `TF_VAR_*` env, auto-loaded tfvars,
   `--var-file`, `--var`, ascending — and cross-module inputs are never
   user-suppliable. Each module's resolved root values are materialized into its
@@ -514,7 +521,7 @@ default** (`--exec-path` overrides resolution).
   and threads everything in memory. PR CI runs plan + prove in the job
   workspace: the artifacts die with it.
 - **`migrate run`** executes the migration. Preconditions: the plan receipt,
-  and a passing prove verdict **no older than it** — missing or stale refuses
+  and a passing prove receipt **no older than it** — missing or stale refuses
   with "run `demonolith migrate prove`" (`--unproven` is the explicit
   override; run never proves on its own). First it materializes each module's
   gitignored `demono.env` (0600) — backend credentials from the root's
@@ -541,13 +548,13 @@ default** (`--exec-path` overrides resolution).
   executed against each root's **real backend** — a full init that must find
   the seeded state, then a refreshed plan that must show zero changes
   (a missing state would plan everything as a create) — writing a mode-"final"
-  verdict. Materializes `demono.env` and `demono.root.tfvars` like the
+  receipt. Materializes `demono.env` and `demono.root.tfvars` like the
   earlier steps, so it works standalone. Requires the run receipt.
 
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational
 error, `2` **negative verdict** — the run worked but the answer is "no" (the
 committed output differs, a module plans a create/destroy, a stale or
-inapplicable manifest). `--output json` replaces the human report with one
+inapplicable map). `--output json` replaces the human report with one
 JSON document. Without a TTY nothing ever prompts; `--interactive` is an
 error rather than a silent fallback.
 
@@ -559,20 +566,21 @@ unit-tested at the derivation level only.
 
 ---
 
-## 12. The manifest and its sidecars  `[internal/manifest]`
+## 12. Receipts  `[internal/manifest]`
 
-The manifest is the durable contract between the code side and the state side:
+Every command writes a receipt; the map receipt ("the map") is the durable
+contract between the code side and the state side:
 `refactor` computes *what* must move and *how* modules wire together;
 `migrate` and `prove` replay that plan without re-deriving it. That indirection
 is what lets a different actor — CI, a control plane — execute a plan someone
 else computed and reviewed.
 
-**One manifest per root, two states.** `refactor map` writes
-`demonolith-refactor.yaml` into the root dir, overwriting it each run; a
-*mapped* manifest has no `emit_checksum` yet, and every downstream command
+**One map per root, two states.** `refactor map` writes
+`demonolith-refactor-map.yaml` into the root dir, overwriting it each run; a
+freshly written map has no `emit_checksum` yet, and every downstream command
 refuses it until `refactor run` executes the plan and finalizes the checksum. The monolith root is the single refactor
 source: the plan is always re-derived from it in full, so there is no
-meaningful sequence of manifests — history lives in version control, and
+meaningful sequence of maps — history lives in version control, and
 re-refactoring an already-carved root (decorating inside emitted output) is
 deliberately out of scope.
 
@@ -587,18 +595,18 @@ derived state location**, putting where every state will live into the
 reviewed plan — and `emit_checksum` — a hash over all generated output
 (carved roots plus the bootstrap module) that excludes later-stage artifacts
 (lock files, state files, plan files, generated tfvars), so running the
-pipeline never invalidates its own manifest.
+pipeline never invalidates its own map.
 
 **The schema is a public, versioned API.** PR reviewers read it, CI parses it,
 a control plane may ingest it. Changes within a major version are additive
 only — new optional keys, never renamed or removed ones; a breaking change
-bumps `version`, and every consumer refuses a manifest whose major version it
+bumps `version`, and every consumer refuses a map whose major version it
 doesn't know rather than guessing. External input *names* may appear in
-manifest or sidecars; input *values* never do.
+map or sidecars; input *values* never do.
 
-**Sidecars** record execution in fixed-name files, like the manifest itself:
+**Sidecars** record execution in fixed-name files, like the map itself:
 the datetime lives *inside* each document (`created`), alongside the
-generation tie (`manifest_checksum`), so an external system can tell what
+generation tie (`map_checksum`), so an external system can tell what
 ran, when, and for which plan without parsing filenames; history lives in
 version control:
 
@@ -606,8 +614,8 @@ version control:
   — one canonical file per migrate step, overwritten per execution: the *plan*
   receipt records which moves ran, the
   carved state paths, and the backup path; a *run* receipt records where each
-  module's state was pushed. Both carry the executed manifest's
-  `emit_checksum`, which ties them to one manifest *generation* (the filename
+  module's state was pushed. Both carry the executed map's
+  `emit_checksum`, which ties them to one map *generation* (the filename
   is constant), so re-running `refactor` invalidates old receipts. Idempotency
   consults the receipt first; on resume after a partial carve, migrate reuses
   the working monolith state (never re-pulls — that would corrupt a partial
@@ -616,9 +624,9 @@ version control:
   artifacts before the push; mode-"final" (`demonolith-migrate-verify.yaml`) judges
   the pushed states against the real backends. Both carry per-module create/destroy/update counts, the
   proof order, external input *names*, and the generation checksum — which is
-  what lets `migrate run` demand a verdict for exactly this plan.
+  what lets `migrate run` demand a prove receipt for exactly this map.
 
-Plan, receipts, verdicts: the migration's audit trail is files, not terminal
+Map and receipts: the migration's audit trail is files, not terminal
 scrollback.
 
 ## 12a. The Snap CD bootstrap module  `[internal/bootstrap]`
@@ -626,12 +634,12 @@ scrollback.
 By default `refactor` emits one more root, `<out>/snapcd` (the carved-module
 name `snapcd` is reserved for it): a Terraform root of `snapcd_*` resources
 that instructs Snap CD to deploy the carved modules. It is generated **from
-the manifest alone** — proof that the public contract carries everything a
+the map alone** — proof that the public contract carries everything a
 control plane needs:
 
 - a `snapcd_namespace` (into a stack/runner looked up by name), and one
   `snapcd_module` per carved root, its `source_subdirectory` derived from the
-  manifest's module dir (prefixed by `var.source_subdirectory_prefix` for
+  map's module dir (prefixed by `var.source_subdirectory_prefix` for
   monoliths that don't sit at the repo root);
 - every cross edge realized as `snapcd_module_input_from_output` — the
   input↔output threading the proof performed locally, now performed by Snap CD
@@ -666,13 +674,13 @@ read-only from whatever backend the root configures.
   nothing passed by hand); the generated wiring files become the permanent
   value-passing mechanism for detached roots.
 - **Team CI.** The dev authors the plan (decorators, `refactor`, committed
-  roots + manifest in the PR); PR CI judges it — `refactor verify` gates
+  roots + map in the PR); PR CI judges it — `refactor verify` gates
   provenance credential-free, then `migrate map` + `migrate prove` gate
   inertness with backend read access, the carve artifacts living and dying in
   the job workspace; external inputs injected via `TF_VAR_*` or `--var`, nothing landing on disk
   by default. A post-merge job executes the
   reviewed generation verbatim: `migrate map` → `prove` → `run` → `verify`,
-  archiving the receipts and verdicts.
+  archiving the receipts.
 - **Control plane.** Same as team CI through the merge; adoption is applying
   the generated bootstrap module (§12a) against the Snap CD server —
   `cross_edges` already realized as input-from-output wirings,
@@ -738,7 +746,7 @@ go test ./...   # state/proof tests skip without a terraform/tofu binary
 - **Prove, don't assert.** Inertness is demonstrated by a real graph-threaded
   plan bundle against real state, not asserted from the model — which is what
   makes the tool trustworthy for a production migration.
-- **The manifest is the contract.** The plan is computed once, reviewed as an
+- **The map is the contract.** The plan is computed once, reviewed as an
   artifact, and replayed verbatim — never silently recomputed by the actor
   executing it; guards (checksums, versioning) make a mismatch a refusal, not a
   guess.

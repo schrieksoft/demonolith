@@ -249,3 +249,15 @@ func TestParseBackend_RemoteWritesNestedWorkspaces(t *testing.T) {
 		t.Errorf("nested location leaked as flat attribute:\n%s", s)
 	}
 }
+
+// TestRequiredProviderNames reads the local names out of the source root.
+func TestRequiredProviderNames(t *testing.T) {
+	dir := writeBackendFixture(t, "terraform {\n  required_providers {\n    random = {\n      source = \"hashicorp/random\"\n    }\n    snapcd = {\n      source = \"registry.terraform.io/schrieksoft/snapcd\"\n    }\n  }\n}\n")
+	names, err := emit.RequiredProviderNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "random" || names[1] != "snapcd" {
+		t.Errorf("names = %v, want [random snapcd]", names)
+	}
+}

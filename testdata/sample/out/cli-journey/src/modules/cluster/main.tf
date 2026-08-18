@@ -23,9 +23,9 @@ data "local_file" "environment" {
   filename = "${path.module}/config/environment.json"
 }
 
-# Also external, also from GitHub.
+# Also external-style, also a local source.
 module "cluster" {
-  source              = "github.com/snapcd-samples/mock-module-kubernetes-cluster"
+  source              = "./modules/mock-cluster"
   resource_group_name = var.resource_group_name
   cluster_name        = local.cluster_name
   vpc_id              = var.random_uuid_vpc_id

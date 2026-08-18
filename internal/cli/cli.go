@@ -65,13 +65,20 @@ func ExitCode(err error) int {
 
 // Root builds the root command.
 func Root() *cobra.Command {
+	var noColor bool
 	root := &cobra.Command{
 		Use:           "demonolith",
 		Short:         "Refactor a monolithic Terraform root into per-module roots",
 		Version:       fmt.Sprintf("%s (%s)", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRun: func(*cobra.Command, []string) {
+			if noColor {
+				colorEnabled = false
+			}
+		},
 	}
+	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (the NO_COLOR environment variable works too)")
 	root.AddCommand(refactorCmd())
 	root.AddCommand(migrateCmd())
 	return root
@@ -135,7 +142,7 @@ func resolveOut(rootDir, out string) (string, error) {
 	out = filepath.Clean(out)
 	rel, err := filepath.Rel(rootDir, out)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("--out %s is outside --root-dir %s; the manifest records the output dir relative to the root, and an outside dir would make it non-portable", out, rootDir)
+		return "", fmt.Errorf("--out %s is outside --root-dir %s; the map records the output dir relative to the root, and an outside dir would make it non-portable", out, rootDir)
 	}
 	return out, nil
 }

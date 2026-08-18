@@ -61,6 +61,11 @@ type Emitter struct {
 	// Backend, when set, writes the derived backend into each module's root.tf
 	// (the monolith's block with per-module state locations).
 	Backend *BackendBlock
+	// PathBase, when set, replaces OutDir as the directory relative
+	// module-source paths are computed against in monorepo mode — verify
+	// emits into a scratch dir but must produce the source paths the real
+	// roots carry.
+	PathBase string
 }
 
 // EmittedModule records what was written for one module.
@@ -114,10 +119,14 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 	if err != nil {
 		return EmittedModule{}, err
 	}
+	logicalDir := dir
+	if e.PathBase != "" {
+		logicalDir = filepath.Join(e.PathBase, module)
+	}
 	for _, blk := range blocks {
 		e.rewriteRefs(module, blk)
 		if e.Monorepo {
-			if err := relinkModuleSource(blk, e.SrcDir, dir); err != nil {
+			if err := relinkModuleSource(blk, e.SrcDir, logicalDir); err != nil {
 				return EmittedModule{}, err
 			}
 		}

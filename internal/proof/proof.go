@@ -95,7 +95,7 @@ func Run(ctx context.Context, moduleDirs, moduleStates map[string]string, bound 
 	}
 	sort.Strings(modules)
 
-	order, err := topoOrder(modules, bound)
+	order, err := TopoOrder(modules, bound)
 	if err != nil {
 		return nil, err
 	}

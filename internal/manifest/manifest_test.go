@@ -64,7 +64,7 @@ func TestBuildWriteLoad_Roundtrip(t *testing.T) {
 	}
 
 	path := Path(rootDir)
-	if filepath.Base(path) != "demonolith-refactor.yaml" {
+	if filepath.Base(path) != "demonolith-refactor-map.yaml" {
 		t.Errorf("unexpected manifest filename %s", filepath.Base(path))
 	}
 	if err := Write(m, path); err != nil {

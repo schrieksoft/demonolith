@@ -1,8 +1,8 @@
 version: 1
-created: "2026-08-18T13:22:02Z"
+created: "2026-08-18T16:20:46Z"
 tool: demonolith dev
-manifest: demonolith-refactor.yaml
-manifest_checksum: sha256:abd3dad9c5940c4c8c4c79405b21f475ca97143bbd1c03ce4c7ebaef0e249e04
+map: demonolith-refactor-map.yaml
+map_checksum: sha256:abd3dad9c5940c4c8c4c79405b21f475ca97143bbd1c03ce4c7ebaef0e249e04
 mode: final
 refresh: true
 ok: true

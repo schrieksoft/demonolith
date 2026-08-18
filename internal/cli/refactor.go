@@ -14,6 +14,7 @@ import (
 	"github.com/schrieksoft/demonolith/internal/emit"
 	"github.com/schrieksoft/demonolith/internal/manifest"
 	"github.com/schrieksoft/demonolith/internal/pipeline"
+	"github.com/schrieksoft/demonolith/internal/proof"
 )
 
 // refactorFlags is the union of the refactor subcommands' flags; the bare
@@ -64,7 +65,7 @@ func refactorMapCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "map",
-		Short: "Analyze the monolith and write the manifest — the reviewable map of the split; nothing is emitted",
+		Short: "Analyze the monolith and write the map of the split — the reviewable plan; nothing is emitted",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -97,7 +98,7 @@ func refactorRunCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Execute the manifest: emit carved roots, backends, and bootstrap; finalize the checksum",
+		Short: "Execute the map: emit carved roots, backends, and bootstrap; finalize the checksum",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -122,7 +123,7 @@ type planReport struct {
 	BackendType    string            `json:"backend_type,omitempty"`
 	StateLocations map[string]string `json:"state_locations,omitempty"`
 	Bootstrap      bool              `json:"bootstrap"`
-	ManifestPath   string            `json:"manifest_path"`
+	ManifestPath   string            `json:"map_path"`
 }
 
 // runRefactorMap analyzes and writes the planned manifest. Nothing is emitted;
@@ -187,12 +188,12 @@ func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error
 	}
 
 	reportAnalysis(a)
-	outln("\nPlanned roots:")
+	outln("\n" + heading("Planned module directories:"))
 	for _, name := range a.Placement.ModuleNames() {
 		outf("  %-16s %s\n", name, m.Modules[name].Dir)
 	}
 	if m.Backend != nil {
-		outf("\nState locations (%s backend, derived from %s):\n", m.Backend.Type, m.Backend.Monolith)
+		outf("\n%s\n", heading(fmt.Sprintf("State locations (%s backend, derived from %s):", m.Backend.Type, m.Backend.Monolith)))
 		for _, name := range a.Placement.ModuleNames() {
 			outf("  %-16s %s\n", name, m.Backend.Modules[name])
 		}
@@ -200,7 +201,11 @@ func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error
 	if opts.Bootstrap {
 		outf("\nBootstrap module planned at %s\n", filepath.Join(m.Output.Dir, bootstrap.DirName))
 	}
-	outf("\nManifest: %s (%d state moves, %d cross edges) — review it, then `demonolith refactor run`\n", displayPath(rootDir, path), len(m.StateMoves), len(m.CrossEdges))
+	outln("\n" + heading("Receipt:"))
+	outf("  %s %s\n", displayPath(rootDir, path), dim(fmt.Sprintf("(%d state moves, %d cross edges)", len(m.StateMoves), len(m.CrossEdges))))
+	if !f.interactive {
+		outln("\nReview it, then `demonolith refactor run`.")
+	}
 	return m, nil
 }
 
@@ -208,7 +213,7 @@ func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error
 type runReport struct {
 	EmittedDirs  map[string]string `json:"emitted_dirs"`
 	BootstrapDir string            `json:"bootstrap_dir,omitempty"`
-	ManifestPath string            `json:"manifest_path"`
+	ManifestPath string            `json:"map_path"`
 }
 
 // runRefactorRun executes the planned manifest verbatim: emit the carved roots
@@ -234,7 +239,7 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 		return err
 	}
 	if !manifest.SemanticEqual(fresh, m) {
-		return verdictf("the source no longer matches the plan; re-run `demonolith refactor map`")
+		return verdictf("the source no longer matches the map; re-run `demonolith refactor map`")
 	}
 
 	var block *emit.BackendBlock
@@ -244,7 +249,7 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 			return err
 		}
 		if block == nil {
-			return verdictf("the plan derives backends but the source has no backend block; re-run `demonolith refactor map`")
+			return verdictf("the map derives backends but the source has no backend block; re-run `demonolith refactor map`")
 		}
 	}
 
@@ -275,14 +280,15 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 		}
 		return printJSON(rep)
 	}
-	outln("Emitted roots:")
+	outln(heading("Module directories written:"))
 	for _, em := range ems {
 		outf("  %-16s %s (%d files)\n", em.Module, displayPath(rootDir, em.Dir), len(em.Files))
 	}
 	if bsDir != "" {
 		outf("  %-16s %s (Snap CD bootstrap)\n", bootstrap.DirName, displayPath(rootDir, bsDir))
 	}
-	outf("\nManifest finalized: %s\n", displayPath(rootDir, path))
+	outln("\n" + heading("Receipt:"))
+	outf("  %s %s\n", displayPath(rootDir, path), dim("(finalized)"))
 	return nil
 }
 
@@ -319,26 +325,31 @@ func runRefactorPipeline(f refactorFlags) error {
 		}
 		return runRefactorInteractivePipeline(f)
 	}
-	if _, err := runRefactorMap(f, mode); err != nil {
+	outf("\n%s\n\n", banner("── refactor map ──"))
+	mf := f
+	mf.interactive = true // suppress the standalone "review it, then run" hint
+	if _, err := runRefactorMap(mf, mode); err != nil {
 		return err
 	}
 	if !f.yes {
 		if !stdinIsTTY() {
 			return fmt.Errorf("the pipeline pauses for approval after plan; pass -y to approve automatically, or run the subcommands individually")
 		}
-		ok, err := promptYesNo("\nExecute this plan (emit the carved roots)?", false)
+		ok, err := promptYesNo("\nRun the refactor now?", false)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			outln("Plan written; run later with `demonolith refactor run`.")
+			outln("Map written; run later with `demonolith refactor run`.")
 			return nil
 		}
 	}
 	rootDir := resolveRoot(f.rootDir)
+	outf("\n%s\n\n", banner("── refactor run ──"))
 	if err := runRefactorRun(rootDir, mode); err != nil {
 		return err
 	}
+	outf("\n%s\n\n", banner("── refactor verify ──"))
 	vf := f
 	vf.quiet = true
 	return runRefactorVerify(rootDir, mode, vf)
@@ -403,20 +414,25 @@ func dirHasFiles(dir string) bool {
 
 // reportAnalysis prints the placement, catchall, and ordering-edge summary.
 func reportAnalysis(a *pipeline.Analysis) {
-	outln("Placement:")
+	outln(heading("Placement:"))
 	for _, m := range a.Placement.ModuleNames() {
 		outf("  %-16s %d resources/data\n", m, len(a.Placement.Modules[m]))
 	}
 	if len(a.Placement.Catchall) > 0 {
-		outf("\nCatchall (%s) holds %d unannotated block(s):\n", a.Placement.Remainder, len(a.Placement.Catchall))
+		outf("\n%s\n", heading(fmt.Sprintf("Catchall (%s) holds %d unannotated block(s):", a.Placement.Remainder, len(a.Placement.Catchall))))
 		for _, addr := range a.Placement.Catchall {
 			outf("  %s\n", addr)
 		}
 	}
-	if edges := a.Boundary.OrderingEdges; len(edges) > 0 {
-		outln("\nCross-module depends_on (ordering must be enforced by the control plane):")
-		for _, oe := range edges {
-			outf("  %s → %s (%s depends_on %s)\n", oe.ConsumerModule, oe.ProducerModule, oe.Consumer, oe.Producer)
+	if order, err := proof.TopoOrder(a.Placement.ModuleNames(), a.Boundary); err == nil {
+		deps := proof.ModuleDeps(a.Placement.ModuleNames(), a.Boundary)
+		outln("\n" + heading("A dependency graph arises with the following deploy order:"))
+		for _, m := range order {
+			if d := deps[m]; len(d) > 0 {
+				outf("  %-16s %s\n", m, dim("(depends on: "+strings.Join(d, ", ")+")"))
+			} else {
+				outf("  %s\n", m)
+			}
 		}
 	}
 }

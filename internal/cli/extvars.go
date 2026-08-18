@@ -41,15 +41,22 @@ func collectExternalInputs(rootDir string, bound *boundary.Result, varFiles, var
 	return vals, names, nil
 }
 
-// collectVarValues gathers variable values in the engine's own (ascending)
-// precedence: TF_VAR_* environment variables first, then the root's
+// resolvedVar is a variable value plus where the engine's precedence found
+// it — the provenance the interactive walkthrough displays.
+type resolvedVar struct {
+	Value  string
+	Source string
+}
+
+// collectVarProvenance gathers variable values in the engine's own
+// (ascending) precedence — TF_VAR_* environment first, then the root's
 // terraform.tfvars and *.auto.tfvars (plus their .json forms) in load order,
-// then explicit --var-file files in the order given, then --var flags. A nil
-// needed set collects every name found; otherwise only the named variables
-// are kept.
-func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[string]bool) (map[string]string, error) {
+// then explicit --var-file files in the order given, then --var flags — and
+// records, per name, which source won. A nil needed set collects every name
+// found; otherwise only the named variables are kept.
+func collectVarProvenance(rootDir string, varFiles, varFlags []string, needed map[string]bool) (map[string]resolvedVar, error) {
 	keep := func(name string) bool { return needed == nil || needed[name] }
-	vals := map[string]string{}
+	vals := map[string]resolvedVar{}
 
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "TF_VAR_") {
@@ -58,7 +65,7 @@ func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[st
 		eq := strings.Index(kv, "=")
 		name := strings.TrimPrefix(kv[:eq], "TF_VAR_")
 		if keep(name) {
-			vals[name] = kv[eq+1:]
+			vals[name] = resolvedVar{Value: kv[eq+1:], Source: "TF_VAR_" + name + " (environment)"}
 		}
 	}
 
@@ -72,15 +79,22 @@ func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[st
 			return nil, fmt.Errorf("--var-file %s: %w", vf, err)
 		}
 	}
-	files = append(files, varFiles...)
+	sources := make([]string, 0, len(files)+len(varFiles))
 	for _, f := range files {
+		sources = append(sources, filepath.Base(f))
+	}
+	for _, vf := range varFiles {
+		files = append(files, vf)
+		sources = append(sources, "--var-file "+vf)
+	}
+	for i, f := range files {
 		fileVals, err := readTfvars(f)
 		if err != nil {
 			return nil, err
 		}
 		for k, v := range fileVals {
 			if keep(k) {
-				vals[k] = v
+				vals[k] = resolvedVar{Value: v, Source: sources[i]}
 			}
 		}
 	}
@@ -92,16 +106,29 @@ func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[st
 		}
 		name := kv[:eq]
 		if keep(name) {
-			vals[name] = kv[eq+1:]
+			vals[name] = resolvedVar{Value: kv[eq+1:], Source: "--var"}
 		}
 	}
 	return vals, nil
 }
 
-// moduleVarNames parses a carved root's *.tf files and returns the names of
-// the variables it declares — the duplicated root declarations plus the
-// generated boundary inputs.
-func moduleVarNames(dir string) (map[string]bool, error) {
+// collectVarValues is collectVarProvenance without the provenance.
+func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[string]bool) (map[string]string, error) {
+	rv, err := collectVarProvenance(rootDir, varFiles, varFlags, needed)
+	if err != nil {
+		return nil, err
+	}
+	vals := make(map[string]string, len(rv))
+	for k, v := range rv {
+		vals[k] = v.Value
+	}
+	return vals, nil
+}
+
+// moduleVarDecls parses a carved root's *.tf files and returns the variables
+// it declares — the duplicated root declarations plus the generated boundary
+// inputs — mapped to whether each carries a default value.
+func moduleVarDecls(dir string) (map[string]bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -122,9 +149,23 @@ func moduleVarNames(dir string) (map[string]bool, error) {
 		}
 		for _, blk := range f.Body.(*hclsyntax.Body).Blocks {
 			if blk.Type == "variable" && len(blk.Labels) == 1 {
-				out[blk.Labels[0]] = true
+				_, hasDefault := blk.Body.Attributes["default"]
+				out[blk.Labels[0]] = hasDefault
 			}
 		}
+	}
+	return out, nil
+}
+
+// moduleVarNames is moduleVarDecls reduced to a name set.
+func moduleVarNames(dir string) (map[string]bool, error) {
+	decls, err := moduleVarDecls(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(decls))
+	for name := range decls {
+		out[name] = true
 	}
 	return out, nil
 }

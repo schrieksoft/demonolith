@@ -4,7 +4,7 @@
 # One root, one state, everything in it: networking, a database, a Kubernetes
 # cluster, and the app on top — plus the shared plumbing (a config-file data
 # source, a deploy key, locals) that all of them read. Every resource is a
-# mock (random/tls/time providers), so this applies anywhere with no cloud
+# mock (random/tls providers), so this applies anywhere with no cloud
 # credentials; the reference structure is the point, not the infrastructure.
 # ===========================================================================
 
@@ -58,22 +58,18 @@ module "private_subnet" {
 }
 
 # @demono:move networking
-resource "time_sleep" "network_propagation" {
-  create_duration = "1s"
-  depends_on      = [random_uuid.vpc_id, module.public_subnet, module.private_subnet]
-}
-
-# @demono:move networking
 resource "random_uuid" "nat_gateway_id" {
-  depends_on = [time_sleep.network_propagation]
+  keepers = {
+    vpc = random_uuid.vpc_id.result
+  }
 }
 
 # --- database --------------------------------------------------------------
 
-# An external module, pulled straight from GitHub (not a Snap CD module).
+# An external-style module (local source so tests stay offline and fast).
 # @demono:move database
 module "database" {
-  source              = "github.com/snapcd-samples/mock-module-database"
+  source              = "./modules/mock-database"
   resource_group_name = var.resource_group_name
   database_name       = local.database_name
   database_sku        = local.settings.database.sku
@@ -90,10 +86,10 @@ resource "random_uuid" "database_firewall_rule" {
 
 # --- cluster ---------------------------------------------------------------
 
-# Also external, also from GitHub.
+# Also external-style, also a local source.
 # @demono:move cluster
 module "cluster" {
-  source              = "github.com/snapcd-samples/mock-module-kubernetes-cluster"
+  source              = "./modules/mock-cluster"
   resource_group_name = var.resource_group_name
   cluster_name        = local.cluster_name
   vpc_id              = random_uuid.vpc_id.result
@@ -102,7 +98,7 @@ module "cluster" {
   kubernetes_version  = local.settings.cluster.kubernetes_version
   node_instance_type  = local.settings.cluster.node_instance_type
   desired_capacity    = local.settings.cluster.node_count
-  depends_on          = [time_sleep.network_propagation]
+  depends_on          = [random_uuid.nat_gateway_id]
 }
 
 # @demono:move cluster

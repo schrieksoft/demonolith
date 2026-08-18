@@ -37,7 +37,7 @@ func migrateRunCmd() *cobra.Command {
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
-	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-verdict precondition (explicitly run an unproven migration)")
+	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-receipt precondition (explicitly run an unproven migration)")
 	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a target whose state does not match the carve (state push -force); the occupant is lost — default refuses")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "confirm the per-module destinations before pushing")
@@ -46,7 +46,7 @@ func migrateRunCmd() *cobra.Command {
 
 // migrateRunReport records where each module's state landed.
 type migrateRunReport struct {
-	Manifest        string                 `json:"manifest"`
+	Manifest        string                 `json:"map"`
 	Pushes          []manifest.PushOutcome `json:"pushes"`
 	ReceiptPath     string                 `json:"receipt_path"`
 	TfvarsFiles     map[string]string      `json:"tfvars_files,omitempty"`
@@ -91,13 +91,13 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			return err
 		}
 		if v == nil {
-			return fmt.Errorf("no prove verdict for this manifest generation; run `demonolith migrate prove` first (or pass --unproven)")
+			return fmt.Errorf("no prove receipt for this map generation; run `demonolith migrate prove` first (or pass --unproven)")
 		}
 		if !v.OK {
-			return verdictf("the prove verdict for this generation is negative; fix the map before running")
+			return verdictf("the prove receipt for this generation is negative; fix the map before running")
 		}
 		if older(v.Created, mapReceipt.Created) {
-			return fmt.Errorf("the prove verdict predates the migrate map; re-run `demonolith migrate prove` (or pass --unproven)")
+			return fmt.Errorf("the prove receipt predates the migrate map; re-run `demonolith migrate prove` (or pass --unproven)")
 		}
 	}
 
@@ -152,9 +152,9 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	rep := migrateRunReport{Manifest: manifest.FileName}
 	if mode == outputText {
 		if f.overwrite {
-			outln("Seeding state destinations (--overwrite: non-matching occupants will be replaced):")
+			outln("\n" + heading("Seeding state destinations") + " (--overwrite: non-matching occupants will be replaced):")
 		} else {
-			outln("Seeding state destinations (empty targets only, never forced):")
+			outln("\n" + heading("Seeding state destinations") + " (empty targets only, never forced):")
 		}
 	}
 	for _, name := range modules {
@@ -169,7 +169,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 		if err != nil {
 			if mode == outputText {
-				outln("FAILED")
+				outln(fail("FAILED"))
 			}
 			// Record how far the run got — but never demote a complete receipt
 			// of this generation to a partial one on a failed retry.
@@ -184,10 +184,12 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		if mode == outputText {
 			label := outcome.Outcome
 			switch label {
+			case "pushed":
+				label = success("pushed")
 			case "skipped":
-				label = "skipped (target already holds this module's state)"
+				label = warn("skipped (target already holds this module's state)")
 			case "overwritten":
-				label = "OVERWRITTEN — replaced a non-matching occupant"
+				label = fail("OVERWRITTEN — replaced a non-matching occupant")
 			}
 			outln(label)
 		}
@@ -225,13 +227,14 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	if mode == outputJSON {
 		return printJSON(rep)
 	}
-	outln("Migration executed:")
+	outln("\n" + heading("Migration executed:"))
 	for _, p := range rep.Pushes {
 		outf("  %-16s %-8s %s\n", p.Module, p.Outcome, p.Location)
 	}
-	outf("  receipt: %s\n", displayPath(rootDir, rep.ReceiptPath))
+	outln("\n" + heading("Receipt:"))
+	outf("  %s\n", displayPath(rootDir, rep.ReceiptPath))
 	if len(graph.Files) > 0 {
-		outln("\nMaterialized cross-module input values (demono.graph.tfvars):")
+		outln("\n" + heading("Materialized cross-module input values (demono.graph.tfvars):"))
 		mods := make([]string, 0, len(graph.Files))
 		for name := range graph.Files {
 			mods = append(mods, name)
@@ -240,9 +243,6 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		for _, name := range mods {
 			outf("  %-16s %s\n", name, displayPath(rootDir, graph.Files[name]))
 		}
-		if filledFromProof > 0 {
-			outf("  %d value(s) state cannot resolve were filled from the proof's planned producer outputs\n", filledFromProof)
-		}
 	}
 	if len(graph.Unresolved) > 0 {
 		outln("\nCross-module inputs not in the graph tfvars (child-module outputs are not stored in state); a control plane threads these at runtime — pass as -var when planning a root detached:")
@@ -250,7 +250,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			outf("  %s\n", u)
 		}
 	}
-	outln("\nThe monolith's own state was not touched; retiring it is the cutover step.")
+	outln("\nYour original monolith state file remains untouched!")
 	return nil
 }
 
