@@ -2,6 +2,7 @@ package emit
 
 import (
 	"os"
+	"sort"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -84,6 +85,40 @@ func (e *Emitter) collectRequiredProviders() (*hclwrite.Block, error) {
 				tfBlk := tf.Body().AppendNewBlock("terraform", nil)
 				tfBlk.Body().AppendBlock(cloneBlock(rp))
 				return cloneBlock(tfBlk), nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// RequiredProviderNames lists the provider local names the source root's
+// required_providers block declares, sorted. Empty when the root declares
+// none.
+func RequiredProviderNames(srcDir string) ([]string, error) {
+	files, err := tfFiles(srcDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		f, diags := hclwrite.ParseConfig(src, path, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		for _, blk := range f.Body().Blocks() {
+			if blk.Type() != "terraform" {
+				continue
+			}
+			if rp := blk.Body().FirstMatchingBlock("required_providers", nil); rp != nil {
+				names := make([]string, 0, len(rp.Body().Attributes()))
+				for name := range rp.Body().Attributes() {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				return names, nil
 			}
 		}
 	}

@@ -21,12 +21,12 @@ type Node struct {
 	File string
 	// Refs are the addresses referenced anywhere inside this block's body.
 	Refs []Address
-	// RefAttrs records, for a referenced resource/data producer, the attribute
-	// path used at the first crossing (e.g. "result" for
-	// random_uuid.x.result). Keyed by producer Address.String(). Used to expose
-	// the right attribute in a generated output. Empty means the whole object
-	// was referenced.
-	RefAttrs map[string]string
+	// RefAttrs records, for a referenced resource/data/module producer, every
+	// distinct attribute path this node uses (e.g. "result" for
+	// random_uuid.x.result), in first-seen order. Keyed by producer
+	// Address.String(). Used to expose the right attribute(s) in generated
+	// outputs. An empty entry means the whole object was referenced.
+	RefAttrs map[string][]string
 	// DependsOnOnly are producers referenced solely from this node's
 	// depends_on (ordering-only, never for value). Across a module boundary
 	// these become module ordering edges, not value inputs.
@@ -186,12 +186,12 @@ type pendingExpr struct {
 	expr hclsyntax.Expression
 }
 
-// refCollector accumulates referenced addresses and, per producer, the first
-// attribute path seen at a reference. dependsOn holds addresses referenced from
-// a depends_on attribute (ordering-only).
+// refCollector accumulates referenced addresses and, per producer, every
+// distinct attribute path seen at a reference. dependsOn holds addresses
+// referenced from a depends_on attribute (ordering-only).
 type refCollector struct {
 	seen      map[string]Address
-	attrs     map[string]string
+	attrs     map[string][]string
 	dependsOn map[string]Address
 	// providerRef holds the segments of a `provider = name.alias` meta-argument,
 	// e.g. ["tls","signed"]; nil when absent.
@@ -201,7 +201,7 @@ type refCollector struct {
 func newRefCollector() *refCollector {
 	return &refCollector{
 		seen:      map[string]Address{},
-		attrs:     map[string]string{},
+		attrs:     map[string][]string{},
 		dependsOn: map[string]Address{},
 	}
 }

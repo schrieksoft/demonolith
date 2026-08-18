@@ -242,7 +242,7 @@ func (e *Emitter) emitStructural(module string, body *hclwrite.Body, sb *sourceB
 		}
 		clone := cloneBlock(blk)
 		if len(xref) > 0 {
-			e.rewriteBody(clone.Body(), xref)
+			e.rewriteBody(clone.Body(), xref, e.foreignProducer(module))
 		}
 		body.AppendBlock(clone)
 		body.AppendNewline()

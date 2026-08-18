@@ -1,0 +1,153 @@
+version: 1
+created: "2026-08-18T17:04:26Z"
+tool: demonolith dev
+source:
+    root: /home/karl/code/snapcd-all/misc/demonolith/testdata/sample/out/cli-verify-monorepo/src
+    remainder_module: legacy
+output:
+    dir: modules
+    monorepo: true
+    bootstrap: true
+    bootstrap_dir: modules/snapcd
+modules:
+    app:
+        dir: modules/app
+        blocks:
+            - data.local_file.environment
+            - data.tls_public_key.deploy_key
+            - module.storefront_dns
+            - random_password.app_session_secret
+            - random_pet.app_release
+            - tls_private_key.deploy_signer
+    cluster:
+        dir: modules/cluster
+        blocks:
+            - data.local_file.environment
+            - module.cluster
+            - random_pet.node_pool
+    database:
+        dir: modules/database
+        blocks:
+            - data.local_file.environment
+            - module.database
+            - random_uuid.database_firewall_rule
+    legacy:
+        dir: modules/legacy
+        blocks:
+            - random_pet.backup_plan
+            - random_uuid.audit_log_bucket_id
+    networking:
+        dir: modules/networking
+        blocks:
+            - data.local_file.environment
+            - module.private_subnet
+            - module.public_subnet
+            - random_pet.network_name
+            - random_uuid.nat_gateway_id
+            - random_uuid.vpc_id
+catchall:
+    - random_pet.backup_plan
+    - random_uuid.audit_log_bucket_id
+duplicated_data:
+    data.local_file.environment:
+        - app
+        - cluster
+        - database
+        - networking
+state_moves:
+    - address: module.storefront_dns
+      module: app
+    - address: random_password.app_session_secret
+      module: app
+    - address: random_pet.app_release
+      module: app
+    - address: tls_private_key.deploy_signer
+      module: app
+    - address: module.cluster
+      module: cluster
+    - address: random_pet.node_pool
+      module: cluster
+    - address: module.database
+      module: database
+    - address: random_uuid.database_firewall_rule
+      module: database
+    - address: module.private_subnet
+      module: networking
+    - address: module.public_subnet
+      module: networking
+    - address: random_pet.network_name
+      module: networking
+    - address: random_uuid.nat_gateway_id
+      module: networking
+    - address: random_uuid.vpc_id
+      module: networking
+cross_edges:
+    - producer_module: cluster
+      producer: module.cluster
+      attribute: cluster_endpoint
+      output: module_cluster_cluster_endpoint
+      consumer_module: app
+      consumer: module.storefront_dns
+      input: module_cluster_cluster_endpoint
+    - producer_module: cluster
+      producer: module.cluster
+      attribute: cluster_id
+      output: module_cluster_cluster_id
+      consumer_module: app
+      consumer: random_pet.app_release
+      input: module_cluster_cluster_id
+    - producer_module: database
+      producer: module.database
+      attribute: database_endpoint
+      output: module_database
+      consumer_module: app
+      consumer: random_pet.app_release
+      input: module_database
+    - producer_module: networking
+      producer: random_pet.network_name
+      attribute: id
+      output: random_pet_network_name
+      consumer_module: app
+      consumer: local.network_zone
+      input: random_pet_network_name
+    - producer_module: networking
+      producer: module.private_subnet
+      attribute: subnet_id
+      output: module_private_subnet_subnet_id
+      consumer_module: cluster
+      consumer: module.cluster
+      input: module_private_subnet_subnet_id
+    - producer_module: networking
+      producer: module.public_subnet
+      attribute: subnet_id
+      output: module_public_subnet
+      consumer_module: cluster
+      consumer: module.cluster
+      input: module_public_subnet
+    - producer_module: networking
+      producer: random_uuid.vpc_id
+      attribute: result
+      output: random_uuid_vpc_id
+      consumer_module: cluster
+      consumer: module.cluster
+      input: random_uuid_vpc_id
+    - producer_module: networking
+      producer: module.private_subnet
+      attribute: cidr_block
+      output: module_private_subnet_cidr_block
+      consumer_module: database
+      consumer: random_uuid.database_firewall_rule
+      input: module_private_subnet_cidr_block
+    - producer_module: networking
+      producer: module.private_subnet
+      attribute: subnet_id
+      output: module_private_subnet_subnet_id
+      consumer_module: database
+      consumer: module.database
+      input: module_private_subnet_subnet_id
+ordering_edges:
+    - consumer_module: cluster
+      producer_module: networking
+      consumer: module.cluster
+      producer: random_uuid.nat_gateway_id
+emit_checksum: sha256:bac0fed2d55ee2855b2945d56460fde8c9534b7c1e5c1aeabac0421c27ff781a

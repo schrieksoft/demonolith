@@ -35,7 +35,7 @@ func buildFixture(t *testing.T) (*hclgraph.Graph, *placement.Placement, *Result)
 		decos = append(decos, bds...)
 	}
 
-	p, err := placement.Resolve(g, decos, placement.Options{Remainder: "monolith"})
+	p, err := placement.Resolve(g, decos, placement.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -56,13 +56,41 @@ func TestPlacement_Assignment(t *testing.T) {
 		t.Errorf("database_id -> %q, want data", got)
 	}
 	// undecorated -> catchall
-	if got, _ := p.ModuleOf(hclgraph.Address{Kind: hclgraph.KindResource, Type: "random_pet", Name: "environment"}); got != "monolith" {
+	if got, _ := p.ModuleOf(hclgraph.Address{Kind: hclgraph.KindResource, Type: "random_pet", Name: "environment"}); got != "legacy" {
 		t.Errorf("environment -> %q, want monolith", got)
 	}
 	// multi-target data source -> duplicated
 	dup := p.Duplicated["data.random_id.shared_token"]
 	if len(dup) != 2 {
 		t.Errorf("shared_token duplicated into %v, want 2 modules", dup)
+	}
+}
+
+func TestBoundary_MultiAttrProducer(t *testing.T) {
+	_, _, res := buildFixture(t)
+
+	// database_id references gateway_name through two attributes; each must
+	// get its own attr-scoped input/output so each carries its own value.
+	data := res.Boundaries["data"]
+	net := res.Boundaries["networking"]
+	for attr, name := range map[string]string{
+		"id":     "random_pet_gateway_name_id",
+		"prefix": "random_pet_gateway_name_prefix",
+	} {
+		if _, ok := data.Inputs[name]; !ok {
+			t.Errorf("data missing per-attr input %q", name)
+		}
+		out, ok := net.Outputs[name]
+		if !ok {
+			t.Errorf("networking missing per-attr output %q", name)
+			continue
+		}
+		if out.Attr != attr {
+			t.Errorf("output %q exposes attr %q, want %q", name, out.Attr, attr)
+		}
+	}
+	if _, ok := net.Outputs["random_pet_gateway_name"]; ok {
+		t.Error("multi-attr producer must not also expose a plain, ambiguous output")
 	}
 }
 

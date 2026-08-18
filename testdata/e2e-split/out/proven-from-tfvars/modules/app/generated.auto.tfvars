@@ -1,5 +1,0 @@
-data_tls_public_key_pub = "0a:ee:57:93:0d:4e:f2:ee:5f:d7:2a:28:9c:89:75:92"
-module_idgen            = "electric-reptile"
-random_integer_net_id   = "6660"
-random_pet_net_name     = "demo-centrally-suitable-zebra"
-random_string_token     = "bZc9G27iPaJb"

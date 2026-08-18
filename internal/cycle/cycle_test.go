@@ -12,7 +12,7 @@ import (
 
 func TestCycle_AcyclicFixtureIsClean(t *testing.T) {
 	dir := filepath.Join("..", "..", "testdata", "monolith", "in")
-	a, err := pipeline.Analyze(dir, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(dir, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze acyclic fixture: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestCycle_AcyclicFixtureIsClean(t *testing.T) {
 
 func TestCycle_CyclicFixtureIsRefused(t *testing.T) {
 	dir := filepath.Join("..", "..", "testdata", "cyclic", "in")
-	_, err := pipeline.Analyze(dir, pipeline.Options{Remainder: "monolith"})
+	_, err := pipeline.Analyze(dir, pipeline.Options{Remainder: "legacy"})
 	if err == nil {
 		t.Fatal("expected Analyze to refuse the cyclic split")
 	}

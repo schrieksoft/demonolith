@@ -1,8 +1,10 @@
 // Package placement resolves decorators into a total assignment of graph nodes
-// to modules. Every managed resource and data source lands in exactly one
-// module — except a multi-target data source, which is duplicated into each of
-// its targets. Unannotated resources/data fall into the catchall (remainder)
-// module, guaranteeing a total assignment with nothing left unplaced.
+// to modules. Managed resources and module calls are placed by decorator, with
+// unannotated ones falling into the catchall (remainder) module. Data sources
+// are never decorated: a data source is a stateless read and follows its
+// consumers automatically — copied into every module that references it,
+// directly or through locals or other data sources. The result is a total
+// assignment with nothing left unplaced.
 package placement
 
 import (
@@ -25,16 +27,17 @@ type Placement struct {
 	// present in Duplicated instead.
 	Owner map[string]string
 	// Duplicated maps a data-source address to the set of modules it was copied
-	// into (len >= 2).
+	// into (len >= 2), derived from where its consumers landed.
 	Duplicated map[string][]string
 	// Catchall is the list of node addresses that landed in the remainder
-	// module because they were unannotated, reported each run.
+	// module by default — unannotated resources/modules, and data sources with
+	// no placed consumer — reported each run.
 	Catchall []hclgraph.Address
 }
 
 // Options configures placement resolution.
 type Options struct {
-	// Remainder is the catchall module name (default "monolith").
+	// Remainder is the catchall module name (default "legacy").
 	Remainder string
 }
 
@@ -47,7 +50,7 @@ type Options struct {
 func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options) (*Placement, error) {
 	remainder := opts.Remainder
 	if remainder == "" {
-		remainder = "monolith"
+		remainder = "legacy"
 	}
 
 	// Index decorators by the address they attach to.
@@ -69,6 +72,7 @@ func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options)
 		Duplicated: map[string][]string{},
 	}
 
+	// Pass 1: stateful blocks (resources, module calls) are placed by decorator.
 	for _, node := range g.SortedNodes() {
 		switch node.Addr.Kind {
 		case hclgraph.KindResource, hclgraph.KindModule:
@@ -88,24 +92,37 @@ func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options)
 			p.Owner[node.Addr.String()] = mod
 
 		case hclgraph.KindData:
-			targets := decoByAddr[node.Addr.String()]
-			switch {
-			case len(targets) == 0:
-				p.assign(remainder, node.Addr)
-				p.Owner[node.Addr.String()] = remainder
-				p.Catchall = append(p.Catchall, node.Addr)
-			case len(targets) == 1:
-				p.assign(targets[0], node.Addr)
-				p.Owner[node.Addr.String()] = targets[0]
-			default:
-				// Multi-target data source: duplicate into each target.
-				for _, m := range targets {
-					p.assign(m, node.Addr)
-				}
-				p.Duplicated[node.Addr.String()] = targets
+			if len(decoByAddr[node.Addr.String()]) > 0 {
+				// Should have been caught by decorator arity validation.
+				return nil, fmt.Errorf("%s carries a decorator; data sources are placed automatically wherever they are referenced", node.Addr)
 			}
 		default:
-			// var/local/output/module: not directly placed.
+			// var/local/output: not directly placed.
+		}
+	}
+
+	// Pass 2: data sources follow their consumers — copied into every module
+	// that references them, directly or through locals or other data sources.
+	needs := newNeedsIndex(g, p.Owner)
+	for _, node := range g.SortedNodes() {
+		if node.Addr.Kind != hclgraph.KindData {
+			continue
+		}
+		mods := needs.modulesFor(node.Addr.String())
+		switch len(mods) {
+		case 0:
+			// No placed consumer: default to the remainder, reported.
+			p.assign(remainder, node.Addr)
+			p.Owner[node.Addr.String()] = remainder
+			p.Catchall = append(p.Catchall, node.Addr)
+		case 1:
+			p.assign(mods[0], node.Addr)
+			p.Owner[node.Addr.String()] = mods[0]
+		default:
+			for _, m := range mods {
+				p.assign(m, node.Addr)
+			}
+			p.Duplicated[node.Addr.String()] = mods
 		}
 	}
 
@@ -114,6 +131,67 @@ func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options)
 	}
 	sortAddrs(p.Catchall)
 	return p, nil
+}
+
+// needsIndex answers, for a data source, the set of modules whose placed
+// blocks consume it. Consumption is transitive through structural nodes: a
+// local that wraps a data result is materialized wherever its consumers live,
+// so the data source must exist there too; likewise a data source whose
+// argument reads another data source drags that one along.
+type needsIndex struct {
+	// consumers maps a producer address to the nodes whose value refs mention
+	// it (DependsOnOnly refs excluded: ordering needs no copy).
+	consumers map[string][]*hclgraph.Node
+	owner     map[string]string
+	cache     map[string][]string
+}
+
+func newNeedsIndex(g *hclgraph.Graph, owner map[string]string) *needsIndex {
+	idx := &needsIndex{consumers: map[string][]*hclgraph.Node{}, owner: owner, cache: map[string][]string{}}
+	for _, n := range g.SortedNodes() {
+		for _, ref := range n.Refs {
+			key := ref.String()
+			idx.consumers[key] = append(idx.consumers[key], n)
+		}
+	}
+	return idx
+}
+
+// modulesFor returns the sorted module set needing the producer at key.
+func (idx *needsIndex) modulesFor(key string) []string {
+	return idx.walk(key, map[string]bool{})
+}
+
+func (idx *needsIndex) walk(key string, visiting map[string]bool) []string {
+	if got, ok := idx.cache[key]; ok {
+		return got
+	}
+	if visiting[key] {
+		return nil
+	}
+	visiting[key] = true
+	defer delete(visiting, key)
+
+	set := map[string]bool{}
+	for _, c := range idx.consumers[key] {
+		switch c.Addr.Kind {
+		case hclgraph.KindResource, hclgraph.KindModule:
+			set[idx.owner[c.Addr.String()]] = true
+		case hclgraph.KindLocal, hclgraph.KindData:
+			for _, m := range idx.walk(c.Addr.String(), visiting) {
+				set[m] = true
+			}
+		default:
+			// var/output consumers pin nothing to a module.
+		}
+	}
+	out := make([]string, 0, len(set))
+	for m := range set {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	idx.cache[key] = out
+	return out
 }
 
 // ModuleNames returns the module names in sorted order, including the remainder

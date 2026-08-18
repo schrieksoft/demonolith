@@ -28,12 +28,25 @@ func EnginePath() string {
 	return ""
 }
 
-// RequireEngine skips the test if no terraform/tofu binary is available.
+// RequireEngine skips the test if no terraform/tofu binary is available. It
+// also points TF_PLUGIN_CACHE_DIR at a shared per-user cache so provider
+// binaries download once per machine rather than once per test init.
 func RequireEngine(t *testing.T) string {
 	t.Helper()
 	p := EnginePath()
 	if p == "" {
 		t.Skip("no terraform/tofu binary found; set DEMO_TF_EXEC to run state tests")
+	}
+	if os.Getenv("TF_PLUGIN_CACHE_DIR") == "" {
+		// One cache per test package (cwd is the package dir): packages run in
+		// parallel and the engines' plugin cache is not concurrency-safe, but
+		// within a package tests are serial — so each package warms its own
+		// cache once and reuses it across runs.
+		wd, _ := os.Getwd()
+		cache := filepath.Join(os.TempDir(), "demonolith-test-plugin-cache", filepath.Base(wd))
+		if err := os.MkdirAll(cache, 0o755); err == nil {
+			os.Setenv("TF_PLUGIN_CACHE_DIR", cache)
+		}
 	}
 	return p
 }
@@ -82,8 +95,11 @@ func CopyInto(t *testing.T, dst, src string) string {
 			CopyInto(t, filepath.Join(dst, name), filepath.Join(src, name))
 			continue
 		}
-		if filepath.Ext(name) != ".tf" {
-			continue // skip lock files, state, tfvars from the committed fixture
+		switch filepath.Ext(name) {
+		case ".tf", ".tfvars", ".json":
+			// fixture content
+		default:
+			continue // skip lock files and state from the committed fixture
 		}
 		b, err := os.ReadFile(filepath.Join(src, name))
 		if err != nil {

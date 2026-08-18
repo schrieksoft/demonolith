@@ -30,9 +30,9 @@ import (
 //
 // Unlike proof.Run (which threads producer plan outputs in memory), this test
 // plans each module STANDALONE: only its carved state and its
-// generated.auto.tfvars — no -var flags. That proves the .tfvars files alone
-// carry every cross-module value correctly, which is what a real Snap CD deploy
-// (or a human running `terraform plan` in the module dir) would see.
+// demono.graph.tfvars, loaded explicitly via -var-file — no -var flags. That
+// proves the tfvars file alone carries every cross-module value correctly,
+// which is what a human planning a detached root would do.
 func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
 	ctx := context.Background()
@@ -49,7 +49,7 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	}
 
 	// --- Analyze + emit carved roots. -------------------------------------
-	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -92,9 +92,13 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	sv, err := statevars.Generate(st, a.Boundary, moduleDirs, statevars.Options{SourceDir: srcDir})
+	cross, unresolved := statevars.ResolveCross(st, a.Boundary, statevars.Options{SourceDir: srcDir})
+	if len(unresolved) > 0 {
+		t.Fatalf("ResolveCross left inputs unresolved: %v", unresolved)
+	}
+	sv, err := statevars.WriteGraph(moduleDirs, cross)
 	if err != nil {
-		t.Fatalf("Generate: %v", err)
+		t.Fatalf("Write: %v", err)
 	}
 
 	// Every consumer module (one with >=1 cross-module input) must have a
@@ -108,7 +112,7 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 		}
 		if hasUpstream {
 			if _, ok := sv.Files[b.Module]; !ok {
-				t.Errorf("module %q has upstream inputs but no generated.auto.tfvars", b.Module)
+				t.Errorf("module %q has upstream inputs but no demono.graph.tfvars", b.Module)
 			}
 		}
 	}
@@ -128,9 +132,9 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	}
 }
 
-// planStandalone inits and plans the module root with NO -var flags — it relies
-// entirely on generated.auto.tfvars being auto-loaded. Returns create/destroy
-// counts.
+// planStandalone inits and plans the module root with NO -var flags — the
+// only value source is demono.graph.tfvars, loaded explicitly via -var-file
+// (the file is deliberately not auto-loaded). Returns create/destroy counts.
 func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (add, destroy int) {
 	t.Helper()
 	tf, err := tfexec.NewTerraform(dir, execPath)
@@ -141,7 +145,11 @@ func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (ad
 		t.Fatalf("init %q: %v", dir, err)
 	}
 	planPath := filepath.Join(dir, "demono-e2e.tfplan")
-	if _, err := tf.Plan(ctx, tfexec.Out(planPath), tfexec.Refresh(false)); err != nil {
+	planOpts := []tfexec.PlanOption{tfexec.Out(planPath), tfexec.Refresh(false)}
+	if gv := filepath.Join(dir, statevars.GraphTfvarsName); fileExists(gv) {
+		planOpts = append(planOpts, tfexec.VarFile(gv))
+	}
+	if _, err := tf.Plan(ctx, planOpts...); err != nil {
 		t.Fatalf("plan %q: %v", dir, err)
 	}
 	plan, err := tf.ShowPlanFile(ctx, planPath)
@@ -162,6 +170,11 @@ func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (ad
 		}
 	}
 	return add, destroy
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func copyFile(src, dst string) error {
@@ -213,15 +226,16 @@ func assertCrossRefMatrix(t *testing.T, edges []boundary.CrossEdge) {
 
 	// The combinations the fixture is built to cover (see testdata/e2e-split/in).
 	// Notes on what's intentionally NOT a distinct edge:
-	//   - module-input→R is same-module (idgen.seed = net_id, both in network).
-	//   - provider→D is omitted (tls proxy.url rejects the colon fingerprint).
+	//   - D producers never cross a boundary: a data source follows its
+	//     consumers, so every consumer reads a local copy.
+	//   - provider→D is therefore impossible too.
 	//   - local→M dedups into resource→M (same producer+input name); its carving
 	//     is asserted separately via app's `local_from_module = var.module_idgen`.
 	want := []string{
-		"resource→R", "resource→M", "resource→D",
-		"module-input→D",
+		"resource→R", "resource→M",
+		"module-input→R",
 		"provider→R", "provider→M",
-		"local→R", "local→D",
+		"local→R",
 	}
 	for _, w := range want {
 		if !seen[w] {
@@ -260,29 +274,30 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 	}
 	cases := map[string]expect{
 		// network owns module.idgen (carved with local source), uses name_prefix
-		// (net_name.prefix) + common_length, and consumes data.pub cross-module
-		// (idgen.tag) -> var.data_tls_public_key_pub. No tls provider (its
-		// resources are random-only).
+		// (net_name.prefix) + common_length, and consumes random_string.token
+		// cross-module (idgen.tag) -> var.random_string_token. No tls provider
+		// (its resources are random-only).
 		"network": {
 			want: []string{
 				`provider "random"`, `variable "name_prefix"`, "common_length",
 				`module "idgen"`, `source = "./modules/idgen"`,
-				"var.data_tls_public_key_pub",
+				"var.random_string_token",
 			},
 			notWant: []string{"tagged", `provider "tls"`},
 		},
-		// data owns tls_private_key.signer + data.tls_public_key.pub, so it carves
-		// the default tls provider — whose config references var.name_prefix and
-		// local.proxy_host, so those get pulled in too. Uses common_length; not the
-		// app-only tagged.
+		// data owns tls_private_key.signer + data.tls_public_key.pub (the data
+		// source follows its consumer fp_tag), so it carves the default tls
+		// provider — whose config references var.name_prefix and
+		// local.proxy_host, so those get pulled in too. Uses common_length; not
+		// the app-only tagged.
 		"data": {
-			want:    []string{`provider "random"`, `provider "tls"`, "common_length", `variable "name_prefix"`, "proxy_host"},
+			want:    []string{`provider "random"`, `provider "tls"`, "common_length", `variable "name_prefix"`, "proxy_host", `data "tls_public_key" "pub"`},
 			notWant: []string{"tagged"},
 		},
 		// app uses THREE tls providers: default (var.name_prefix + local.proxy_host)
 		// and two aliased ones referencing cross-module producers — by_resource
 		// (net_name) and by_module (module.idgen). Plus name_prefix, common_length,
-		// tagged, and locals rewritten to var.* for R/M/D producers.
+		// tagged, and locals rewritten to var.* for R/M producers.
 		"app": {
 			want: []string{
 				`provider "random"`, `provider "tls"`,
@@ -292,11 +307,12 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 				"var.module_idgen",
 				"var.random_pet_net_name",
 				"var.random_integer_net_id",
-				"var.data_tls_public_key_pub",
+				"var.random_pet_fp_tag",
 			},
+			notWant: []string{`data "tls_public_key"`},
 		},
 		// catchall uses the random provider only; no locals/vars/tls.
-		"monolith": {
+		"legacy": {
 			want:    []string{`provider "random"`},
 			notWant: []string{"locals", `variable "name_prefix"`, `provider "tls"`},
 		},

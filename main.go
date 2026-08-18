@@ -1,8 +1,11 @@
 // Command demonolith refactors a monolithic Terraform/OpenTofu root into
-// independent per-module roots. v1 is a one-shot splitter: it emits carved
-// roots (detached — no Snap CD wiring), carves state into per-module local
-// files against local copies (never pushing), and can prove the split changes
-// nothing via a graph-threaded zero-diff plan bundle.
+// independent per-module roots, in two halves connected by a manifest:
+// `refactor` carves the code and writes the plan (gated by `diff`), and
+// `migrate` executes the state moves against local copies (gated by `prove`,
+// the graph-threaded zero-diff proof).
+//
+// Exit codes: 0 success, 1 operational error, 2 a negative verdict (the committed output differs,
+// a failed proof, a stale manifest).
 package main
 
 import (
@@ -21,7 +24,10 @@ var (
 func main() {
 	cli.SetVersion(version, commit)
 	if err := cli.Root().Execute(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		// An empty message is a silent verdict: the exit code is the answer.
+		if err.Error() != "" {
+			_, _ = fmt.Fprintln(os.Stderr, "error:", err)
+		}
+		os.Exit(cli.ExitCode(err))
 	}
 }

@@ -7,12 +7,23 @@ import (
 	"github.com/schrieksoft/demonolith/internal/boundary"
 )
 
-// topoOrder returns modules ordered so every producer precedes its consumers,
-// using the boundary cross edges (and ordering edges) as producer->consumer
-// dependencies. A cycle is impossible here because the cycle gate already ran,
-// but the sort still guards against one defensively.
-func topoOrder(modules []string, res *boundary.Result) ([]string, error) {
-	// deps[consumer] = set of producer modules it depends on.
+// ModuleDeps returns, per module, the sorted modules it depends on — value
+// wiring and ordering edges combined, self-edges dropped.
+func ModuleDeps(modules []string, res *boundary.Result) map[string][]string {
+	deps := moduleDepSets(modules, res)
+	out := make(map[string][]string, len(deps))
+	for m, set := range deps {
+		names := make([]string, 0, len(set))
+		for d := range set {
+			names = append(names, d)
+		}
+		sort.Strings(names)
+		out[m] = names
+	}
+	return out
+}
+
+func moduleDepSets(modules []string, res *boundary.Result) map[string]map[string]bool {
 	deps := map[string]map[string]bool{}
 	for _, m := range modules {
 		deps[m] = map[string]bool{}
@@ -32,6 +43,15 @@ func topoOrder(modules []string, res *boundary.Result) ([]string, error) {
 	for _, e := range res.OrderingEdges {
 		add(e.ConsumerModule, e.ProducerModule)
 	}
+	return deps
+}
+
+// TopoOrder returns modules ordered so every producer precedes its consumers,
+// using the boundary cross edges (and ordering edges) as producer->consumer
+// dependencies. A cycle is impossible after the cycle gate has run, but the
+// sort still guards against one defensively.
+func TopoOrder(modules []string, res *boundary.Result) ([]string, error) {
+	deps := moduleDepSets(modules, res)
 
 	// Kahn's algorithm with deterministic tie-breaking.
 	indeg := map[string]int{}

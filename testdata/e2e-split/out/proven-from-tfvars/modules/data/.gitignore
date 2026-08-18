@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.backup
+demono.env
+demono.tfplan
+demono.root.tfvars
+demono.graph.tfvars
+crash.log
+crash.*.log
