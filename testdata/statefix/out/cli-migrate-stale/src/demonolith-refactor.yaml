@@ -1,5 +1,5 @@
 version: 1
-created: "2026-08-17T19:25:44Z"
+created: "2026-08-18T06:45:16Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-migrate-stale/src

@@ -1,8 +1,8 @@
 version: 1
-created: "2026-08-17T19:27:04Z"
+created: "2026-08-18T06:46:36Z"
 tool: demonolith dev
 manifest: demonolith-refactor.yaml
-manifest_checksum: sha256:89dfb43b25b4262a7db53374a41ca50370186bd3149ec29179de8494a83502e9
+manifest_checksum: sha256:9303244d04e56021a87daca441165eb88de4557b819cb89705f6c3f9490aad1c
 action: plan
 complete: true
 module_states:

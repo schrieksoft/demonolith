@@ -53,9 +53,8 @@ and reproducible non-interactively.
 From inside the monolith root (every command also takes `--root-dir <dir>`):
 
 ```bash
-# Carve the code. Roots land in .demono/modules by default (scratch); the
-# canonical home for committed roots is --out modules:
-demonolith refactor --out modules        # or: refactor plan && refactor run
+# Carve the code. Roots land in modules/ by default (--out to change):
+demonolith refactor                      # or: refactor plan && refactor run
 
 # Migrate the state, end to end:
 demonolith migrate --engine tofu         # plan → prove → run → verify
@@ -165,16 +164,31 @@ handle them manually.
 
 Everything demonolith does can be done by hand — it is exactly the procedure
 you would follow without it, minus the guardrails. For reference, splitting a
-monolith manually:
+monolith manually — after the session setup, steps 2–5 are the refactor
+family's work (code only) and steps 6–10 the migrate family's (state and
+ambient inputs):
 
-**1. Find the seams** (what `refactor plan`'s analysis does). Read every
-`*.tf` file and decide, per resource, which future module owns it — then find
-every reference that will cross a boundary: grep for each resource address
+**1. Establish the working session** (the prerequisite demonolith documents,
+plus what `migrate plan` reads from the init-time resolved config). In one
+shell, `tofu init` the monolith — with every `-backend-config` flag it needs —
+and `tofu plan` it to a clean, zero-surprise run. Write down everything that
+made that work: the backend flags and their values, every `TF_VAR_*` set in
+the environment, every `-var`/`-var-file` argument, and the provider
+credentials the session carries (`AWS_PROFILE`, `ARM_*`, …). Every later step
+runs in this same shell; the notes are the only record of the ambient inputs,
+and a `-var` that appears nowhere else lives only in those notes — state does
+not store inputs.
+
+**2. Find the seams** (what `refactor plan`'s analysis does). Read every
+`*.tf` file and decide, per resource, which future module owns it — a useful
+test: two resources that would never be changed in the same PR by the same
+person probably belong in different states. Then find every reference that
+will cross a boundary: grep for each resource address
 among its consumers, remembering the ones hiding inside `templatefile(...)`,
 `jsonencode(...)`, index expressions, `depends_on` lists, provider configs,
 and locals.
 
-**2. Carve the code** (what `refactor run` does). Manually move the blocks
+**3. Carve the code** (what `refactor run` does). Manually move the blocks
 into new root directories, along with everything they require: the
 `required_providers` block, the `provider` configs they use, every `variable`
 and `local` the moved blocks reference (following local-to-local chains), and
@@ -182,17 +196,25 @@ the source directories of local child modules. Then wire up outputs with
 inputs: for every reference that now crosses roots, declare an `output` on the
 producer, a `variable` on the consumer, rewrite the reference to `var.<name>`,
 and delete `depends_on` entries pointing at blocks that left. Copy each data
-source into every root that reads it. Write each root a backend config with
-its own state location. Finally, convince yourself no dependency cycle exists
-between the new roots — a cycle means no apply order exists, and you find out
-late.
+source into every root that reads it. Finally, convince yourself no dependency
+cycle exists between the new roots — a cycle means no apply order exists, and
+you find out late.
 
-**3. Gate the carve** (what `refactor verify` does): redo step 2 from scratch
-and compare the results file by file — in practice, a careful code review of
-every carved file against the monolith source, repeated after every source
-change.
+**4. Copy the backend over** (the derivation `refactor run` does). Write each
+root a backend config with its own state location — the monolith's location
+postfixed per module — carrying every non-secret setting the monolith's init
+resolved, whether it came from HCL or a `-backend-config` flag in your step-1
+notes; secret-shaped settings (usernames, passwords, access keys) stay out of
+the files and are handled in step 7. Give every root a `.gitignore` covering
+`.terraform/`, `*.tfstate*`, `.env`, and the tfvars file from step 7, so
+nothing local can be committed by accident.
 
-**4. Carve the state** (what `migrate plan` does). On local copies, never
+**5. Gate the carve** (what `refactor verify` does): redo steps 3–4 from
+scratch and compare the results file by file — in practice, a careful code
+review of every carved file against the monolith source, repeated after every
+source change.
+
+**6. Carve the state** (what `migrate plan` does). On local copies, never
 against the backend:
 
 ```bash
@@ -212,37 +234,62 @@ tofu state mv -state=monolith.tfstate -state-out=networking.tfstate \
 
 Keep notes of every address you moved and where — that is the receipt.
 
-**5. Prove the split** (what `migrate prove` does). Order the roots so every
+**7. Copy the credentials and input values over** (the `.env` and
+`generated.auto.tfvars` that the migrate steps materialize). Per root, put the
+secret-shaped backend settings from your step-1 notes into a `.env` (chmod
+600) in the engine's official variables (`TF_HTTP_USERNAME`,
+`AWS_ACCESS_KEY_ID`, `ARM_ACCESS_KEY`, …), to be sourced before each init.
+Then list the variables the root's moved blocks declare and reproduce the
+value the monolith actually resolved for each by walking the engine's
+precedence from the bottom: `TF_VAR_*` env, overridden by `terraform.tfvars`,
+then `*.auto.tfvars` in lexical order, then `-var-file` files in argument
+order, then `-var` flags — all read off the step-1 notes. Write the winners
+into a per-root `*.auto.tfvars` so every later plan loads them with no flags.
+Declared defaults moved with the code in step 3; only values the monolith
+resolved from outside need an entry.
+
+**8. Prove the split** (what `migrate prove` does). Order the roots so every
 producer comes before its consumers, then per root, in that order:
 
 ```bash
 cd networking
+mv backend.tf backend.tf.hold  # offline proof: the engine refuses to plan a
+                               # declared-but-uninitialized backend, so hold
+                               # it aside and let the local state copy rule
 cp ../networking.tfstate terraform.tfstate
-tofu init
-tofu plan -out demo.tfplan     # pass -var for every cross-root input, with
+tofu init -backend=false
+tofu plan -out demo.tfplan     # root values load from the step-7 tfvars;
+                               # pass -var only for cross-root inputs, with
                                # values read out of the producers' plans
 tofu show -json demo.tfplan | jq '[.resource_changes[].change.actions[]] | unique'
 # the only acceptable answer contains no "create" and no "delete"
+mv backend.tf.hold backend.tf; rm terraform.tfstate
 ```
 
-After each plan, extract the root's planned output values (`tofu show -json`
-again) and hand them to its consumers as the `-var` values — you are playing
-the control plane's role by hand.
+After each plan, extract the root's planned output values (`tofu show -json
+demo.tfplan | jq '.planned_values.outputs'`) and hand them to its consumers
+as the `-var` values — you are playing the control plane's role by hand.
 
-**6. Execute and adopt** (what `migrate run` and `migrate verify` do). Per
-root: `tofu init` against its new backend, confirm the target is empty, and
-`tofu state push` its carved state — never forced; then plan every root
-against its real backend and demand zero create/destroy. From then on, every
-producer output must reach its consumers somehow: re-extract values by hand
-whenever an upstream changes, or let a control plane ingest the manifest's
-wiring and do it at runtime. Retire the monolith — its pipelines and its old
-state — only after every root proves clean.
+**9. Execute** (what `migrate run` does). Per root, source its `.env`, `tofu
+init` against its new backend, confirm the target is **empty**, and `tofu
+state push` its carved state — never forced. The monolith's own state is never
+touched.
 
-Every step is mechanical; none of it is hard — but step 2 is a hundred small
-edits where any missed reference is a broken root, step 4 is one mistyped
-address away from a bad day, and step 5 is the only proof you did it right,
-run once, by hand, on the day you migrated. That gap — mechanical but
-unguarded — is the reason demonolith exists.
+**10. Adopt** (what `migrate verify` does). Per root, prove the migration
+against reality: a fresh `tofu init` must find the pushed state in the new
+backend, and a refresh-on plan must show zero create/destroy — a plan that
+wants to create everything means the init did not find the state you pushed.
+From then on, every producer output must reach its consumers somehow:
+re-extract values by hand whenever an upstream changes, or let a control plane
+ingest the manifest's wiring and do it at runtime. Retire the monolith — its
+pipelines and its old state — only after every root proves clean.
+
+Every step is mechanical; none of it is hard — but step 3 is a hundred small
+edits where any missed reference is a broken root, step 6 is one mistyped
+address away from a bad day, step 7 is an exercise in reconstructing what the
+engine did silently, and step 8 is the only proof you did it right, run once,
+by hand, on the day you migrated. That gap — mechanical but unguarded — is the
+reason demonolith exists.
 
 ## Development
 

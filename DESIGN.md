@@ -477,8 +477,7 @@ default** (`--exec-path` overrides resolution).
 - **`refactor plan`** runs `pipeline.Analyze` (which includes the cycle gate)
   and writes the planned manifest — nothing emitted. It owns every plan-time
   choice as flags recorded into the manifest: `--out` (resolved against the
-  root, must be inside it; `.demono/modules` is the scratch default, `modules`
-  the canonical home for committed roots), `--remainder-module`, `--monorepo`
+  root, must be inside it; default `modules`), `--remainder-module`, `--monorepo`
   (relink in-repo child modules instead of copying, §8), `--no-bootstrap`,
   `--no-backend`. Run's pre-flights are enforced here so a written plan is a
   runnable plan: target-dir collisions (a dir that exists and is not

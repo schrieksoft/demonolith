@@ -1,5 +1,5 @@
 version: 1
-created: "2026-08-17T19:25:20Z"
+created: "2026-08-18T06:44:58Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-reserved-name/src

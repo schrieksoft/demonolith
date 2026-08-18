@@ -88,10 +88,10 @@ func refactorPlanInteractive(f refactorFlags) (refactorFlags, error) {
 
 	defOut := f.out
 	if defOut == "" {
-		defOut = ".demono/modules"
+		defOut = "modules"
 	}
 	for {
-		outIn, err := promptString("Output directory inside the root (canonical for committed roots: modules)", defOut)
+		outIn, err := promptString("Output directory inside the root", defOut)
 		if err != nil {
 			return f, err
 		}

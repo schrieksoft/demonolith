@@ -47,7 +47,7 @@ func refactorCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default .demono/modules for scratch work; the canonical home for committed roots is `modules`)")
+	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default `modules`)")
 	flags.StringVar(&f.remainder, "remainder-module", "monolith", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
@@ -83,7 +83,7 @@ func refactorPlanCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default .demono/modules for scratch work; the canonical home for committed roots is `modules`)")
+	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default `modules`)")
 	flags.StringVar(&f.remainder, "remainder-module", "monolith", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")

@@ -127,7 +127,7 @@ func resolveRoot(rootDir string) string {
 // force an absolute path into it and break every other checkout.
 func resolveOut(rootDir, out string) (string, error) {
 	if out == "" {
-		return filepath.Join(rootDir, ".demono", "modules"), nil
+		return filepath.Join(rootDir, "modules"), nil
 	}
 	if !filepath.IsAbs(out) {
 		out = filepath.Join(rootDir, out)
