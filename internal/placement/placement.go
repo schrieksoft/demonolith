@@ -37,7 +37,7 @@ type Placement struct {
 
 // Options configures placement resolution.
 type Options struct {
-	// Remainder is the catchall module name (default "monolith").
+	// Remainder is the catchall module name (default "legacy").
 	Remainder string
 }
 
@@ -50,7 +50,7 @@ type Options struct {
 func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options) (*Placement, error) {
 	remainder := opts.Remainder
 	if remainder == "" {
-		remainder = "monolith"
+		remainder = "legacy"
 	}
 
 	// Index decorators by the address they attach to.

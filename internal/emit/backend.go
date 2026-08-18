@@ -24,26 +24,46 @@ type BackendBlock struct {
 	block *hclwrite.Block
 	// resolved is the root's init-time backend config (scalars), used as the
 	// fallback for location attributes absent from HCL and as the source of
-	// credential values for per-module .env files. Never emitted into HCL.
+	// credential values for per-module demono.env files. Never emitted into HCL.
 	resolved map[string]string
 }
 
+// EnvFileName is the per-module backend-credentials file written by the
+// migrate steps and sourced around each module's backend operations.
+const EnvFileName = "demono.env"
+
 // locationAttrs names, per backend type, the attributes that distinguish one
-// state location from another. Types absent here are unsupported for
-// derivation.
+// state location from another — every built-in backend type of the
+// open-source lineage. A dotted name ("workspaces.name") addresses an
+// attribute inside a nested block.
 var locationAttrs = map[string][]string{
-	"local":   {"path"},
-	"s3":      {"key"},
-	"azurerm": {"key"},
-	"gcs":     {"prefix"},
-	"consul":  {"path"},
-	"http":    {"address", "lock_address", "unlock_address"},
+	"local":      {"path"},
+	"s3":         {"key"},
+	"azurerm":    {"key"},
+	"gcs":        {"prefix"},
+	"consul":     {"path"},
+	"http":       {"address", "lock_address", "unlock_address"},
+	"cos":        {"key"},
+	"oss":        {"key"},
+	"kubernetes": {"secret_suffix"},
+	"pg":         {"schema_name"},
+	"remote":     {"workspaces.name"},
 }
 
 // SupportedBackend reports whether derivation knows the given backend type.
 func SupportedBackend(t string) bool {
 	_, ok := locationAttrs[t]
 	return ok
+}
+
+// supportedTypesList renders the supported backend types for error messages.
+func supportedTypesList() string {
+	names := make([]string, 0, len(locationAttrs))
+	for t := range locationAttrs {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // ParseBackend finds the monolith's `terraform { backend "<type>" {...} }`
@@ -70,6 +90,12 @@ func ParseBackend(srcDir string) (*BackendBlock, error) {
 				if inner.Type() == "backend" && len(inner.Labels()) == 1 {
 					t := inner.Labels()[0]
 					return &BackendBlock{Type: t, block: inner, resolved: resolvedBackendConfig(srcDir, t)}, nil
+				}
+				// A cloud block is not a backend, but treating it as "no
+				// backend" would silently local-seed a workspace-managed
+				// monolith; surface it so derivation can refuse loudly.
+				if inner.Type() == "cloud" {
+					return &BackendBlock{Type: "cloud", block: inner}, nil
 				}
 			}
 		}
@@ -101,9 +127,19 @@ func DeriveLocation(value, module string) string {
 // must be present in HCL as a plain string literal — a location supplied only
 // via -backend-config cannot be derived and is a refusal, not a guess.
 func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byModule map[string]string, err error) {
+	if b.Type == "cloud" {
+		return "", nil, fmt.Errorf("the cloud block drives workspaces on a remote platform, not a derivable state location; pass --no-backend to carve without backend blocks and create per-module workspaces in the platform")
+	}
 	attrs, ok := locationAttrs[b.Type]
 	if !ok {
-		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: local, s3, azurerm, gcs, consul, http — pass --no-backend to carve without backend blocks", b.Type)
+		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: %s — pass --no-backend to carve without backend blocks", b.Type, supportedTypesList())
+	}
+	if b.Type == "remote" {
+		if _, named := b.locationValue("workspaces.name"); !named {
+			if _, prefixed := b.locationValue("workspaces.prefix"); prefixed {
+				return "", nil, fmt.Errorf("remote backend in workspaces.prefix mode maps CLI workspaces onto many remote workspaces; only workspaces.name mode is derivable — pass --no-backend to carve without backend blocks")
+			}
+		}
 	}
 	for _, name := range attrs {
 		if _, ok := b.locationValue(name); !ok {
@@ -118,14 +154,13 @@ func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byMo
 	return primary, byModule, nil
 }
 
-// WriteBackendTF writes the module's backend.tf: the monolith's block with
-// every location attribute rewritten to the module's derived value.
-func (b *BackendBlock) WriteBackendTF(moduleDir, module string) error {
-	f := hclwrite.NewEmptyFile()
-	tfBlk := f.Body().AppendNewBlock("terraform", nil)
+// BackendHCL builds the module's backend block for its root.tf: the
+// monolith's block with every location attribute rewritten to the module's
+// derived value.
+func (b *BackendBlock) BackendHCL(module string) (*hclwrite.Block, error) {
 	// Built fresh rather than cloned: a single-line source block (e.g. an
 	// empty `backend "http" {}`) cloned and mutated yields invalid HCL.
-	out := tfBlk.Body().AppendNewBlock("backend", []string{b.Type})
+	out := hclwrite.NewBlock("backend", []string{b.Type})
 	locs := map[string]bool{}
 	for _, name := range locationAttrs[b.Type] {
 		locs[name] = true
@@ -143,11 +178,13 @@ func (b *BackendBlock) WriteBackendTF(moduleDir, module string) error {
 	}
 	// Non-secret settings that were supplied out-of-band (lock methods, TLS
 	// toggles, regions...) must survive into the carved roots too. Everything
-	// credential-shaped is excluded here — it goes to .env instead.
+	// credential-shaped is excluded here — it goes to demono.env instead.
 	creds := envMapping[b.Type]
 	extras := make([]string, 0, len(b.resolved))
 	for name := range b.resolved {
-		if locs[name] {
+		// Dotted keys are flattened nested-block values; they are handled by
+		// the location loop below and are never valid flat attribute names.
+		if locs[name] || strings.Contains(name, ".") {
 			continue
 		}
 		if _, isCred := creds[name]; isCred {
@@ -167,9 +204,45 @@ func (b *BackendBlock) WriteBackendTF(moduleDir, module string) error {
 	}
 	for _, name := range locationAttrs[b.Type] {
 		val, _ := b.locationValue(name)
-		out.Body().SetAttributeValue(name, cty.StringVal(DeriveLocation(val, module)))
+		derived := DeriveLocation(val, module)
+		if blkName, attr, nested := strings.Cut(name, "."); nested {
+			nb := out.Body().FirstMatchingBlock(blkName, nil)
+			if nb == nil {
+				nb = out.Body().AppendNewBlock(blkName, nil)
+			}
+			nb.Body().SetAttributeValue(attr, cty.StringVal(derived))
+			continue
+		}
+		out.Body().SetAttributeValue(name, cty.StringVal(derived))
 	}
-	return os.WriteFile(filepath.Join(moduleDir, "backend.tf"), hclwrite.Format(f.Bytes()), 0o644)
+	return out, nil
+}
+
+// StripBackend removes backend blocks from every terraform{} block in src,
+// returning the stripped bytes and whether anything was removed — the offline
+// proof's way of un-declaring the backend while keeping required_providers.
+// Unparseable input is returned unchanged.
+func StripBackend(src []byte) ([]byte, bool) {
+	f, diags := hclwrite.ParseConfig(src, "root.tf", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return src, false
+	}
+	changed := false
+	for _, blk := range f.Body().Blocks() {
+		if blk.Type() != "terraform" {
+			continue
+		}
+		for _, inner := range blk.Body().Blocks() {
+			if inner.Type() == "backend" {
+				blk.Body().RemoveBlock(inner)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return src, false
+	}
+	return hclwrite.Format(f.Bytes()), true
 }
 
 // literalAttr reads a plain double-quoted string attribute, rejecting
@@ -184,7 +257,7 @@ func literalAttr(blk *hclwrite.Block, name string) (string, bool) {
 
 // envMapping names, per backend type, the official engine environment variable
 // for each credential-bearing config attribute. Secrets are persisted only as
-// gitignored per-module .env files in these variables — never into HCL.
+// gitignored per-module demono.env files in these variables — never into HCL.
 var envMapping = map[string]map[string]string{
 	"http": {
 		"username": "TF_HTTP_USERNAME",
@@ -209,6 +282,32 @@ var envMapping = map[string]map[string]string{
 	},
 	"consul": {
 		"access_token": "CONSUL_HTTP_TOKEN",
+	},
+	"cos": {
+		"secret_id":      "TENCENTCLOUD_SECRET_ID",
+		"secret_key":     "TENCENTCLOUD_SECRET_KEY",
+		"security_token": "TENCENTCLOUD_SECURITY_TOKEN",
+	},
+	"oss": {
+		"access_key":     "ALICLOUD_ACCESS_KEY",
+		"secret_key":     "ALICLOUD_SECRET_KEY",
+		"security_token": "ALICLOUD_SECURITY_TOKEN",
+	},
+	"kubernetes": {
+		"token":           "KUBE_TOKEN",
+		"password":        "KUBE_PASSWORD",
+		"client_key_data": "KUBE_CLIENT_KEY_DATA",
+	},
+	"pg": {
+		// conn_str is both address and credential; the DSN carries the
+		// password, so the whole string stays out of HCL.
+		"conn_str": "PG_CONN_STR",
+	},
+	// remote's token env var is host-dependent (TF_TOKEN_<hostname>); the
+	// empty mapping keeps the attribute out of emitted HCL, and CredentialEnv
+	// derives the variable name from the hostname.
+	"remote": {
+		"token": "",
 	},
 }
 
@@ -243,14 +342,34 @@ func resolvedBackendConfig(srcDir, backendType string) map[string]string {
 			} else {
 				out[k] = fmt.Sprintf("%g", t)
 			}
+		case map[string]any:
+			// One level of nesting, flattened to dotted keys — the remote
+			// backend's workspaces block.
+			for k2, v2 := range t {
+				if s, ok := v2.(string); ok && s != "" {
+					out[k+"."+k2] = s
+				}
+			}
 		}
 	}
 	return out
 }
 
 // locationValue resolves a location attribute: the HCL literal, else the
-// root's resolved (init-time) value.
+// root's resolved (init-time) value. A dotted name reads an attribute inside
+// a nested block ("workspaces.name").
 func (b *BackendBlock) locationValue(name string) (string, bool) {
+	if blkName, attr, nested := strings.Cut(name, "."); nested {
+		for _, nb := range b.block.Body().Blocks() {
+			if nb.Type() == blkName {
+				if v, ok := literalAttr(nb, attr); ok {
+					return v, true
+				}
+			}
+		}
+		v, ok := b.resolved[name]
+		return v, ok && v != ""
+	}
 	if v, ok := literalAttr(b.block, name); ok {
 		return v, true
 	}
@@ -259,17 +378,33 @@ func (b *BackendBlock) locationValue(name string) (string, bool) {
 }
 
 // CredentialEnv maps the resolved credential attributes that are absent from
-// HCL to their engine environment variables — the content of a module's .env.
+// HCL to their engine environment variables — the content of a module's demono.env.
 func (b *BackendBlock) CredentialEnv() map[string]string {
 	out := map[string]string{}
 	for attr, envVar := range envMapping[b.Type] {
+		if envVar == "" {
+			continue
+		}
 		if _, inHCL := literalAttr(b.block, attr); inHCL {
 			// An HCL-present credential is committed intent (e.g. seeded dev
-			// defaults) and travels in the emitted backend.tf clone as-is.
+			// defaults) and travels in the emitted root.tf clone as-is.
 			continue
 		}
 		if v, ok := b.resolved[attr]; ok && v != "" {
 			out[envVar] = v
+		}
+	}
+	if b.Type == "remote" {
+		if _, inHCL := literalAttr(b.block, "token"); !inHCL {
+			if v := b.resolved["token"]; v != "" {
+				host := "app.terraform.io"
+				if h, ok := b.locationValue("hostname"); ok {
+					host = h
+				}
+				// The engines' credential variable encodes the hostname:
+				// dots become _, dashes become __.
+				out["TF_TOKEN_"+strings.NewReplacer(".", "_", "-", "__").Replace(host)] = v
+			}
 		}
 	}
 	return out
@@ -290,8 +425,11 @@ func WriteEnvFile(moduleDir string, env map[string]string) (bool, error) {
 	var sb strings.Builder
 	sb.WriteString("# Backend credentials inherited from the monolith's init-time configuration.\n")
 	sb.WriteString("# This file holds secrets: it must stay gitignored.\n")
+	sb.WriteString("# Shell-sourceable: `source " + EnvFileName + "` exports every value.\n")
 	for _, k := range keys {
-		fmt.Fprintf(&sb, "%s=%s\n", k, env[k])
+		// Single-quoted so credentials with shell metacharacters source
+		// verbatim; embedded quotes use the standard '\'' escape.
+		fmt.Fprintf(&sb, "export %s='%s'\n", k, strings.ReplaceAll(env[k], `'`, `'\''`))
 	}
-	return true, os.WriteFile(filepath.Join(moduleDir, ".env"), []byte(sb.String()), 0o600)
+	return true, os.WriteFile(filepath.Join(moduleDir, EnvFileName), []byte(sb.String()), 0o600)
 }

@@ -16,7 +16,7 @@ func migrateProveCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "prove",
-		Short: "Prove migrate plan's output inert: threaded zero-diff plans over the carved state copies",
+		Short: "Prove migrate map's output inert: threaded zero-diff plans over the carved state copies",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigrateProve(cmd.Context(), f)
@@ -27,7 +27,7 @@ func migrateProveCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.BoolVar(&f.refresh, "refresh", false, "refresh state during the proof (authoritative but needs credentials)")
-	flags.BoolVar(&f.createTfvars, "create-tfvars", false, "materialize generated.auto.tfvars in each consumer root — the standalone wiring for detached use (default threads values in memory only)")
+	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable; overrides the root's auto-loaded files)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable; overrides tfvars files and TF_VAR_*)")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
@@ -70,8 +70,8 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 		return err
 	}
 
-	// The subject of the proof: migrate plan's carved artifacts.
-	_, moduleStates, _, err := planReceiptStates(rootDir, m)
+	// The subject of the proof: migrate map's carved artifacts.
+	_, moduleStates, _, err := mapReceiptStates(rootDir, m)
 	if err != nil {
 		return err
 	}
@@ -84,19 +84,33 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 
 	rep := proveReport{Manifest: manifest.FileName, Mode: manifest.ModeProve, ExternalInputs: extNames}
 
-	sv, err := materializeTfvars(rootDir, m, a.Boundary, f)
+	sv, err := materializeRootTfvars(rootDir, m, a.Boundary, f)
 	if err != nil {
 		return err
 	}
 	rep.TfvarsFiles = sv.Files
 
-	pres, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, proof.Options{
+	var rootInputs map[string]map[string]string
+	if f.noTfvars {
+		rootInputs = sv.Values
+	}
+	opts := proof.Options{
 		ExecPath:       execPath,
 		Refresh:        f.refresh,
 		ExternalInputs: extVals,
-	})
+		RootInputs:     rootInputs,
+	}
+	if mode == outputText {
+		outln("Proving modules in dependency order (plans against the carved state copies):")
+		opts.OnPlanStart = func(module string) { outf("  %s: planning ... ", module) }
+		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", verdict) }
+	}
+	pres, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, opts)
 	if err != nil {
 		return fmt.Errorf("proof: %w", err)
+	}
+	if err := writeProofThreaded(rootDir, m, pres.Threaded); err != nil {
+		return err
 	}
 
 	rep.OK = pres.OK
@@ -133,25 +147,19 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 			return err
 		}
 	} else {
-		printProofReport(rootDir, rep, "per-module plan against the carved state copies")
+		printProofReport(rootDir, rep)
 	}
 	if !pres.OK {
-		return verdictf("proof failed: at least one module plans a create or destroy against carved state")
+		return verdictf("proof failed: at least one module plans changes against carved state")
 	}
 	return nil
 }
 
-func printProofReport(rootDir string, rep proveReport, subject string) {
-	outf("Proof (%s, inputs threaded from upstream outputs):\n", subject)
-	for _, mv := range rep.Modules {
-		status := "zero-diff"
-		if !mv.ZeroDiff {
-			status = fmt.Sprintf("CHANGES +%d -%d", mv.Create, mv.Destroy)
-		}
-		outf("  %-16s %s (~%d in-place)\n", mv.Module, status, mv.Update)
-	}
+// printProofReport prints what the live per-module progress lines did not
+// already say: materialized files, unresolved inputs, the total, the verdict.
+func printProofReport(rootDir string, rep proveReport) {
 	if len(rep.TfvarsFiles) > 0 {
-		outln("\nMaterialized input values (generated.auto.tfvars):")
+		outln("\nMaterialized root variable values (demono.root.tfvars):")
 		mods := make([]string, 0, len(rep.TfvarsFiles))
 		for m := range rep.TfvarsFiles {
 			mods = append(mods, m)
@@ -162,7 +170,7 @@ func printProofReport(rootDir string, rep proveReport, subject string) {
 		}
 	}
 	if rep.OK {
-		outf("\n✓ %d modules, each plans to zero create/destroy with real threaded inputs.\n", len(rep.Order))
+		outf("\n✓ %d modules, each plans to zero changes with real threaded inputs.\n", len(rep.Order))
 	}
 	outf("Verdict: %s\n", displayPath(rootDir, rep.VerdictPath))
 }

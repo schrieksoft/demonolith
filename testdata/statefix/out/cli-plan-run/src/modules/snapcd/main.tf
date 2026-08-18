@@ -48,12 +48,12 @@ resource "snapcd_module" "b" {
   engine              = var.engine
 }
 
-resource "snapcd_module" "monolith" {
-  name                = "monolith"
+resource "snapcd_module" "legacy" {
+  name                = "legacy"
   namespace_id        = snapcd_namespace.this.id
   source_url          = var.source_url
   source_revision     = var.source_revision
-  source_subdirectory = "${var.source_subdirectory_prefix}modules/monolith"
+  source_subdirectory = "${var.source_subdirectory_prefix}modules/legacy"
   runner_id           = data.snapcd_runner.this.id
   engine              = var.engine
 }

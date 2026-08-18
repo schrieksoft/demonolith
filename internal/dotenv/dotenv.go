@@ -1,5 +1,6 @@
-// Package dotenv reads the minimal KEY=value .env files demonolith writes
-// beside carved roots for backend credentials.
+// Package dotenv reads the env files demonolith writes beside carved roots
+// for backend credentials. The files are shell-sourceable (`export KEY='v'`
+// lines), and this parser accepts that shape as well as bare KEY=value.
 package dotenv
 
 import (
@@ -8,7 +9,8 @@ import (
 )
 
 // Load parses path into a key/value map. A missing file is an empty map.
-// Lines are KEY=value; blank lines and #-comments are ignored.
+// Lines are KEY=value with an optional `export ` prefix and optional single
+// or double quoting around the value; blank lines and #-comments are ignored.
 func Load(path string) (map[string]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -23,11 +25,21 @@ func Load(path string) (map[string]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		line = strings.TrimPrefix(line, "export ")
 		eq := strings.Index(line, "=")
 		if eq < 1 {
 			continue
 		}
-		out[line[:eq]] = line[eq+1:]
+		key := strings.TrimSpace(line[:eq])
+		val := line[eq+1:]
+		if len(val) >= 2 {
+			if val[0] == '\'' && val[len(val)-1] == '\'' {
+				val = strings.ReplaceAll(val[1:len(val)-1], `'\''`, `'`)
+			} else if val[0] == '"' && val[len(val)-1] == '"' {
+				val = val[1 : len(val)-1]
+			}
+		}
+		out[key] = val
 	}
 	return out, nil
 }

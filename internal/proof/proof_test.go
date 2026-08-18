@@ -26,7 +26,7 @@ func carveStatefix(t *testing.T, slug string) (analysis *pipeline.Analysis, modu
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
 	testsupport.ApplyRoot(t, srcDir)
 
-	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}

@@ -6,8 +6,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2/hclwrite"
+
 	"github.com/schrieksoft/demonolith/internal/emit"
 )
+
+// renderRootTF builds the module's root.tf content the way emit composes it:
+// a terraform{} block wrapping the derived backend block.
+func renderRootTF(t *testing.T, b *emit.BackendBlock, module string) string {
+	t.Helper()
+	blk, err := b.BackendHCL(module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := hclwrite.NewEmptyFile()
+	tfb := f.Body().AppendNewBlock("terraform", nil)
+	tfb.Body().AppendBlock(blk)
+	return string(hclwrite.Format(f.Bytes()))
+}
 
 func TestDeriveLocation(t *testing.T) {
 	cases := []struct{ in, module, want string }{
@@ -56,18 +72,10 @@ terraform {
 		t.Errorf("derived = %q / %v", mono, byModule)
 	}
 
-	modDir := t.TempDir()
-	if err := b.WriteBackendTF(modDir, "networking"); err != nil {
-		t.Fatal(err)
-	}
-	out, err := os.ReadFile(filepath.Join(modDir, "backend.tf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(out)
+	s := renderRootTF(t, b, "networking")
 	for _, want := range []string{`backend "s3"`, `key    = "prod/terraform-networking.tfstate"`, `bucket = "my-bucket"`, `region = "eu-west-1"`} {
 		if !strings.Contains(s, want) {
-			t.Errorf("backend.tf missing %q:\n%s", want, s)
+			t.Errorf("root.tf missing %q:\n%s", want, s)
 		}
 	}
 }
@@ -86,28 +94,43 @@ terraform {
 	if err != nil || b == nil {
 		t.Fatal(err)
 	}
-	modDir := t.TempDir()
-	if err := b.WriteBackendTF(modDir, "db"); err != nil {
-		t.Fatal(err)
-	}
-	out, _ := os.ReadFile(filepath.Join(modDir, "backend.tf"))
-	s := string(out)
+	s := renderRootTF(t, b, "db")
 	for _, want := range []string{"state/mono-db\"", "mono-db/lock\"", "mono-db/unlock\""} {
 		if !strings.Contains(s, want) {
-			t.Errorf("backend.tf missing derived %q:\n%s", want, s)
+			t.Errorf("root.tf missing derived %q:\n%s", want, s)
 		}
 	}
 }
 
 func TestParseBackend_Refusals(t *testing.T) {
-	// Unsupported type.
-	dir := writeBackendFixture(t, "terraform {\n  backend \"oss\" {\n    key = \"x\"\n  }\n}\n")
+	// Unsupported type (swift was removed from the lineage before the fork).
+	dir := writeBackendFixture(t, "terraform {\n  backend \"swift\" {\n    container = \"x\"\n  }\n}\n")
 	b, err := emit.ParseBackend(dir)
 	if err != nil || b == nil {
 		t.Fatal(err)
 	}
 	if _, _, err := b.DerivedLocations([]string{"a"}); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("unsupported type must refuse, got: %v", err)
+	}
+
+	// A cloud block is workspace-driven, not a derivable location.
+	dir = writeBackendFixture(t, "terraform {\n  cloud {\n    organization = \"acme\"\n  }\n}\n")
+	b, err = emit.ParseBackend(dir)
+	if err != nil || b == nil || b.Type != "cloud" {
+		t.Fatalf("cloud block must surface as type cloud, got %+v, %v", b, err)
+	}
+	if _, _, err := b.DerivedLocations([]string{"a"}); err == nil || !strings.Contains(err.Error(), "cloud block") {
+		t.Errorf("cloud block must refuse derivation, got: %v", err)
+	}
+
+	// remote in prefix mode maps CLI workspaces; only name mode derives.
+	dir = writeBackendFixture(t, "terraform {\n  backend \"remote\" {\n    organization = \"acme\"\n    workspaces {\n      prefix = \"mono-\"\n    }\n  }\n}\n")
+	b, err = emit.ParseBackend(dir)
+	if err != nil || b == nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.DerivedLocations([]string{"a"}); err == nil || !strings.Contains(err.Error(), "prefix") {
+		t.Errorf("remote prefix mode must refuse, got: %v", err)
 	}
 
 	// Location attribute absent from HCL (supplied out-of-band).
@@ -157,28 +180,72 @@ func TestBackend_ResolvedConfigFallbackAndEnv(t *testing.T) {
 	}
 
 	modDir := t.TempDir()
-	if err := b.WriteBackendTF(modDir, "app"); err != nil {
-		t.Fatal(err)
-	}
-	bt, _ := os.ReadFile(filepath.Join(modDir, "backend.tf"))
-	if !strings.Contains(string(bt), "state/mono-app\"") || strings.Contains(string(bt), "hunter2") {
-		t.Errorf("backend.tf must carry derived locations and never credentials:\n%s", bt)
+	bt := renderRootTF(t, b, "app")
+	if !strings.Contains(bt, "state/mono-app\"") || strings.Contains(bt, "hunter2") {
+		t.Errorf("root.tf must carry derived locations and never credentials:\n%s", bt)
 	}
 
 	wrote, err := emit.WriteEnvFile(modDir, b.CredentialEnv())
 	if err != nil || !wrote {
 		t.Fatalf("WriteEnvFile: wrote=%v err=%v", wrote, err)
 	}
-	envB, err := os.ReadFile(filepath.Join(modDir, ".env"))
+	envB, err := os.ReadFile(filepath.Join(modDir, "demono.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := string(envB)
-	if !strings.Contains(env, "TF_HTTP_USERNAME=default") || !strings.Contains(env, "TF_HTTP_PASSWORD=hunter2") {
+	if !strings.Contains(env, "TF_HTTP_USERNAME='default'") || !strings.Contains(env, "TF_HTTP_PASSWORD='hunter2'") {
 		t.Errorf(".env missing mapped credentials:\n%s", env)
 	}
-	info, _ := os.Stat(filepath.Join(modDir, ".env"))
+	info, _ := os.Stat(filepath.Join(modDir, "demono.env"))
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf(".env mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestParseBackend_AllTypes covers derivation for every supported type's
+// primary location attribute.
+func TestParseBackend_AllTypes(t *testing.T) {
+	cases := []struct {
+		hcl, wantMono, wantA string
+	}{
+		{"terraform {\n  backend \"cos\" {\n    bucket = \"b\"\n    key = \"prod/terraform.tfstate\"\n  }\n}\n", "prod/terraform.tfstate", "prod/terraform-a.tfstate"},
+		{"terraform {\n  backend \"oss\" {\n    bucket = \"b\"\n    key = \"prod/terraform.tfstate\"\n  }\n}\n", "prod/terraform.tfstate", "prod/terraform-a.tfstate"},
+		{"terraform {\n  backend \"kubernetes\" {\n    secret_suffix = \"mono\"\n  }\n}\n", "mono", "mono-a"},
+		{"terraform {\n  backend \"pg\" {\n    schema_name = \"tf_mono\"\n  }\n}\n", "tf_mono", "tf_mono-a"},
+		{"terraform {\n  backend \"remote\" {\n    organization = \"acme\"\n    workspaces {\n      name = \"mono\"\n    }\n  }\n}\n", "mono", "mono-a"},
+	}
+	for _, tc := range cases {
+		dir := writeBackendFixture(t, tc.hcl)
+		b, err := emit.ParseBackend(dir)
+		if err != nil || b == nil {
+			t.Fatalf("ParseBackend: %v, %v", b, err)
+		}
+		mono, byMod, err := b.DerivedLocations([]string{"a"})
+		if err != nil {
+			t.Fatalf("type %s: %v", b.Type, err)
+		}
+		if mono != tc.wantMono || byMod["a"] != tc.wantA {
+			t.Errorf("type %s: got %q/%q, want %q/%q", b.Type, mono, byMod["a"], tc.wantMono, tc.wantA)
+		}
+	}
+}
+
+// TestParseBackend_RemoteWritesNestedWorkspaces asserts the emitted root.tf
+// carries the derived name inside a workspaces block, not as a flat attribute.
+func TestParseBackend_RemoteWritesNestedWorkspaces(t *testing.T) {
+	dir := writeBackendFixture(t, "terraform {\n  backend \"remote\" {\n    hostname = \"tfe.example.com\"\n    organization = \"acme\"\n    workspaces {\n      name = \"mono\"\n    }\n  }\n}\n")
+	b, err := emit.ParseBackend(dir)
+	if err != nil || b == nil {
+		t.Fatal(err)
+	}
+	s := renderRootTF(t, b, "networking")
+	for _, want := range []string{"workspaces {", `name = "mono-networking"`, `organization = "acme"`, `hostname     = "tfe.example.com"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("root.tf missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "workspaces.name") {
+		t.Errorf("nested location leaked as flat attribute:\n%s", s)
 	}
 }

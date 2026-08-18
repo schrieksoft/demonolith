@@ -58,7 +58,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	path := manifest.Path(rootDir)
 	if _, err := os.Stat(path); err != nil {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "no committed "+manifest.FileName+" found; run `demonolith refactor plan` and commit its output")
+		rep.Reasons = append(rep.Reasons, "no committed "+manifest.FileName+" found; run `demonolith refactor map` and commit its output")
 		return reportRefactorVerify(rep, nil, mode, f)
 	}
 	rep.Manifest = manifest.FileName
@@ -68,7 +68,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	}
 	if !committed.IsRun() {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "manifest is planned but not run; run `demonolith refactor run` and commit its output")
+		rep.Reasons = append(rep.Reasons, "manifest is mapped but not run; run `demonolith refactor run` and commit its output")
 		return reportRefactorVerify(rep, committed, mode, f)
 	}
 

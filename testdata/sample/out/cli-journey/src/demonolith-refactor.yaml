@@ -1,9 +1,9 @@
 version: 1
-created: "2026-08-18T06:45:43Z"
+created: "2026-08-18T13:22:21Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/sample/out/cli-journey/src
-    remainder_module: monolith
+    remainder_module: legacy
 output:
     dir: modules
     bootstrap: true
@@ -30,8 +30,8 @@ modules:
             - data.local_file.environment
             - module.database
             - random_uuid.database_firewall_rule
-    monolith:
-        dir: modules/monolith
+    legacy:
+        dir: modules/legacy
         blocks:
             - random_pet.backup_plan
             - random_uuid.audit_log_bucket_id
@@ -152,4 +152,4 @@ ordering_edges:
       producer_module: networking
       consumer: module.cluster
       producer: time_sleep.network_propagation
-emit_checksum: sha256:0282c59e0bf8eed651eafede70007b3b0a5e3264d74f1d70114f29fdd189200a
+emit_checksum: sha256:fde9464d03fb8f34208abb6fa91bb6bea296edb642fe3ecc151d66d96c3f8732

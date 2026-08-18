@@ -48,7 +48,7 @@ func TestCarve_SplitsStateByModule(t *testing.T) {
 	testsupport.ApplyRoot(t, srcDir)
 
 	// Analyze placement from the same source.
-	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestCarve_SplitsStateByModule(t *testing.T) {
 	want := map[string]map[string]bool{
 		"a":        {"random_integer.seed": true, "random_pet.name_a": true},
 		"b":        {"random_pet.name_b": true},
-		"monolith": {"random_pet.leftover": true},
+		"legacy": {"random_pet.leftover": true},
 	}
 	for module, wantSet := range want {
 		statePath, ok := res.ModuleStates[module]

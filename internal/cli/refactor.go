@@ -39,7 +39,7 @@ func refactorCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "refactor",
-		Short: "Carve the monolith's code: plan → run → verify",
+		Short: "Carve the monolith's code: map → run → verify",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRefactorPipeline(f)
@@ -48,7 +48,7 @@ func refactorCmd() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default `modules`)")
-	flags.StringVar(&f.remainder, "remainder-module", "monolith", "catchall module name for unannotated blocks")
+	flags.StringVar(&f.remainder, "remainder-module", "legacy", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
 	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: carve roots without backend blocks")
@@ -56,15 +56,15 @@ func refactorCmd() *cobra.Command {
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough of the whole pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the plan automatically instead of pausing for confirmation before run")
 
-	cmd.AddCommand(refactorPlanCmd(), refactorRunCmd(), refactorVerifyCmd())
+	cmd.AddCommand(refactorMapCmd(), refactorRunCmd(), refactorVerifyCmd())
 	return cmd
 }
 
-func refactorPlanCmd() *cobra.Command {
+func refactorMapCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
-		Use:   "plan",
-		Short: "Analyze the monolith and write the manifest — the reviewable plan; nothing is emitted",
+		Use:   "map",
+		Short: "Analyze the monolith and write the manifest — the reviewable map of the split; nothing is emitted",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -75,16 +75,16 @@ func refactorPlanCmd() *cobra.Command {
 				if mode == outputJSON {
 					return fmt.Errorf("--interactive and --output json are mutually exclusive")
 				}
-				return runRefactorPlanInteractive(f)
+				return runRefactorMapInteractive(f)
 			}
-			_, err = runRefactorPlan(f, mode)
+			_, err = runRefactorMap(f, mode)
 			return err
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default `modules`)")
-	flags.StringVar(&f.remainder, "remainder-module", "monolith", "catchall module name for unannotated blocks")
+	flags.StringVar(&f.remainder, "remainder-module", "legacy", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
 	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: carve roots without backend blocks")
@@ -113,7 +113,7 @@ func refactorRunCmd() *cobra.Command {
 	return cmd
 }
 
-// planReport is the machine-facing result of refactor plan.
+// planReport is the machine-facing result of refactor map.
 type planReport struct {
 	Modules        map[string]int    `json:"modules"`
 	Catchall       []string          `json:"catchall,omitempty"`
@@ -125,10 +125,10 @@ type planReport struct {
 	ManifestPath   string            `json:"manifest_path"`
 }
 
-// runRefactorPlan analyzes and writes the planned manifest. Nothing is emitted;
+// runRefactorMap analyzes and writes the planned manifest. Nothing is emitted;
 // run's pre-flights (target-dir collisions, backend-type support, the reserved
 // bootstrap name) are enforced here so a written plan is a runnable plan.
-func runRefactorPlan(f refactorFlags, mode outputMode) (*manifest.Manifest, error) {
+func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error) {
 	rootDir := resolveRoot(f.rootDir)
 	outDir, err := resolveOut(rootDir, f.out)
 	if err != nil {
@@ -217,7 +217,7 @@ type runReport struct {
 func runRefactorRun(rootDir string, mode outputMode) error {
 	path := manifest.Path(rootDir)
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("no %s found in %s; run `demonolith refactor plan` first", manifest.FileName, rootDir)
+		return fmt.Errorf("no %s found in %s; run `demonolith refactor map` first", manifest.FileName, rootDir)
 	}
 	m, err := manifest.Load(path)
 	if err != nil {
@@ -234,7 +234,7 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 		return err
 	}
 	if !manifest.SemanticEqual(fresh, m) {
-		return verdictf("the source no longer matches the plan; re-run `demonolith refactor plan`")
+		return verdictf("the source no longer matches the plan; re-run `demonolith refactor map`")
 	}
 
 	var block *emit.BackendBlock
@@ -244,7 +244,7 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 			return err
 		}
 		if block == nil {
-			return verdictf("the plan derives backends but the source has no backend block; re-run `demonolith refactor plan`")
+			return verdictf("the plan derives backends but the source has no backend block; re-run `demonolith refactor map`")
 		}
 	}
 
@@ -307,7 +307,7 @@ func freshSemantic(a *pipeline.Analysis, rootDir string, committed *manifest.Man
 	return fresh, nil
 }
 
-// runRefactorPipeline is the bare `demonolith refactor`: plan → run → verify.
+// runRefactorPipeline is the bare `demonolith refactor`: map → run → verify.
 func runRefactorPipeline(f refactorFlags) error {
 	mode, err := parseOutput(f.output)
 	if err != nil {
@@ -319,7 +319,7 @@ func runRefactorPipeline(f refactorFlags) error {
 		}
 		return runRefactorInteractivePipeline(f)
 	}
-	if _, err := runRefactorPlan(f, mode); err != nil {
+	if _, err := runRefactorMap(f, mode); err != nil {
 		return err
 	}
 	if !f.yes {

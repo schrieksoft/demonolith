@@ -124,6 +124,10 @@ func Prepare(ctx context.Context, srcDir, workDir string, opts Options) (*Prepar
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, err
 	}
+	// The workdir holds real state copies and must never be committed.
+	if err := os.WriteFile(filepath.Join(workDir, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		return nil, err
+	}
 	monolithState := filepath.Join(workDir, "monolith.tfstate")
 	// "demono-backup" (not terraform's default ".backup") so its provenance is
 	// unambiguous: this is the deliberate pre-carve snapshot, not one of

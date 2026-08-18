@@ -1,9 +1,9 @@
 version: 1
-created: "2026-08-18T06:46:35Z"
+created: "2026-08-18T13:23:17Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/sample-snapcd/out/cli-journey/src
-    remainder_module: monolith
+    remainder_module: legacy
 output:
     dir: modules
     bootstrap: true
@@ -31,8 +31,8 @@ modules:
             - data.snapcd_stack.default
             - module.database
             - random_uuid.database_firewall_rule
-    monolith:
-        dir: modules/monolith
+    legacy:
+        dir: modules/legacy
         blocks:
             - random_pet.backup_plan
             - random_uuid.audit_log_bucket_id
@@ -157,11 +157,11 @@ ordering_edges:
       producer: time_sleep.network_propagation
 backend:
     type: http
-    monolith: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787035575954983013
+    monolith: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787059378160680563
     modules:
-        app: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787035575954983013-app
-        cluster: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787035575954983013-cluster
-        database: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787035575954983013-database
-        monolith: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787035575954983013-monolith
-        networking: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787035575954983013-networking
-emit_checksum: sha256:9303244d04e56021a87daca441165eb88de4557b819cb89705f6c3f9490aad1c
+        app: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787059378160680563-app
+        cluster: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787059378160680563-cluster
+        database: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787059378160680563-database
+        legacy: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787059378160680563-legacy
+        networking: http://localhost:5000/api/10000000-0000-0000-0000-000000000000/state/10000000-0000-0000-0000-000000000000/demonolith-e2e-1787059378160680563-networking
+emit_checksum: sha256:3652daa48d2558ddcb8b05b144906e1dee2b743d4b01e2a95dd29d5b659e80b4

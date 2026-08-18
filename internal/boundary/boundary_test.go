@@ -35,7 +35,7 @@ func buildFixture(t *testing.T) (*hclgraph.Graph, *placement.Placement, *Result)
 		decos = append(decos, bds...)
 	}
 
-	p, err := placement.Resolve(g, decos, placement.Options{Remainder: "monolith"})
+	p, err := placement.Resolve(g, decos, placement.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestPlacement_Assignment(t *testing.T) {
 		t.Errorf("database_id -> %q, want data", got)
 	}
 	// undecorated -> catchall
-	if got, _ := p.ModuleOf(hclgraph.Address{Kind: hclgraph.KindResource, Type: "random_pet", Name: "environment"}); got != "monolith" {
+	if got, _ := p.ModuleOf(hclgraph.Address{Kind: hclgraph.KindResource, Type: "random_pet", Name: "environment"}); got != "legacy" {
 		t.Errorf("environment -> %q, want monolith", got)
 	}
 	// multi-target data source -> duplicated

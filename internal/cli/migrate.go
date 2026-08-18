@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,11 +29,12 @@ type migrateFlags struct {
 	output        string
 	interactive   bool
 	refresh       bool
-	createTfvars  bool
+	noTfvars      bool
 	varFiles      []string
 	vars          []string
 	backendConfig []string
 	unproven      bool
+	overwrite     bool
 	yes           bool
 }
 
@@ -40,7 +42,7 @@ func migrateCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Migrate the state: plan → prove → run → verify",
+		Short: "Migrate the state: map → prove → run → verify",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigratePipeline(cmd.Context(), f)
@@ -53,24 +55,25 @@ func migrateCmd() *cobra.Command {
 	flags.StringVar(&f.stateFile, "state-file", "", "carve this state snapshot instead of pulling from the configured backend")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
-	flags.BoolVar(&f.createTfvars, "create-tfvars", false, "materialize generated.auto.tfvars in each consumer root — the standalone wiring for detached use (default threads values in memory only)")
+	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
+	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a target whose state does not match the carve (state push -force); the occupant is lost — default refuses")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough of the whole migration")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
 
-	cmd.AddCommand(migratePlanCmd(), migrateProveCmd(), migrateRunCmd(), migrateVerifyCmd())
+	cmd.AddCommand(migrateMapCmd(), migrateProveCmd(), migrateRunCmd(), migrateVerifyCmd())
 	return cmd
 }
 
-func migratePlanCmd() *cobra.Command {
+func migrateMapCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
-		Use:   "plan",
+		Use:   "map",
 		Short: "Materialize the migration: pull read-only, back up, carve local state copies, write a receipt",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMigratePlan(cmd.Context(), f)
+			return runMigrateMap(cmd.Context(), f)
 		},
 	}
 	flags := cmd.Flags()
@@ -95,7 +98,7 @@ func loadRunManifest(rootDir string) (*manifest.Manifest, error) {
 		return nil, err
 	}
 	if !m.IsRun() {
-		return nil, fmt.Errorf("manifest %s is planned but not run; run `demonolith refactor run` first", manifest.FileName)
+		return nil, fmt.Errorf("manifest %s is mapped but not run; run `demonolith refactor run` first", manifest.FileName)
 	}
 	sum, err := manifest.Checksum(m.ChecksumDirs(rootDir))
 	if err != nil {
@@ -124,8 +127,8 @@ func analyzeMatching(rootDir string, m *manifest.Manifest) (*pipeline.Analysis, 
 	return a, nil
 }
 
-// migratePlanReport records the plan (carve) result.
-type migratePlanReport struct {
+// migrateMapReport records the plan (carve) result.
+type migrateMapReport struct {
 	Manifest     string            `json:"manifest"`
 	Skipped      bool              `json:"skipped"`
 	SkipReason   string            `json:"skip_reason,omitempty"`
@@ -141,7 +144,7 @@ type moveReport struct {
 	Outcome string `json:"outcome"` // moved | skipped
 }
 
-func runMigratePlan(ctx context.Context, f migrateFlags) error {
+func runMigrateMap(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -156,7 +159,7 @@ func runMigratePlan(ctx context.Context, f migrateFlags) error {
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
-		outln("Interactive migrate plan — Enter keeps the value in brackets.")
+		outln("Interactive migrate map — Enter keeps the value in brackets.")
 		rootIn, err := promptString("Monolith root", f.rootDir)
 		if err != nil {
 			return err
@@ -184,7 +187,7 @@ func runMigratePlan(ctx context.Context, f migrateFlags) error {
 			}
 			f.stateFile = sf
 		}
-		ok, err := confirmMigratePlan(rootDir, m, f)
+		ok, err := confirmMigrateMap(rootDir, m, f)
 		if err != nil {
 			return err
 		}
@@ -205,7 +208,7 @@ func runMigratePlan(ctx context.Context, f migrateFlags) error {
 			return err
 		}
 		verdict = err
-		rep = &migratePlanReport{Manifest: manifest.FileName, Skipped: true, SkipReason: err.Error()}
+		rep = &migrateMapReport{Manifest: manifest.FileName, Skipped: true, SkipReason: err.Error()}
 	}
 
 	if mode == outputJSON {
@@ -218,24 +221,26 @@ func runMigratePlan(ctx context.Context, f migrateFlags) error {
 	return verdict
 }
 
-// migrateCarve performs the local carve and writes the plan receipt.
-func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, execPath string, f migrateFlags) (*migratePlanReport, error) {
-	rep := &migratePlanReport{Manifest: manifest.FileName}
+// migrateCarve performs the local carve and writes the map receipt.
+func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, execPath string, f migrateFlags) (*migrateMapReport, error) {
+	rep := &migrateMapReport{Manifest: manifest.FileName}
 
-	// Idempotency: a generation whose plan receipt records a complete carve is
-	// skipped, so re-running resumes rather than erroring.
-	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionPlan)
+	// Idempotency: a generation whose map receipt records a complete carve is
+	// skipped, so re-running resumes rather than erroring — but only while the
+	// recorded carve artifacts still exist. A lost workdir means re-carve, or
+	// the receipt points every later step at files that are gone.
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionMap)
 	if err != nil {
 		return nil, err
 	}
-	if receipt != nil && receipt.Complete {
+	if receipt != nil && receipt.Complete && carveArtifactsExist(rootDir, receipt) {
 		rep.Skipped = true
-		rep.SkipReason = "already carved (complete plan receipt found)"
+		rep.SkipReason = "already carved (complete map receipt found)"
 		return rep, nil
 	}
 
 	plan := m.Plan()
-	workDir := filepath.Join(m.OutDir(rootDir), ".state")
+	workDir := filepath.Join(m.OutDir(rootDir), ".demono")
 	opts := statemove.Options{
 		ExecPath:        execPath,
 		Engine:          statemove.Engine(f.engine),
@@ -287,7 +292,7 @@ func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, exe
 		Tool:             toolString(),
 		Manifest:         manifest.FileName,
 		ManifestChecksum: m.EmitChecksum,
-		Action:           manifest.ActionPlan,
+		Action:           manifest.ActionMap,
 		Engine:           f.engine,
 		Complete:         true,
 		ModuleStates:     map[string]string{},
@@ -307,28 +312,45 @@ func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, exe
 	return rep, nil
 }
 
-// planReceiptStates loads the current generation's complete plan receipt and
+// carveArtifactsExist reports whether every carved state file a map receipt
+// records is still on disk (paths are stored root-relative when possible).
+func carveArtifactsExist(rootDir string, r *manifest.Receipt) bool {
+	if len(r.ModuleStates) == 0 {
+		return false
+	}
+	for _, p := range r.ModuleStates {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(rootDir, p)
+		}
+		if _, err := os.Stat(p); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// mapReceiptStates loads the current generation's complete map receipt and
 // resolves its carved state paths, requiring every file (and the backup) to be
 // intact.
-func planReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, map[string]string, string, error) {
-	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionPlan)
+func mapReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, map[string]string, string, error) {
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionMap)
 	if err != nil {
 		return nil, nil, "", err
 	}
 	if receipt == nil || !receipt.Complete {
-		return nil, nil, "", fmt.Errorf("no complete migrate plan for this manifest generation; run `demonolith migrate plan` first")
+		return nil, nil, "", fmt.Errorf("no complete migrate map for this manifest generation; run `demonolith migrate map` first")
 	}
 	states := map[string]string{}
 	for mod, p := range receipt.ModuleStates {
 		rp := manifest.Resolve(rootDir, p)
 		if _, err := os.Stat(rp); err != nil {
-			return nil, nil, "", fmt.Errorf("carved state for module %q missing (%s); re-run `demonolith migrate plan`", mod, rp)
+			return nil, nil, "", fmt.Errorf("carved state for module %q missing (%s); re-run `demonolith migrate map`", mod, rp)
 		}
 		states[mod] = rp
 	}
 	backup := manifest.Resolve(rootDir, receipt.BackupPath)
 	if _, err := os.Stat(backup); err != nil {
-		return nil, nil, "", fmt.Errorf("state backup missing (%s); re-run `demonolith migrate plan`", backup)
+		return nil, nil, "", fmt.Errorf("state backup missing (%s); re-run `demonolith migrate map`", backup)
 	}
 	return receipt, states, backup, nil
 }
@@ -395,18 +417,17 @@ func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 		wrote = wrote || w
 	}
 	if wrote {
-		outln("Backend credentials written to per-module .env files (0600). They hold secrets: make sure .env is gitignored.")
+		outln("Backend credentials written to per-module demono.env files (0600). They hold secrets: make sure demono.env is gitignored.")
 	}
 	return nil
 }
 
-// materializeTfvars writes each module's generated.auto.tfvars: always the
-// root variable values the module declares, resolved in the engine's own
+// materializeRootTfvars writes each module's demono.root.tfvars: the root
+// variable values the module declares, resolved in the engine's own
 // precedence (TF_VAR_* environment, root tfvars files, --var-file, --var;
-// declared defaults travel in the carved code and need no entry), and with
-// --create-tfvars also the cross-module input values resolved from the
-// applied state — the standalone wiring for detached use.
-func materializeTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Result, f migrateFlags) (*statevars.Result, error) {
+// declared defaults travel in the carved code and need no entry). --no-tfvars
+// skips the file and returns the values for in-memory threading only.
+func materializeRootTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Result, f migrateFlags) (*statevars.Result, error) {
 	varVals, err := collectVarValues(rootDir, f.varFiles, f.vars, nil)
 	if err != nil {
 		return nil, err
@@ -439,23 +460,104 @@ func materializeTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Res
 			}
 		}
 	}
+	if f.noTfvars {
+		return statevars.Collect(rootVals, nil), nil
+	}
+	return statevars.WriteRoot(moduleDirs, rootVals)
+}
 
-	var crossVals map[string]map[string]string
-	if f.createTfvars {
-		_, _, backup, err := planReceiptStates(rootDir, m)
-		if err != nil {
-			return nil, err
-		}
-		st, err := statevars.LoadState(backup)
-		if err != nil {
-			return nil, fmt.Errorf("tfvars: %w", err)
-		}
-		crossVals, err = statevars.ResolveCross(st, bound, statevars.Options{SourceDir: rootDir})
-		if err != nil {
-			return nil, fmt.Errorf("tfvars: %w", err)
+// materializeGraphTfvars writes each module's demono.graph.tfvars: its
+// cross-module input values resolved from the applied monolith state, with
+// inputs state cannot resolve (child-module outputs) filled from the values
+// the proof threaded out of producer plans. What remains unresolved (an
+// --unproven run with no proof values) is listed in the result rather than
+// failing. --no-tfvars skips the file. Returns how many values came from the
+// proof.
+func materializeGraphTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Result, f migrateFlags) (*statevars.Result, int, error) {
+	_, _, backup, err := mapReceiptStates(rootDir, m)
+	if err != nil {
+		return nil, 0, err
+	}
+	st, err := statevars.LoadState(backup)
+	if err != nil {
+		return nil, 0, fmt.Errorf("tfvars: %w", err)
+	}
+	crossVals, unresolved := statevars.ResolveCross(st, bound, statevars.Options{SourceDir: rootDir})
+	filled := 0
+	if len(unresolved) > 0 {
+		if th := loadProofThreaded(rootDir, m); th != nil {
+			remaining := unresolved[:0]
+			for _, u := range unresolved {
+				if v, ok := th[u.Consumer][u.Input]; ok {
+					if crossVals[u.Consumer] == nil {
+						crossVals[u.Consumer] = map[string]string{}
+					}
+					crossVals[u.Consumer][u.Input] = v
+					filled++
+					continue
+				}
+				remaining = append(remaining, u)
+			}
+			unresolved = remaining
 		}
 	}
-	return statevars.Write(moduleDirs, rootVals, crossVals)
+	sv := statevars.Collect(nil, crossVals)
+	if !f.noTfvars {
+		sv, err = statevars.WriteGraph(m.ModuleDirs(rootDir), crossVals)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	for _, u := range unresolved {
+		sv.Unresolved = append(sv.Unresolved, u.String())
+	}
+	return sv, filled, nil
+}
+
+// proofThreadedFile is the gitignored workdir sidecar where prove records the
+// cross-module values it threaded from producer plans, for migrate run to
+// fill into graph-tfvars entries that state cannot resolve.
+const proofThreadedFile = "proof-threaded.json"
+
+type proofThreaded struct {
+	ManifestChecksum string                       `json:"manifest_checksum"`
+	Threaded         map[string]map[string]string `json:"threaded"`
+}
+
+func proofThreadedPath(rootDir string, m *manifest.Manifest) string {
+	return filepath.Join(m.OutDir(rootDir), ".demono", proofThreadedFile)
+}
+
+// writeProofThreaded persists the proof's threaded values for this manifest
+// generation. Best effort by design: the values improve run's graph tfvars
+// but are never required.
+func writeProofThreaded(rootDir string, m *manifest.Manifest, threaded map[string]map[string]string) error {
+	if len(threaded) == 0 {
+		return nil
+	}
+	p := proofThreadedPath(rootDir, m)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(proofThreaded{ManifestChecksum: m.EmitChecksum, Threaded: threaded}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, b, 0o600)
+}
+
+// loadProofThreaded reads the sidecar when it exists and matches the current
+// manifest generation; nil otherwise.
+func loadProofThreaded(rootDir string, m *manifest.Manifest) map[string]map[string]string {
+	b, err := os.ReadFile(proofThreadedPath(rootDir, m))
+	if err != nil {
+		return nil
+	}
+	var pt proofThreaded
+	if err := json.Unmarshal(b, &pt); err != nil || pt.ManifestChecksum != m.EmitChecksum {
+		return nil
+	}
+	return pt.Threaded
 }
 
 // relForReceipt stores receipt paths relative to rootDir when possible.
@@ -467,7 +569,7 @@ func relForReceipt(rootDir, p string) string {
 	return rel
 }
 
-func printMigratePlanReport(rootDir string, rep migratePlanReport) {
+func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 	if rep.Skipped {
 		outf("%s: skipped — %s\n", rep.Manifest, rep.SkipReason)
 		return
@@ -497,7 +599,7 @@ func runMigratePipeline(ctx context.Context, f migrateFlags) error {
 		fn      func() error
 		confirm bool
 	}{
-		{"migrate plan", func() error { return runMigratePlan(ctx, f) }, false},
+		{"migrate map", func() error { return runMigrateMap(ctx, f) }, false},
 		{"migrate prove", func() error { return runMigrateProve(ctx, f) }, false},
 		{"migrate run", func() error { return runMigrateRun(ctx, f) }, true},
 		{"migrate verify", func() error { return runMigrateVerify(ctx, f) }, false},

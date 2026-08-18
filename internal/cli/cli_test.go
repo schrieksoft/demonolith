@@ -35,7 +35,7 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-plan-run")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
 
-	if err := run(t, "refactor", "plan", "--root-dir", srcDir, "--out", "modules"); err != nil {
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules"); err != nil {
 		t.Fatalf("plan failed: %v", err)
 	}
 	m, err := manifest.Load(manifest.Path(srcDir))
@@ -53,8 +53,8 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	}
 
 	// Downstream refuses a planned-only manifest.
-	if err := run(t, "migrate", "plan", "--root-dir", srcDir, "--exec-path", "/bin/true"); err == nil || !strings.Contains(err.Error(), "planned but not run") {
-		t.Errorf("migrate plan should refuse a planned-only manifest, got: %v", err)
+	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", "/bin/true"); err == nil || !strings.Contains(err.Error(), "mapped but not run") {
+		t.Errorf("migrate map should refuse a planned-only manifest, got: %v", err)
 	}
 	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); ExitCode(err) != ExitVerdict {
 		t.Errorf("verify of a planned-only manifest should be a verdict, got: %v", err)
@@ -70,14 +70,14 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	if !m.IsRun() {
 		t.Error("run must finalize the emit checksum")
 	}
-	for _, mod := range []string{"a", "b", "monolith", "snapcd"} {
+	for _, mod := range []string{"a", "b", "legacy", "snapcd"} {
 		if _, err := os.Stat(filepath.Join(srcDir, "modules", mod, "main.tf")); err != nil {
 			t.Errorf("expected emitted root %s: %v", mod, err)
 		}
 		gi, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, ".gitignore"))
 		if err != nil {
 			t.Errorf("expected a .gitignore in emitted root %s: %v", mod, err)
-		} else if !strings.Contains(string(gi), ".env") || !strings.Contains(string(gi), "*.tfstate") {
+		} else if !strings.Contains(string(gi), "demono.env") || !strings.Contains(string(gi), "*.tfstate") {
 			t.Errorf("root %s .gitignore missing expected entries:\n%s", mod, gi)
 		}
 	}
@@ -86,7 +86,7 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	}
 
 	// Source drift between plan and run: re-plan, edit the source, run refuses.
-	if err := run(t, "refactor", "plan", "--root-dir", srcDir, "--out", "modules"); err != nil {
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules"); err != nil {
 		t.Fatalf("re-plan failed: %v", err)
 	}
 	mainTf := filepath.Join(srcDir, "main.tf")
@@ -104,7 +104,7 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	}
 }
 
-// TestRefactor_BarePipeline: bare `refactor` = plan → run → verify, pausing
+// TestRefactor_BarePipeline: bare `refactor` = map → run → verify, pausing
 // for approval before run (-y approves; without a TTY it refuses).
 func TestRefactor_BarePipeline(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-refactor-bare")
@@ -164,7 +164,7 @@ func TestRefactorPlan_OutResolution(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-out-resolution")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
 
-	if err := run(t, "refactor", "plan", "--root-dir", srcDir, "--out", "carved"); err != nil {
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "carved"); err != nil {
 		t.Fatalf("plan with relative --out failed: %v", err)
 	}
 	m, err := manifest.Load(manifest.Path(srcDir))
@@ -174,7 +174,7 @@ func TestRefactorPlan_OutResolution(t *testing.T) {
 	if m.Output.Dir != "carved" {
 		t.Errorf("manifest output.dir = %q, want root-relative %q", m.Output.Dir, "carved")
 	}
-	err = run(t, "refactor", "plan", "--root-dir", srcDir, "--out", t.TempDir())
+	err = run(t, "refactor", "map", "--root-dir", srcDir, "--out", t.TempDir())
 	if ExitCode(err) != ExitError {
 		t.Errorf("outside --out is an operational error, got %d: %v", ExitCode(err), err)
 	}
@@ -193,7 +193,7 @@ func TestRefactorPlan_RefusesForeignTargetDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(foreign, "precious.tf"), []byte("# not demonolith's\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t, "refactor", "plan", "--root-dir", srcDir, "--out", "modules"); err == nil {
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules"); err == nil {
 		t.Fatal("plan into a foreign existing dir must fail")
 	}
 	if _, serr := os.Stat(manifest.Path(srcDir)); !os.IsNotExist(serr) {
@@ -223,11 +223,11 @@ func TestRefactorPlan_ReservedBootstrapName(t *testing.T) {
 	if err := os.WriteFile(mainTf, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(t, "refactor", "plan", "--root-dir", srcDir, "--out", "modules")
+	err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules")
 	if err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Errorf("module name snapcd must be refused with bootstrap on, got: %v", err)
 	}
-	if err := run(t, "refactor", "plan", "--root-dir", srcDir, "--out", "modules", "--no-bootstrap"); err != nil {
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules", "--no-bootstrap"); err != nil {
 		t.Errorf("--no-bootstrap should free the name: %v", err)
 	}
 }
@@ -255,15 +255,15 @@ func TestMigrate_BarePipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Every root owns its state now (local mode: terraform.tfstate in place).
-	for _, mod := range []string{"a", "b", "monolith"} {
+	for _, mod := range []string{"a", "b", "legacy"} {
 		st := filepath.Join(srcDir, "modules", mod, "terraform.tfstate")
 		if _, err := os.Stat(st); err != nil {
 			t.Errorf("module %s missing seeded state: %v", mod, err)
 		}
 	}
-	planR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionPlan)
+	planR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionMap)
 	if err != nil || planR == nil || !planR.Complete {
-		t.Fatalf("expected a complete plan receipt (err %v)", err)
+		t.Fatalf("expected a complete map receipt (err %v)", err)
 	}
 	runR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionRun)
 	if err != nil || runR == nil || !runR.Complete {
@@ -309,16 +309,70 @@ func TestMigrateRun_RequiresProof(t *testing.T) {
 	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
 		t.Fatalf("refactor failed: %v", err)
 	}
-	if err := run(t, "migrate", "plan", "--root-dir", srcDir, "--exec-path", execPath,
+	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", execPath,
 		"--state-file", filepath.Join(srcDir, "terraform.tfstate")); err != nil {
-		t.Fatalf("migrate plan failed: %v", err)
+		t.Fatalf("migrate map failed: %v", err)
 	}
 	err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath)
 	if err == nil || !strings.Contains(err.Error(), "prove") {
 		t.Errorf("run without a verdict must refuse pointing at prove, got: %v", err)
 	}
+
+	// A target holding state that does not match the carve fails that module —
+	// and the partial run receipt records how far the run got.
+	unrelated := filepath.Join(srcDir, "modules", "b", "terraform.tfstate")
+	if err := os.WriteFile(unrelated, []byte(`{"version":4,"lineage":"00000000-dead-beef-0000-000000000000","serial":9,"resources":[{"mode":"managed","type":"random_pet","name":"foreign"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath, "--unproven")
+	if err == nil || !strings.Contains(err.Error(), "module b") {
+		t.Fatalf("run against a mismatched target must fail on that module, got: %v", err)
+	}
+	partial, err := manifest.LoadReceipt(filepath.Join(srcDir, manifest.RunReceiptFile))
+	if err != nil {
+		t.Fatalf("a failed run must leave a partial receipt: %v", err)
+	}
+	if partial.Complete || len(partial.Pushes) != 1 {
+		t.Errorf("partial receipt should record the 1 completed push and not be complete, got complete=%v pushes=%d", partial.Complete, len(partial.Pushes))
+	}
+
+	// --overwrite replaces the mismatched occupant; matching targets still skip.
+	if err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath, "--unproven", "--overwrite"); err != nil {
+		t.Errorf("retry with --overwrite should proceed: %v", err)
+	}
+	overwritten, err := manifest.LoadReceipt(filepath.Join(srcDir, manifest.RunReceiptFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range overwritten.Pushes {
+		if p.Module == "b" && p.Outcome != "overwritten" {
+			t.Errorf("module b with --overwrite: outcome %q, want overwritten", p.Outcome)
+		}
+		if p.Module == "a" && p.Outcome != "skipped" {
+			t.Errorf("module a with --overwrite: outcome %q, want skipped", p.Outcome)
+		}
+	}
+
+	// Retry after a re-carve: the fresh carve mints new lineages, but targets
+	// holding identical content are an idempotent skip, not a refusal.
+	if err := os.RemoveAll(filepath.Join(srcDir, "modules", ".demono")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", execPath,
+		"--state-file", filepath.Join(srcDir, "terraform.tfstate")); err != nil {
+		t.Fatalf("re-plan failed: %v", err)
+	}
 	if err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath, "--unproven"); err != nil {
-		t.Errorf("run --unproven should proceed: %v", err)
+		t.Errorf("re-run after a re-carve must skip identically-seeded targets: %v", err)
+	}
+	final, err := manifest.LoadReceipt(filepath.Join(srcDir, manifest.RunReceiptFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range final.Pushes {
+		if p.Outcome != "skipped" {
+			t.Errorf("module %s after re-carve retry: outcome %q, want skipped", p.Module, p.Outcome)
+		}
 	}
 }
 
@@ -332,52 +386,64 @@ func TestMigrateProve_RequiresPlan(t *testing.T) {
 		t.Fatalf("refactor failed: %v", err)
 	}
 	err := run(t, "migrate", "prove", "--root-dir", srcDir, "--exec-path", "/bin/true")
-	if err == nil || !strings.Contains(err.Error(), "migrate plan") {
-		t.Errorf("prove without a plan must refuse pointing at migrate plan, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "migrate map") {
+		t.Errorf("prove without a plan must refuse pointing at migrate map, got: %v", err)
 	}
 }
 
-// TestMigrateProve_CreateTfvars: tfvars materialization is opt-in; the files
-// are the standalone wiring and stay in place.
-func TestMigrateProve_CreateTfvars(t *testing.T) {
+// TestMigrateProve_Tfvars: prove materializes demono.root.tfvars (this
+// fixture has no root values, so no file), run materializes
+// demono.graph.tfvars with the cross-module values, and --no-tfvars writes
+// nothing while everything still threads in memory.
+func TestMigrateProve_Tfvars(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
 
-	base := testsupport.OutDir(t, "statefix", "cli-create-tfvars")
+	base := testsupport.OutDir(t, "statefix", "cli-tfvars")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
 	testsupport.ApplyRoot(t, srcDir)
 
 	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
 		t.Fatalf("refactor failed: %v", err)
 	}
-	if err := run(t, "migrate", "plan", "--root-dir", srcDir, "--exec-path", execPath,
+	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", execPath,
 		"--state-file", filepath.Join(srcDir, "terraform.tfstate")); err != nil {
-		t.Fatalf("migrate plan failed: %v", err)
+		t.Fatalf("migrate map failed: %v", err)
 	}
 
-	// Default: root variable values only — this fixture has none, so no file.
-	// Cross-module values stay threaded in memory.
+	// Prove writes root values only — graph values stay threaded in memory.
 	if err := run(t, "migrate", "prove", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
 		t.Fatalf("prove failed: %v", err)
 	}
-	bTfvars := filepath.Join(srcDir, "modules", "b", "generated.auto.tfvars")
-	if _, serr := os.Stat(bTfvars); !os.IsNotExist(serr) {
-		t.Error("prove must not materialize cross-module values by default")
+	bGraph := filepath.Join(srcDir, "modules", "b", "demono.graph.tfvars")
+	if _, serr := os.Stat(bGraph); !os.IsNotExist(serr) {
+		t.Error("prove must not materialize graph values; that is run's job")
 	}
 
-	// Opt-in: the cross-module section is written and kept.
-	if err := run(t, "migrate", "prove", "--root-dir", srcDir, "--exec-path", execPath, "--create-tfvars"); err != nil {
-		t.Fatalf("prove --create-tfvars failed: %v", err)
+	// Run materializes the graph file.
+	if err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate run failed: %v", err)
 	}
-	b, err := os.ReadFile(bTfvars)
+	b, err := os.ReadFile(bGraph)
 	if err != nil {
-		t.Fatalf("expected generated.auto.tfvars for consumer b: %v", err)
+		t.Fatalf("expected demono.graph.tfvars for consumer b after run: %v", err)
 	}
 	if !strings.Contains(string(b), "random_integer_seed") {
-		t.Errorf("b tfvars missing threaded input:\n%s", b)
+		t.Errorf("b graph tfvars missing cross-module input:\n%s", b)
+	}
+
+	// --no-tfvars: nothing written; the re-run skips seeded targets anyway.
+	if err := os.Remove(bGraph); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath, "--no-tfvars"); err != nil {
+		t.Fatalf("run --no-tfvars failed: %v", err)
+	}
+	if _, serr := os.Stat(bGraph); !os.IsNotExist(serr) {
+		t.Error("run --no-tfvars must not materialize tfvars files")
 	}
 }
 
-// TestMigratePlan_StaleManifest: editing an emitted root makes migrate plan
+// TestMigratePlan_StaleManifest: editing an emitted root makes migrate map
 // refuse with a verdict.
 func TestMigratePlan_StaleManifest(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-migrate-stale")
@@ -391,13 +457,13 @@ func TestMigratePlan_StaleManifest(t *testing.T) {
 	if err := os.WriteFile(mainTf, append(b, []byte("\n# edited\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(t, "migrate", "plan", "--root-dir", srcDir, "--exec-path", "/bin/true")
+	err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", "/bin/true")
 	if ExitCode(err) != ExitVerdict {
 		t.Errorf("staleness should be a verdict (exit %d), got exit %d: %v", ExitVerdict, ExitCode(err), err)
 	}
 }
 
-// TestMigratePlan_RequiresEngine: without an engine, migrate plan refuses.
+// TestMigratePlan_RequiresEngine: without an engine, migrate map refuses.
 func TestMigratePlan_RequiresEngine(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-migrate-engine")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
@@ -405,15 +471,15 @@ func TestMigratePlan_RequiresEngine(t *testing.T) {
 	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
 		t.Fatalf("refactor failed: %v", err)
 	}
-	if err := run(t, "migrate", "plan", "--root-dir", srcDir); err == nil {
-		t.Fatal("migrate plan without --engine should fail")
+	if err := run(t, "migrate", "map", "--root-dir", srcDir); err == nil {
+		t.Fatal("migrate map without --engine should fail")
 	}
 }
 
 // TestRefactor_RefusesCycle asserts plan exits non-nil on an impossible split.
 func TestRefactor_RefusesCycle(t *testing.T) {
 	src := testsupport.InDir("cyclic")
-	if err := run(t, "refactor", "plan", "--root-dir", src, "--out", "unused-out"); err == nil {
+	if err := run(t, "refactor", "map", "--root-dir", src, "--out", "unused-out"); err == nil {
 		t.Fatal("plan of a cyclic monolith should fail, got nil error")
 	}
 }
@@ -446,20 +512,20 @@ func TestMigrate_DeclaredBackend(t *testing.T) {
 	if m.Backend.Modules["a"] != "monolith-a.tfstate" {
 		t.Errorf("derived location = %q, want monolith-a.tfstate", m.Backend.Modules["a"])
 	}
-	for _, mod := range []string{"a", "b", "monolith"} {
-		bt, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, "backend.tf"))
+	for _, mod := range []string{"a", "b", "legacy"} {
+		bt, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, "root.tf"))
 		if err != nil {
-			t.Fatalf("module %s missing backend.tf: %v", mod, err)
+			t.Fatalf("module %s missing root.tf: %v", mod, err)
 		}
 		if !strings.Contains(string(bt), "monolith-"+mod+".tfstate") {
-			t.Errorf("module %s backend.tf missing derived path:\n%s", mod, bt)
+			t.Errorf("module %s root.tf missing derived path:\n%s", mod, bt)
 		}
 	}
 
 	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
 		t.Fatalf("bare migrate failed: %v", err)
 	}
-	for _, mod := range []string{"a", "b", "monolith"} {
+	for _, mod := range []string{"a", "b", "legacy"} {
 		st := filepath.Join(srcDir, "modules", mod, "monolith-"+mod+".tfstate")
 		if _, err := os.Stat(st); err != nil {
 			t.Errorf("module %s missing pushed backend state: %v", mod, err)
@@ -546,19 +612,31 @@ func TestSampleJourney_Local(t *testing.T) {
 	if err != nil || v == nil || !v.OK {
 		t.Fatalf("expected a passing prove verdict (err %v)", err)
 	}
-	// All three channels land in the module's generated.auto.tfvars; .env is
-	// backend credentials only, so a backend-less monolith gets none.
-	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "database", "generated.auto.tfvars"))
+	// All three channels land in the module's demono.root.tfvars; demono.env
+	// is backend credentials only, so a backend-less monolith gets none.
+	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "database", "demono.root.tfvars"))
 	if err != nil {
-		t.Fatalf("expected a generated.auto.tfvars after migrate: %v", err)
+		t.Fatalf("expected a demono.root.tfvars after migrate: %v", err)
 	}
 	for name, val := range map[string]string{"name_prefix": "acme", "resource_group_name": "env-rg", "database_port": "7777"} {
 		if !hasAssignment(string(tfv), name, val) {
-			t.Errorf("generated.auto.tfvars missing %s = %q:\n%s", name, val, tfv)
+			t.Errorf("demono.root.tfvars missing %s = %q:\n%s", name, val, tfv)
 		}
 	}
-	if _, serr := os.Stat(filepath.Join(srcDir, "modules", "networking", ".env")); !os.IsNotExist(serr) {
-		t.Error(".env is backend-credentials only; a backend-less monolith must get none")
+	if _, serr := os.Stat(filepath.Join(srcDir, "modules", "networking", "demono.env")); !os.IsNotExist(serr) {
+		t.Error("demono.env is backend-credentials only; a backend-less monolith must get none")
+	}
+	// Cross values state cannot resolve (child-module outputs, expressions
+	// included) are filled into the graph tfvars from the proof's threaded
+	// planned outputs.
+	gtv, err := os.ReadFile(filepath.Join(srcDir, "modules", "app", "demono.graph.tfvars"))
+	if err != nil {
+		t.Fatalf("expected a demono.graph.tfvars for app after migrate: %v", err)
+	}
+	for _, name := range []string{"module_cluster_cluster_endpoint", "module_cluster_cluster_id", "module_database"} {
+		if !strings.Contains(string(gtv), name+" ") {
+			t.Errorf("app graph tfvars missing proof-filled input %s:\n%s", name, gtv)
+		}
 	}
 }
 
@@ -605,9 +683,9 @@ func TestSampleJourney_SnapcdBackend(t *testing.T) {
 	if !strings.HasSuffix(m.Backend.Modules["networking"], wantLoc) {
 		t.Errorf("derived location = %q, want suffix %q", m.Backend.Modules["networking"], wantLoc)
 	}
-	bt, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "backend.tf"))
+	bt, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "root.tf"))
 	if err != nil {
-		t.Fatalf("networking backend.tf missing: %v", err)
+		t.Fatalf("networking root.tf missing: %v", err)
 	}
 	if !strings.Contains(string(bt), stateName+"-networking/lock") {
 		t.Errorf("lock endpoint must keep its verb segment after derivation:\n%s", bt)
@@ -673,7 +751,7 @@ func copyTree(src, dst string) error {
 // TestSampleJourney_BackendConfigFlags: the monolith's backend is configured
 // entirely via -backend-config at init (empty HCL block). Plan falls back to
 // the init-time resolved config for locations; migrate materializes the
-// credentials as gitignored per-module .env files and sources them — the
+// credentials as gitignored per-module demono.env files and sources them — the
 // whole journey runs with zero backend flags. Skips without a server.
 func TestSampleJourney_BackendConfigFlags(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
@@ -734,36 +812,36 @@ func TestSampleJourney_BackendConfigFlags(t *testing.T) {
 		t.Fatalf("locations must derive from resolved config, got %+v", m.Backend)
 	}
 	// Refactor deals with code only: no credentials materialized yet.
-	envPath := filepath.Join(srcDir, "modules", "networking", ".env")
+	envPath := filepath.Join(srcDir, "modules", "networking", "demono.env")
 	if _, serr := os.Stat(envPath); !os.IsNotExist(serr) {
-		t.Error("refactor must not write .env files; that is migrate's job")
+		t.Error("refactor must not write demono.env files; that is migrate's job")
 	}
-	bt, _ := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "backend.tf"))
+	bt, _ := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "root.tf"))
 	if strings.Contains(string(bt), "password") {
-		t.Errorf("backend.tf must not carry credentials:\n%s", bt)
+		t.Errorf("root.tf must not carry credentials:\n%s", bt)
 	}
 
 	// The whole migration with zero backend flags: migrate run materializes
-	// per-module .env from the root's resolved config and sources it.
+	// per-module demono.env from the root's resolved config and sources it.
 	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
 		t.Fatalf("bare migrate failed: %v", err)
 	}
 	envB, err := os.ReadFile(envPath)
 	if err != nil {
-		t.Fatalf("expected a per-module .env after migrate run: %v", err)
+		t.Fatalf("expected a per-module demono.env after migrate run: %v", err)
 	}
-	if !strings.Contains(string(envB), "TF_HTTP_USERNAME=default") || !strings.Contains(string(envB), "TF_HTTP_PASSWORD=default") {
-		t.Errorf(".env missing backend credentials:\n%s", envB)
+	if !strings.Contains(string(envB), "TF_HTTP_USERNAME='default'") || !strings.Contains(string(envB), "TF_HTTP_PASSWORD='default'") {
+		t.Errorf("demono.env missing backend credentials:\n%s", envB)
 	}
 	if strings.Contains(string(envB), "TF_VAR_") {
-		t.Errorf(".env must hold backend credentials only, variable values go to generated.auto.tfvars:\n%s", envB)
+		t.Errorf("demono.env must hold backend credentials only, variable values go to the tfvars files:\n%s", envB)
 	}
-	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "generated.auto.tfvars"))
+	tfv, err := os.ReadFile(filepath.Join(srcDir, "modules", "networking", "demono.root.tfvars"))
 	if err != nil {
-		t.Fatalf("expected a generated.auto.tfvars after migrate: %v", err)
+		t.Fatalf("expected a demono.root.tfvars after migrate: %v", err)
 	}
 	if !hasAssignment(string(tfv), "name_prefix", "acme") {
-		t.Errorf("generated.auto.tfvars missing root variable values:\n%s", tfv)
+		t.Errorf("demono.root.tfvars missing root variable values:\n%s", tfv)
 	}
 	runR, err := manifest.LatestReceiptFor(srcDir, m.EmitChecksum, manifest.ActionRun)
 	if err != nil || runR == nil || !runR.Complete {

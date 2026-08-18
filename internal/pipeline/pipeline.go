@@ -24,7 +24,7 @@ type Analysis struct {
 
 // Options configures the analysis.
 type Options struct {
-	// Remainder is the catchall module name (default "monolith").
+	// Remainder is the catchall module name (default "legacy").
 	Remainder string
 }
 

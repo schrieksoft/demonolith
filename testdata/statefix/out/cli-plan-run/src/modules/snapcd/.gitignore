@@ -2,8 +2,9 @@
 *.tfstate
 *.tfstate.*
 *.backup
-.env
+demono.env
 demono.tfplan
-generated.auto.tfvars
+demono.root.tfvars
+demono.graph.tfvars
 crash.log
 crash.*.log

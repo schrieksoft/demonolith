@@ -1,9 +1,11 @@
-// Package statevars materializes per-module input values by reading the applied
-// monolith state and resolving every cross-module boundary input to the concrete
-// attribute value of its producing resource. It writes each consumer module a
-// `generated.auto.tfvars` file so the carved root is self-contained and provable
-// standalone: planning it against its carved state with these vars yields
-// zero-diff, exactly as it did inside the monolith.
+// Package statevars materializes per-module input values into two files per
+// carved root: `demono.root.tfvars` (the root variable values the module
+// declares, resolved as the monolith resolved them; written at prove) and
+// `demono.graph.tfvars` (the cross-module boundary inputs resolved from
+// the applied monolith state; written at run). Together they make a carved
+// root self-contained and provable standalone: planning it against its carved
+// state with these vars yields zero-diff, exactly as it did inside the
+// monolith.
 //
 // This is the file-materialized counterpart to the proof oracle's in-memory
 // threading. The oracle threads a producer's *planned* output; statevars reads
@@ -26,10 +28,17 @@ import (
 	"github.com/schrieksoft/demonolith/internal/hclgraph"
 )
 
-// TfvarsName is the fixed filename written into each consumer module. The
-// `.auto.tfvars` suffix means Terraform loads it automatically on plan/apply, so
-// no -var-file flag is needed.
-const TfvarsName = "generated.auto.tfvars"
+// The fixed filenames written into each carved module. Deliberately NOT
+// `.auto.tfvars`: loading is always explicit (-var-file), by demonolith's
+// proofs and by anyone planning a root standalone.
+const (
+	// RootTfvarsName holds the module's root variable values (written at
+	// prove).
+	RootTfvarsName = "demono.root.tfvars"
+	// GraphTfvarsName holds the module's cross-module input values (written
+	// at run).
+	GraphTfvarsName = "demono.graph.tfvars"
+)
 
 // State is the parsed subset of a Terraform state file we resolve values from.
 type State struct {
@@ -45,6 +54,9 @@ type Result struct {
 	Files map[string]string
 	// Values maps module -> input name -> the resolved string value written.
 	Values map[string]map[string]string
+	// Unresolved lists cross-module inputs that could not be resolved from
+	// state and were left out (threaded from producer plans instead).
+	Unresolved []string
 }
 
 // LoadState reads and parses a Terraform state file.
@@ -167,11 +179,27 @@ type Options struct {
 	SourceDir string
 }
 
+// Unresolved identifies a cross-module input whose value could not be
+// resolved from state.
+type Unresolved struct {
+	Consumer string
+	Input    string
+	Producer string
+	Attr     string
+}
+
+func (u Unresolved) String() string {
+	return fmt.Sprintf("%s: %s (%s.%s)", u.Consumer, u.Input, u.Producer, u.Attr)
+}
+
 // ResolveCross resolves every cross-module input from state. An input whose
-// producer attribute cannot be resolved from state is a hard error: it means
-// the split would produce a module that cannot plan.
-func ResolveCross(st *State, bound *boundary.Result, opts Options) (map[string]map[string]string, error) {
+// producer attribute cannot be resolved offline — a computed value, or a
+// module call whose source is not on disk — is listed in unresolved and left
+// out of the values: migrate run fills those from the proof's threaded
+// producer outputs, and a control plane supplies them at runtime.
+func ResolveCross(st *State, bound *boundary.Result, opts Options) (map[string]map[string]string, []Unresolved) {
 	vals := map[string]map[string]string{}
+	var unresolved []Unresolved
 	for _, edge := range bound.CrossEdges {
 		attr := ""
 		if pb := bound.Boundaries[edge.ProducerModule]; pb != nil {
@@ -182,70 +210,79 @@ func ResolveCross(st *State, bound *boundary.Result, opts Options) (map[string]m
 
 		v, ok := st.resolveProducer(edge.Producer, attr, opts.SourceDir)
 		if !ok {
-			return nil, fmt.Errorf("module %q input %q: cannot resolve %s.%s from state (is the monolith applied?)",
-				edge.ConsumerModule, edge.InputName, edge.Producer, attr)
+			unresolved = append(unresolved, Unresolved{Consumer: edge.ConsumerModule, Input: edge.InputName, Producer: edge.Producer.String(), Attr: attr})
+			continue
 		}
 		if vals[edge.ConsumerModule] == nil {
 			vals[edge.ConsumerModule] = map[string]string{}
 		}
 		vals[edge.ConsumerModule][edge.InputName] = stringify(v)
 	}
-	return vals, nil
+	sort.Slice(unresolved, func(i, j int) bool {
+		if unresolved[i].Consumer != unresolved[j].Consumer {
+			return unresolved[i].Consumer < unresolved[j].Consumer
+		}
+		return unresolved[i].Input < unresolved[j].Input
+	})
+	return vals, unresolved
 }
 
-// Write materializes one generated.auto.tfvars per module holding that
-// module's root variable values and (when present) its cross-module input
-// values, in labeled sections. moduleDirs maps a module name to its carved
-// root directory; modules with no values get no file.
-func Write(moduleDirs map[string]string, rootVals, crossVals map[string]map[string]string) (*Result, error) {
+// Collect merges root and cross-module values per module without writing any
+// file — the in-memory counterpart of Write for --no-tfvars runs.
+func Collect(rootVals, crossVals map[string]map[string]string) *Result {
 	res := &Result{Files: map[string]string{}, Values: map[string]map[string]string{}}
+	for _, vals := range []map[string]map[string]string{rootVals, crossVals} {
+		for module, kv := range vals {
+			if res.Values[module] == nil {
+				res.Values[module] = map[string]string{}
+			}
+			for k, v := range kv {
+				res.Values[module][k] = v
+			}
+		}
+	}
+	return res
+}
 
-	modules := map[string]bool{}
-	for m := range rootVals {
-		modules[m] = true
-	}
-	for m := range crossVals {
-		modules[m] = true
-	}
-	names := make([]string, 0, len(modules))
-	for m := range modules {
+// WriteRoot materializes each module's demono.root.tfvars — the root
+// variable values it declares, resolved as the monolith resolved them.
+// Modules with no values get no file.
+func WriteRoot(moduleDirs map[string]string, vals map[string]map[string]string) (*Result, error) {
+	return writeTfvars(moduleDirs, vals, RootTfvarsName,
+		"# Root variable values, resolved as the monolith resolved them.\n")
+}
+
+// WriteGraph materializes each module's demono.graph.tfvars — its
+// cross-module input values resolved from the applied monolith state.
+// Modules with no values get no file.
+func WriteGraph(moduleDirs map[string]string, vals map[string]map[string]string) (*Result, error) {
+	return writeTfvars(moduleDirs, vals, GraphTfvarsName,
+		"# Cross-module input values, resolved from the applied monolith state or\n# threaded from the proof's planned producer outputs.\n")
+}
+
+func writeTfvars(moduleDirs map[string]string, vals map[string]map[string]string, filename, header string) (*Result, error) {
+	res := &Result{Files: map[string]string{}, Values: map[string]map[string]string{}}
+	names := make([]string, 0, len(vals))
+	for m := range vals {
 		names = append(names, m)
 	}
 	sort.Strings(names)
 
 	for _, module := range names {
-		if len(rootVals[module]) == 0 && len(crossVals[module]) == 0 {
+		if len(vals[module]) == 0 {
 			continue
 		}
 		dir, ok := moduleDirs[module]
 		if !ok {
 			return nil, fmt.Errorf("no output directory for module %q", module)
 		}
-		var content []byte
-		if len(rootVals[module]) > 0 {
-			content = append(content, []byte("# Root variable values, resolved as the monolith resolved them.\n")...)
-			content = append(content, encodeAssignments(rootVals[module])...)
-		}
-		if len(crossVals[module]) > 0 {
-			if len(content) > 0 {
-				content = append(content, '\n')
-			}
-			content = append(content, []byte("# Cross-module inputs, resolved from the applied monolith state.\n")...)
-			content = append(content, encodeAssignments(crossVals[module])...)
-		}
-		path := filepath.Join(dir, TfvarsName)
+		content := append([]byte(header), encodeAssignments(vals[module])...)
+		path := filepath.Join(dir, filename)
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			return nil, fmt.Errorf("write %s: %w", path, err)
 		}
 		res.Files[module] = path
-		merged := map[string]string{}
-		for k, v := range rootVals[module] {
-			merged[k] = v
-		}
-		for k, v := range crossVals[module] {
-			merged[k] = v
-		}
-		res.Values[module] = merged
+		res.Values[module] = vals[module]
 	}
 	return res, nil
 }

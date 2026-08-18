@@ -57,24 +57,24 @@ func promptYesNo(label string, def bool) (bool, error) {
 	return false, fmt.Errorf("unrecognized answer %q", s)
 }
 
-// runRefactorPlanInteractive is the guided plan loop: the run's parameters
+// runRefactorMapInteractive is the guided plan loop: the run's parameters
 // (root, output dir, remainder name, monorepo, bootstrap), then analysis
 // summary, catchall triage, decorator write-back, re-analyze, and a confirmed
 // manifest write. Every accepted assignment becomes an @demono:move decorator
 // in the source, so the session leaves a state a plain non-interactive run
 // reproduces.
-func runRefactorPlanInteractive(f refactorFlags) error {
-	_, err := refactorPlanInteractive(f)
+func runRefactorMapInteractive(f refactorFlags) error {
+	_, err := refactorMapInteractive(f)
 	return err
 }
 
-// refactorPlanInteractive returns the resolved flags so the pipeline can
+// refactorMapInteractive returns the resolved flags so the pipeline can
 // continue with run/verify after an interactive plan.
-func refactorPlanInteractive(f refactorFlags) (refactorFlags, error) {
+func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 	if !stdinIsTTY() {
 		return f, fmt.Errorf("--interactive requires a terminal")
 	}
-	outln("Interactive refactor plan — Enter keeps the value in brackets.")
+	outln("Interactive refactor map — Enter keeps the value in brackets.")
 
 	rootIn, err := promptString("Monolith root", f.rootDir)
 	if err != nil {
@@ -200,7 +200,7 @@ func refactorPlanInteractive(f refactorFlags) (refactorFlags, error) {
 			outln("Aborted; source decorators kept, nothing else written.")
 			return f, errInteractiveAborted
 		}
-		if _, err := runRefactorPlan(f, outputText); err != nil {
+		if _, err := runRefactorMap(f, outputText); err != nil {
 			return f, err
 		}
 		return f, nil
@@ -213,7 +213,7 @@ var errInteractiveAborted = fmt.Errorf("aborted")
 // runRefactorInteractivePipeline is the bare `refactor -i`: interactive plan,
 // then confirmed run and a quiet verify.
 func runRefactorInteractivePipeline(f refactorFlags) error {
-	resolved, err := refactorPlanInteractive(f)
+	resolved, err := refactorMapInteractive(f)
 	if err != nil {
 		if err == errInteractiveAborted {
 			return nil
@@ -226,7 +226,7 @@ func runRefactorInteractivePipeline(f refactorFlags) error {
 		return err
 	}
 	if !runOK {
-		outln("Plan written; run later with `demonolith refactor run`.")
+		outln("Map written; run later with `demonolith refactor run`.")
 		return nil
 	}
 	if err := runRefactorRun(rootDir, outputText); err != nil {
@@ -326,10 +326,10 @@ func promptEngine() (string, error) {
 	}
 }
 
-// confirmMigratePlan previews the manifest's move plan and asks for one
+// confirmMigrateMap previews the manifest's move plan and asks for one
 // whole-run confirmation.
-func confirmMigratePlan(rootDir string, m *manifest.Manifest, f migrateFlags) (bool, error) {
-	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionPlan)
+func confirmMigrateMap(rootDir string, m *manifest.Manifest, f migrateFlags) (bool, error) {
+	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionMap)
 	if err != nil {
 		return false, err
 	}

@@ -107,7 +107,7 @@ func TestChecksum_IgnoresLaterStageArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"terraform.tfstate", "demono.tfplan", "generated.auto.tfvars", ".terraform.lock.hcl"} {
+	for _, name := range []string{"terraform.tfstate", "demono.tfplan", "demono.root.tfvars", "demono.graph.tfvars", "demono.env", ".terraform.lock.hcl"} {
 		if err := os.WriteFile(filepath.Join(mod, name), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -150,9 +150,9 @@ func TestLoad_RefusesFutureVersion(t *testing.T) {
 func TestReceipt_LatestFor(t *testing.T) {
 	dir := t.TempDir()
 
-	// The plan receipt has one canonical file; a rewrite supersedes it.
-	r1 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Action: ActionPlan, Complete: false}
-	r2 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Action: ActionPlan, Complete: true}
+	// The map receipt has one canonical file; a rewrite supersedes it.
+	r1 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Action: ActionMap, Complete: false}
+	r2 := &Receipt{Version: 1, Manifest: FileName, ManifestChecksum: "sha256:aaa", Action: ActionMap, Complete: true}
 	if _, err := WriteReceipt(r1, dir); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestReceipt_LatestFor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := LatestReceiptFor(dir, "sha256:aaa", ActionPlan)
+	got, err := LatestReceiptFor(dir, "sha256:aaa", ActionMap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestReceipt_LatestFor(t *testing.T) {
 		t.Errorf("the canonical receipt should be the superseding, complete one; got %+v", got)
 	}
 	// A different generation's checksum must not match the same file.
-	none, err := LatestReceiptFor(dir, "sha256:ccc", ActionPlan)
+	none, err := LatestReceiptFor(dir, "sha256:ccc", ActionMap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +177,6 @@ func TestReceipt_LatestFor(t *testing.T) {
 	}
 	// Actions have separate canonical files: no run receipt exists yet.
 	if r, _ := LatestReceiptFor(dir, "sha256:aaa", ActionRun); r != nil {
-		t.Errorf("plan receipt must not satisfy a run lookup; got %+v", r)
+		t.Errorf("map receipt must not satisfy a run lookup; got %+v", r)
 	}
 }

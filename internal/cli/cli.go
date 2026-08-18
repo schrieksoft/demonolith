@@ -1,6 +1,6 @@
 // Package cli defines the demonolith command tree: two families split at the
-// code/state line, connected by the manifest. refactor plan/run/verify carve
-// the code; migrate plan/prove/run/verify carve, prove, execute, and judge the
+// code/state line, connected by the manifest. refactor map/run/verify carve
+// the code; migrate map/prove/run/verify carve, prove, execute, and judge the
 // state migration. The bare family commands run their steps in order.
 package cli
 

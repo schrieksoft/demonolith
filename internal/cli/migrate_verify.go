@@ -15,7 +15,7 @@ func migrateVerifyCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "verify",
-		Short: "Judge the executed migration: plan each root against its real backend, assert zero create/destroy",
+		Short: "Judge the executed migration: plan each root against its real backend, assert zero changes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigrateVerify(cmd.Context(), f)
@@ -28,7 +28,7 @@ func migrateVerifyCmd() *cobra.Command {
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
-	flags.BoolVar(&f.createTfvars, "create-tfvars", false, "also materialize cross-module input values into generated.auto.tfvars — the standalone wiring for detached use")
+	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	return cmd
 }
@@ -68,7 +68,8 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	if err := materializeBackendEnv(rootDir, m); err != nil {
 		return err
 	}
-	if _, err := materializeTfvars(rootDir, m, a.Boundary, f); err != nil {
+	sv, err := materializeRootTfvars(rootDir, m, a.Boundary, f)
+	if err != nil {
 		return err
 	}
 
@@ -77,13 +78,24 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 		return err
 	}
 
-	pres, err := proof.Run(ctx, m.ModuleDirs(rootDir), nil, a.Boundary, proof.Options{
+	var rootInputs map[string]map[string]string
+	if f.noTfvars {
+		rootInputs = sv.Values
+	}
+	opts := proof.Options{
 		ExecPath:       execPath,
 		Refresh:        true,
 		ExternalInputs: extVals,
 		UseBackend:     true,
 		BackendConfig:  f.backendConfig,
-	})
+		RootInputs:     rootInputs,
+	}
+	if mode == outputText {
+		outln("Verifying modules in dependency order (init + refresh plan against the real backends):")
+		opts.OnPlanStart = func(module string) { outf("  %s: verifying ... ", module) }
+		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", verdict) }
+	}
+	pres, err := proof.Run(ctx, m.ModuleDirs(rootDir), nil, a.Boundary, opts)
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
 	}
@@ -123,10 +135,10 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 			return err
 		}
 	} else {
-		printProofReport(rootDir, rep, "per-module plan against the real backends")
+		printProofReport(rootDir, rep)
 	}
 	if !pres.OK {
-		return verdictf("verification failed: at least one module plans a create or destroy against its real backend")
+		return verdictf("verification failed: at least one module plans changes against its real backend")
 	}
 	return nil
 }

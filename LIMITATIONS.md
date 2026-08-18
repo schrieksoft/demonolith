@@ -20,31 +20,31 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 ## Backend derivation covers common types only
 
-**What:** the monolith's `backend` block is carried into every carved root with the state location postfixed per module — for `local`, `s3`, `azurerm`, `gcs`, `consul`, and `http`. Config supplied via `-backend-config` is handled through the init-time resolved config: locations derive from it, non-secret settings persist into each `backend.tf`, and credential-shaped attributes land in gitignored per-module `.env` files that migrate sources automatically. Other backend types are refused at plan time; a `cloud` block is not handled at all, and nested backend config (e.g. s3 `assume_role`) does not survive the flag path.
+**What:** the monolith's `backend` block is carried into every carved root with the state location postfixed per module — for every built-in backend type (`local`, `s3`, `azurerm`, `gcs`, `consul`, `http`, `cos`, `oss`, `kubernetes`, `pg`, `remote` in workspace-name mode). Config supplied via `-backend-config` is handled through the init-time resolved config: locations derive from it, non-secret settings persist into each root.tf, and credential-shaped attributes land in gitignored per-module `demono.env` files that migrate sources automatically. Workspace-driven configurations (a `cloud` block, `remote` in workspaces.prefix mode) are refused at plan time, and nested backend config (e.g. s3 `assume_role`) does not survive the flag path.
 
-**Shows up as:** `refactor plan` refusing with the backend type or attribute named (for a flags-configured backend, the fix it names is initializing the root first, so the resolved config exists).
+**Shows up as:** `refactor map` refusing with the backend type or attribute named (for a flags-configured backend, the fix it names is initializing the root first, so the resolved config exists).
 
 **Handle it:** pass `--no-backend` to carve without backend blocks and wire the backends by hand (`tofu init -migrate-state`, or a careful `state push` into an **empty** location — never `-force`), or move the missing attribute into HCL. Either way the monolith's own state is never written by demonolith; retiring it after every root proves clean is the human cutover step.
 
 ## Provider environment is not captured
 
-**What:** demonolith materializes exactly two ambient inputs into the carved roots: backend credentials (per-module `.env`) and variable values (per-module `generated.auto.tfvars`). Everything else a plan may depend on — provider credentials (`AWS_PROFILE`, `ARM_CLIENT_SECRET`, `GOOGLE_APPLICATION_CREDENTIALS`), plugin mirrors, proxy settings — is inherited from the calling environment, never recorded.
+**What:** demonolith materializes exactly two ambient inputs into the carved roots: backend credentials (per-module `demono.env`) and variable values (per-module `demono.root.tfvars`/`demono.graph.tfvars`). Everything else a plan may depend on — provider credentials (`AWS_PROFILE`, `ARM_CLIENT_SECRET`, `GOOGLE_APPLICATION_CREDENTIALS`), plugin mirrors, proxy settings — is inherited from the calling environment, never recorded.
 
 **Shows up as:** migrate steps failing at init or plan with provider authentication errors, in a session where the monolith itself was never init'd or the environment differs from the one that could.
 
 **Handle it:** treat a clean `init` + `plan` of the monolith root as the entry ticket, and run every demonolith command in that same shell session. A value passed as `-var` on the original apply is likewise not recoverable from state; re-supply it as `--var`.
 
-## A re-carve cannot re-push over its own earlier push
+## An occupied target only skips when it matches the carve
 
-**What:** every `migrate plan` carve mints a fresh state lineage per module file. `migrate run`'s empty-target guard treats an identical-lineage occupant as an idempotent skip — which works as long as the carve workdir (`<out>/.state/`) that produced the pushed states still exists. Lose the workdir after a successful run, re-carve, and the new files carry new lineages: the push now refuses against your own earlier (semantically identical) push as "unrelated state".
+**What:** `migrate run`'s empty-target guard treats an occupant as an idempotent skip when it matches the carve — same lineage, or identical content modulo the identity fields a re-carve regenerates (lineage, serial, engine version). A crashed run is therefore retried by just re-running: already-seeded modules skip, the rest push, and a lost workdir re-carves automatically at the next `migrate map`. What still refuses is a target whose state *genuinely differs* from the carve — for example seeded by an earlier migration of a since-changed monolith.
 
-**Shows up as:** `migrate run` refusing with "target … already holds unrelated state" on locations this migration itself seeded.
+**Shows up as:** `migrate run` refusing with "target … already holds state that does not match this carve" on a location an earlier, different migration attempt seeded.
 
-**Handle it:** keep the workdir until the cutover is done — the receipts point at it. If it is gone and the seeded states are confirmed to be this migration's output, delete those target states (they are reproducible from the carve; the monolith backup still exists) and re-run the pipeline, which re-carves and re-pushes cleanly.
+**Handle it:** inspect the occupant (`state pull` in the module dir) and decide which side is right. If it is a stale artifact of an abandoned attempt, empty or delete that remote state and re-run — or re-run with `--overwrite` to force-push over it (the occupant is lost; the run warns loudly). The carved states are reproducible and the monolith's own state is never touched.
 
 ## The prove verdict ages between prove and run
 
-**What:** `migrate prove` judges the carved artifacts against the state as it was when `migrate plan` pulled it; `migrate run` pushes at a later moment. Real infrastructure drifting in between is invisible to the verdict — the same plan/apply gap every plan-then-execute system has.
+**What:** `migrate prove` judges the carved artifacts against the state as it was when `migrate map` pulled it; `migrate run` pushes at a later moment. Real infrastructure drifting in between is invisible to the verdict — the same plan/apply gap every plan-then-execute system has.
 
 **Shows up as:** `migrate verify` (which plans against the real backends, refresh on) reporting diffs that prove did not.
 
@@ -92,13 +92,13 @@ Inherent limits of the carve — things demonolith cannot make true on its own, 
 
 **Handle it:** keep composite-shaped edges inside one module, or adapt the consumer to `jsondecode(var.<input>)` in the monolith before refactoring so the same expression survives on both sides of the carve.
 
-## Expression-valued module outputs cannot be materialized from state
+## Expression-valued module outputs need the proof to materialize
 
-**What:** the generated `generated.auto.tfvars` files resolve cross-module input values from the *applied* state. Child-module outputs are not stored in state, so a module-call output can only be resolved when it is a bare passthrough of a resource attribute; an output built from an expression (`"https://${random_uuid.x.result}..."`) cannot.
+**What:** the generated `demono.graph.tfvars` files resolve cross-module input values from the *applied* state, and child-module outputs are not stored in state. `migrate run` fills those from the values the proof threaded out of producer plans, so after a normal map → prove → run the file is complete — but a run with `--unproven` (or with the workdir's proof sidecar gone) has nothing to fill from.
 
-**Shows up as:** `migrate prove --create-tfvars` erroring with "cannot resolve module.<name>.<output> from state". The default in-memory threading is unaffected — it evaluates *planned* values, expressions included.
+**Shows up as:** an `--unproven` `migrate run` listing the input under "Cross-module inputs not resolvable offline" and leaving it out of the written `demono.graph.tfvars`. The proofs are unaffected — their in-memory threading evaluates *planned* values, expressions included.
 
-**Handle it:** skip `--create-tfvars` (the default proof works); for detached adoption, where the tfvars files were going to be the permanent wiring, supply the affected inputs by hand — or let a control plane thread them at runtime, which is not subject to this at all.
+**Handle it:** run `migrate prove` before `migrate run` (the default pipeline order) so the fill happens; otherwise supply the listed inputs by hand at plan time, or let a control plane thread them at runtime, which is not subject to this at all.
 
 ## Data sources are re-read in every module that holds a copy
 

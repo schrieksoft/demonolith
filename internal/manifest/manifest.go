@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/schrieksoft/demonolith/internal/emit"
 	"github.com/schrieksoft/demonolith/internal/pipeline"
 	"github.com/schrieksoft/demonolith/internal/statemove"
 )
@@ -30,7 +31,7 @@ const SchemaVersion = 1
 // in place and history lives in version control.
 const FileName = "demonolith-refactor.yaml"
 
-// Manifest is the full refactor plan for one monolith root.
+// Manifest is the full refactor map for one monolith root.
 type Manifest struct {
 	Version int    `yaml:"version"`
 	Created string `yaml:"created"`
@@ -84,7 +85,7 @@ type Output struct {
 
 // Backend records the state-location derivation: the monolith's backend type,
 // its primary location, and the location derived for each module. Informational
-// and reviewable — the emitted backend.tf files are the executable form. Absent
+// and reviewable — the emitted root.tf files are the executable form. Absent
 // when the monolith has no backend block or derivation was disabled.
 type Backend struct {
 	Type     string            `yaml:"type"`
@@ -367,12 +368,12 @@ func checksumSkip(name string) bool {
 	if name == ".terraform" || name == ".terraform.lock.hcl" {
 		return true
 	}
-	if name == "demono.tfplan" || name == "generated.auto.tfvars" {
+	if name == "demono.tfplan" || name == "demono.root.tfvars" || name == "demono.graph.tfvars" {
 		return true
 	}
 	// .env holds per-operator backend credentials: secret, machine-local, and
 	// deliberately outside the checksummed contract.
-	if name == ".env" {
+	if name == emit.EnvFileName {
 		return true
 	}
 	if strings.Contains(name, ".tfstate") || strings.HasSuffix(name, ".backup") {

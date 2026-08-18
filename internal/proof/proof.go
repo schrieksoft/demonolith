@@ -7,9 +7,10 @@
 // state. In the refactoring case the infrastructure already exists, so every
 // output value is known at plan time and no apply is needed.
 //
-// The proof is the bundle of per-module plans that each show zero create/destroy
-// against carved state with correctly threaded inputs — evidence that the split
-// changes nothing operationally and the wiring is correct.
+// The proof is the bundle of per-module plans that each show zero changes —
+// no create, no destroy, no in-place update — against carved state with
+// correctly threaded inputs: evidence that the split changes nothing
+// operationally and the wiring is correct.
 package proof
 
 import (
@@ -24,6 +25,8 @@ import (
 
 	"github.com/schrieksoft/demonolith/internal/boundary"
 	"github.com/schrieksoft/demonolith/internal/dotenv"
+	"github.com/schrieksoft/demonolith/internal/emit"
+	"github.com/schrieksoft/demonolith/internal/statevars"
 )
 
 // Options configures a proof run.
@@ -36,6 +39,16 @@ type Options struct {
 	// ExternalInputs supplies values for external/root inputs (former monolith
 	// var.<name>), keyed by input name.
 	ExternalInputs map[string]string
+	// RootInputs seeds each module's variable values when no tfvars file was
+	// materialized (--no-tfvars), keyed by module then variable name. Threaded
+	// and external values still win over the seed.
+	RootInputs map[string]map[string]string
+	// OnPlanStart / OnPlanDone, when set, receive per-module notifications:
+	// start before a module plans, done with its short verdict after. Done is
+	// always called, "plan FAILED" included, so a caller printing start
+	// without a newline can complete the line either way.
+	OnPlanStart func(module string)
+	OnPlanDone  func(module, verdict string)
 	// UseBackend plans each root against its configured real backend instead of
 	// a staged local state copy: a full init (backend included) and no state
 	// staging. This is migrate verify's mode — judgment against reality.
@@ -61,7 +74,11 @@ type ModuleProof struct {
 type Result struct {
 	Order   []string
 	Modules map[string]*ModuleProof
-	// OK is true iff every module planned to zero create/destroy.
+	// Threaded records, per consumer module, the cross-module input values
+	// the proof threaded from producer plans — the values a materialized
+	// graph tfvars cannot recover from state alone.
+	Threaded map[string]map[string]string
+	// OK is true iff every module planned to zero changes of any kind.
 	OK bool
 }
 
@@ -93,15 +110,28 @@ func Run(ctx context.Context, moduleDirs, moduleStates map[string]string, bound 
 		consumerInputs[e.ConsumerModule][e.InputName] = src{module: e.ProducerModule, output: e.OutputName}
 	}
 
-	result := &Result{Order: order, Modules: map[string]*ModuleProof{}, OK: true}
+	planStart, planDone := opts.OnPlanStart, opts.OnPlanDone
+	if planStart == nil {
+		planStart = func(string) {}
+	}
+	if planDone == nil {
+		planDone = func(string, string) {}
+	}
+
+	result := &Result{Order: order, Modules: map[string]*ModuleProof{}, Threaded: map[string]map[string]string{}, OK: true}
 	extractedOutputs := map[string]map[string]string{} // module -> output -> value
 
 	for _, module := range order {
+		planStart(module)
 		dir := moduleDirs[module]
 		statePath := moduleStates[module]
 
-		// Assemble input variable values for this module.
+		// Assemble input variable values for this module, seeded from the
+		// in-memory root values when no tfvars file carries them.
 		vars := map[string]string{}
+		for k, v := range opts.RootInputs[module] {
+			vars[k] = v
+		}
 		b := bound.Boundaries[module]
 		if b != nil {
 			for name, in := range b.Inputs {
@@ -120,13 +150,23 @@ func Run(ctx context.Context, moduleDirs, moduleStates map[string]string, bound 
 					return nil, fmt.Errorf("module %q input %q: upstream output %q of module %q not available (topo/threading error)", module, name, s.output, s.module)
 				}
 				vars[name] = pv
+				if result.Threaded[module] == nil {
+					result.Threaded[module] = map[string]string{}
+				}
+				result.Threaded[module][name] = pv
 			}
 		}
 
 		mp, outs, err := planModule(ctx, dir, statePath, vars, opts)
 		if err != nil {
+			planDone(module, "plan FAILED")
 			return nil, fmt.Errorf("plan module %q: %w", module, err)
 		}
+		verdict := "zero-diff"
+		if !mp.ZeroDiff {
+			verdict = fmt.Sprintf("CHANGES +%d ~%d -%d", mp.AddCount, mp.Change, mp.Destroy)
+		}
+		planDone(module, verdict)
 		mp.Module = module
 		mp.Outputs = outs
 		result.Modules[module] = mp
@@ -147,8 +187,8 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 		return nil, nil, err
 	}
 	if opts.UseBackend {
-		// Source the module's .env (backend credentials) for the duration.
-		env, err := dotenv.Load(filepath.Join(dir, ".env"))
+		// Source the module's demono.env (backend credentials) for the duration.
+		env, err := dotenv.Load(filepath.Join(dir, emit.EnvFileName))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -165,9 +205,25 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 			return nil, nil, fmt.Errorf("init: %w", err)
 		}
 	} else {
-		// The emitted backend.tf (if any) is held aside for the duration: the
-		// proof judges code against carved state, not backend wiring, and the
+		// The derived backend lives in root.tf's terraform{} block; strip it
+		// for the duration (required_providers must stay for init): the proof
+		// judges code against carved state, not backend wiring, and the
 		// engine refuses to plan a declared-but-uninitialized backend.
+		rootTF := filepath.Join(dir, "root.tf")
+		if orig, rerr := os.ReadFile(rootTF); rerr == nil {
+			if stripped, changed := emit.StripBackend(orig); changed {
+				hold := rootTF + ".demono-hold"
+				if err := os.WriteFile(hold, orig, 0o644); err != nil {
+					return nil, nil, fmt.Errorf("hold root.tf: %w", err)
+				}
+				if err := os.WriteFile(rootTF, stripped, 0o644); err != nil {
+					return nil, nil, fmt.Errorf("strip root.tf backend: %w", err)
+				}
+				defer func() { _ = os.Rename(hold, rootTF) }()
+			}
+		}
+		// A hand-made root may keep its backend in a separate backend.tf; hold
+		// that aside whole for the same reason.
 		backendTF := filepath.Join(dir, "backend.tf")
 		if _, err := os.Stat(backendTF); err == nil {
 			hold := backendTF + ".demono-hold"
@@ -224,6 +280,14 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 		tfexec.Out(planPath),
 		tfexec.Refresh(opts.Refresh),
 	}
+	// The materialized tfvars files are loaded explicitly (they are not
+	// .auto.tfvars), before the threaded -var values so threading wins.
+	for _, name := range []string{statevars.RootTfvarsName, statevars.GraphTfvarsName} {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			planOpts = append(planOpts, tfexec.VarFile(p))
+		}
+	}
 	for k, v := range vars {
 		planOpts = append(planOpts, tfexec.Var(fmt.Sprintf("%s=%s", k, v)))
 	}
@@ -259,7 +323,10 @@ func countChanges(plan *tfjson.Plan) *ModuleProof {
 			}
 		}
 	}
-	mp.ZeroDiff = mp.AddCount == 0 && mp.Destroy == 0
+	// In-place updates fail too: a wrong input value that does not force a
+	// replacement still shows up as an update, and tolerating it would let a
+	// mis-wired split pass.
+	mp.ZeroDiff = mp.AddCount == 0 && mp.Destroy == 0 && mp.Change == 0
 	return mp
 }
 

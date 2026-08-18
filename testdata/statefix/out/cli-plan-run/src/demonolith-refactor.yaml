@@ -1,9 +1,9 @@
 version: 1
-created: "2026-08-18T06:44:58Z"
+created: "2026-08-18T13:21:22Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-plan-run/src
-    remainder_module: monolith
+    remainder_module: legacy
 output:
     dir: modules
     bootstrap: true
@@ -17,8 +17,8 @@ modules:
         dir: modules/b
         blocks:
             - random_pet.name_b
-    monolith:
-        dir: modules/monolith
+    legacy:
+        dir: modules/legacy
         blocks:
             - random_pet.leftover
 catchall:

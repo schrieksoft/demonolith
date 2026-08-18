@@ -22,7 +22,7 @@ func carveFixture(t *testing.T) string {
 	t.Helper()
 	src := testsupport.InDir("monolith")
 	outDir := testsupport.OutDir(t, "monolith", "emit-asserts")
-	a, err := pipeline.Analyze(src, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(src, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -57,7 +57,7 @@ func assertParses(t *testing.T, path string) {
 
 func TestEmit_CarvedRootsParse(t *testing.T) {
 	out := carveFixture(t)
-	for _, mod := range []string{"networking", "data", "monolith"} {
+	for _, mod := range []string{"networking", "data", "legacy"} {
 		for _, f := range []string{"main.tf", "variables.tf", "outputs.tf"} {
 			assertParses(t, filepath.Join(out, mod, f))
 		}
@@ -150,7 +150,7 @@ func TestEmit_DataSourceDuplicated(t *testing.T) {
 
 func TestEmit_DecoratorsStripped(t *testing.T) {
 	out := carveFixture(t)
-	for _, mod := range []string{"networking", "data", "monolith"} {
+	for _, mod := range []string{"networking", "data", "legacy"} {
 		main := readFile(t, filepath.Join(out, mod, "main.tf"))
 		if strings.Contains(main, "@demono:") {
 			t.Errorf("%s/main.tf still contains decorator comments:\n%s", mod, main)
@@ -170,9 +170,12 @@ func TestEmit_OutputExposesReferencedAttr(t *testing.T) {
 
 func TestEmit_ProviderPropagated(t *testing.T) {
 	out := carveFixture(t)
-	net := readFile(t, filepath.Join(out, "networking", "main.tf"))
-	if !strings.Contains(net, "required_providers") || !strings.Contains(net, "hashicorp/random") {
-		t.Errorf("networking/main.tf missing propagated providers:\n%s", net)
+	rootTF := readFile(t, filepath.Join(out, "networking", "root.tf"))
+	if !strings.Contains(rootTF, "required_providers") || !strings.Contains(rootTF, "hashicorp/random") {
+		t.Errorf("networking/root.tf missing propagated providers:\n%s", rootTF)
+	}
+	if strings.Contains(readFile(t, filepath.Join(out, "networking", "main.tf")), "required_providers") {
+		t.Error("required_providers must live in root.tf, not main.tf")
 	}
 }
 
@@ -182,7 +185,7 @@ func TestEmit_ProviderPropagated(t *testing.T) {
 func TestEmit_ProviderAliasAndCrossModuleRef(t *testing.T) {
 	src := testsupport.InDir("e2e-split")
 	outDir := testsupport.OutDir(t, "e2e-split", "emit-provider-alias")
-	a, err := pipeline.Analyze(src, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(src, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}

@@ -4,6 +4,6 @@
 *.backup
 .env
 demono.tfplan
-generated.auto.tfvars
+demono.auto.tfvars
 crash.log
 crash.*.log

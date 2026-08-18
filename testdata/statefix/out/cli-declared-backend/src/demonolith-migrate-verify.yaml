@@ -1,0 +1,28 @@
+version: 1
+created: "2026-08-18T13:22:02Z"
+tool: demonolith dev
+manifest: demonolith-refactor.yaml
+manifest_checksum: sha256:abd3dad9c5940c4c8c4c79405b21f475ca97143bbd1c03ce4c7ebaef0e249e04
+mode: final
+refresh: true
+ok: true
+order:
+    - a
+    - b
+    - legacy
+modules:
+    - module: a
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0
+    - module: b
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0
+    - module: legacy
+      zero_diff: true
+      create: 0
+      destroy: 0
+      update: 0

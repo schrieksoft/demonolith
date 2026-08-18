@@ -1,9 +1,9 @@
 version: 1
-created: "2026-08-18T06:45:18Z"
+created: "2026-08-18T13:21:54Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-declared-backend/src
-    remainder_module: monolith
+    remainder_module: legacy
 output:
     dir: modules
     bootstrap: true
@@ -18,8 +18,8 @@ modules:
         dir: modules/b
         blocks:
             - random_pet.name_b
-    monolith:
-        dir: modules/monolith
+    legacy:
+        dir: modules/legacy
         blocks:
             - random_pet.leftover
 catchall:
@@ -45,5 +45,5 @@ backend:
     modules:
         a: monolith-a.tfstate
         b: monolith-b.tfstate
-        monolith: monolith-monolith.tfstate
-emit_checksum: sha256:e99221167b68a65899b4a4e775c7f5951ed884e0c950ce799e38d7f9fea2da65
+        legacy: monolith-legacy.tfstate
+emit_checksum: sha256:abd3dad9c5940c4c8c4c79405b21f475ca97143bbd1c03ce4c7ebaef0e249e04

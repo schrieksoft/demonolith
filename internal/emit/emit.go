@@ -5,7 +5,8 @@
 //     rewritten to var.<input>;
 //   - generated variable blocks for the module's boundary inputs;
 //   - generated output blocks for the module's boundary outputs;
-//   - a terraform{} block carrying required_providers propagated from the root.
+//   - a root.tf holding the terraform{} block: required_providers propagated
+//     from the root, plus the derived backend when one is configured.
 //
 // v1 emits detached roots: no snapcd_* control-plane wiring is generated.
 package emit
@@ -32,9 +33,10 @@ const RootGitignore = `.terraform/
 *.tfstate
 *.tfstate.*
 *.backup
-.env
+demono.env
 demono.tfplan
-generated.auto.tfvars
+demono.root.tfvars
+demono.graph.tfvars
 crash.log
 crash.*.log
 `
@@ -56,8 +58,8 @@ type Emitter struct {
 	// of copying the directories into each carved root. Default false: carved
 	// roots are fully standalone and shippable to separate repos.
 	Monorepo bool
-	// Backend, when set, writes each module a backend.tf derived from the
-	// monolith's backend block with per-module state locations.
+	// Backend, when set, writes the derived backend into each module's root.tf
+	// (the monolith's block with per-module state locations).
 	Backend *BackendBlock
 }
 
@@ -99,13 +101,10 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 
 	b := e.Bound.Boundaries[module]
 
-	// main.tf: moved blocks with rewritten references.
+	// main.tf: moved blocks with rewritten references. The terraform{} block
+	// goes to root.tf instead.
 	mainFile := hclwrite.NewEmptyFile()
 	body := mainFile.Body()
-	if reqProviders != nil {
-		body.AppendBlock(reqProviders)
-		body.AppendNewline()
-	}
 
 	// Structural blocks (provider / original variable / locals) the module uses,
 	// duplicated in like required_providers.
@@ -169,11 +168,30 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		em.Files = append(em.Files, name)
 	}
 
-	if e.Backend != nil {
-		if err := e.Backend.WriteBackendTF(dir, module); err != nil {
+	// root.tf — the terraform{} block, following the common root convention:
+	// required_providers propagated from the source, plus the module's derived
+	// backend when one is configured.
+	if reqProviders != nil || e.Backend != nil {
+		rootFile := hclwrite.NewEmptyFile()
+		var tfb *hclwrite.Block
+		if reqProviders != nil {
+			tfb = cloneBlock(reqProviders)
+			rootFile.Body().AppendBlock(tfb)
+		} else {
+			tfb = rootFile.Body().AppendNewBlock("terraform", nil)
+		}
+		if e.Backend != nil {
+			bb, err := e.Backend.BackendHCL(module)
+			if err != nil {
+				return EmittedModule{}, err
+			}
+			tfb.Body().AppendNewline()
+			tfb.Body().AppendBlock(bb)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "root.tf"), hclwrite.Format(rootFile.Bytes()), 0o644); err != nil {
 			return EmittedModule{}, err
 		}
-		em.Files = append(em.Files, "backend.tf")
+		em.Files = append(em.Files, "root.tf")
 	}
 
 	if err := WriteGitignore(dir); err != nil {

@@ -1,16 +1,16 @@
 version: 1
-created: "2026-08-18T06:46:11Z"
+created: "2026-08-18T13:22:52Z"
 tool: demonolith dev
 manifest: demonolith-refactor.yaml
-manifest_checksum: sha256:0282c59e0bf8eed651eafede70007b3b0a5e3264d74f1d70114f29fdd189200a
+manifest_checksum: sha256:fde9464d03fb8f34208abb6fa91bb6bea296edb642fe3ecc151d66d96c3f8732
 action: run
 complete: true
 module_states:
-    app: modules/.state/app.tfstate
-    cluster: modules/.state/cluster.tfstate
-    database: modules/.state/database.tfstate
-    monolith: modules/.state/monolith.tfstate
-    networking: modules/.state/networking.tfstate
+    app: modules/.demono/app.tfstate
+    cluster: modules/.demono/cluster.tfstate
+    database: modules/.demono/database.tfstate
+    legacy: modules/.demono/legacy.tfstate
+    networking: modules/.demono/networking.tfstate
 pushes:
     - module: app
       location: modules/app/terraform.tfstate
@@ -21,8 +21,8 @@ pushes:
     - module: database
       location: modules/database/terraform.tfstate
       outcome: pushed
-    - module: monolith
-      location: modules/monolith/terraform.tfstate
+    - module: legacy
+      location: modules/legacy/terraform.tfstate
       outcome: pushed
     - module: networking
       location: modules/networking/terraform.tfstate

@@ -14,15 +14,15 @@ import (
 // system can tell what ran, when, and for which plan. History lives in
 // version control.
 const (
-	PlanReceiptFile  = "demonolith-migrate-plan.yaml"
+	MapReceiptFile   = "demonolith-migrate-map.yaml"
 	RunReceiptFile   = "demonolith-migrate-run.yaml"
-	ProveVerdictFile = "demonolith-prove.yaml"
-	FinalVerdictFile = "demonolith-verify.yaml"
+	ProveVerdictFile = "demonolith-migrate-prove.yaml"
+	FinalVerdictFile = "demonolith-migrate-verify.yaml"
 )
 
 // Receipt actions.
 const (
-	ActionPlan = "plan"
+	ActionMap = "map"
 	ActionRun  = "run"
 )
 
@@ -62,7 +62,7 @@ type Receipt struct {
 	// filename is constant, so the checksum is what ties a receipt to one
 	// manifest generation.
 	ManifestChecksum string `yaml:"manifest_checksum"`
-	// Action is what this receipt records: "plan" (the local carve) or "run"
+	// Action is what this receipt records: "map" (the local carve) or "run"
 	// (the push into real backends).
 	Action string `yaml:"action"`
 	Engine string `yaml:"engine,omitempty"`
@@ -82,7 +82,7 @@ func receiptFile(action string) string {
 	if action == ActionRun {
 		return RunReceiptFile
 	}
-	return PlanReceiptFile
+	return MapReceiptFile
 }
 
 // WriteReceipt marshals the receipt to its action's canonical path in rootDir
@@ -141,7 +141,7 @@ type ModuleVerdict struct {
 }
 
 // Verdict is a proof sidecar: the result as an artifact rather than terminal
-// scrollback. Mode "prove" judges migrate plan's carved artifacts; mode
+// scrollback. Mode "prove" judges migrate map's carved artifacts; mode
 // "final" judges the pushed states against the real backends. External input
 // values never appear here, only names.
 type Verdict struct {

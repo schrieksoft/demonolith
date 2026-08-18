@@ -30,9 +30,9 @@ import (
 //
 // Unlike proof.Run (which threads producer plan outputs in memory), this test
 // plans each module STANDALONE: only its carved state and its
-// generated.auto.tfvars — no -var flags. That proves the .tfvars files alone
-// carry every cross-module value correctly, which is what a real Snap CD deploy
-// (or a human running `terraform plan` in the module dir) would see.
+// demono.graph.tfvars, loaded explicitly via -var-file — no -var flags. That
+// proves the tfvars file alone carries every cross-module value correctly,
+// which is what a human planning a detached root would do.
 func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	execPath := testsupport.RequireEngine(t)
 	ctx := context.Background()
@@ -49,7 +49,7 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	}
 
 	// --- Analyze + emit carved roots. -------------------------------------
-	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "monolith"})
+	a, err := pipeline.Analyze(srcDir, pipeline.Options{Remainder: "legacy"})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -92,11 +92,11 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	cross, err := statevars.ResolveCross(st, a.Boundary, statevars.Options{SourceDir: srcDir})
-	if err != nil {
-		t.Fatalf("ResolveCross: %v", err)
+	cross, unresolved := statevars.ResolveCross(st, a.Boundary, statevars.Options{SourceDir: srcDir})
+	if len(unresolved) > 0 {
+		t.Fatalf("ResolveCross left inputs unresolved: %v", unresolved)
 	}
-	sv, err := statevars.Write(moduleDirs, nil, cross)
+	sv, err := statevars.WriteGraph(moduleDirs, cross)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 		}
 		if hasUpstream {
 			if _, ok := sv.Files[b.Module]; !ok {
-				t.Errorf("module %q has upstream inputs but no generated.auto.tfvars", b.Module)
+				t.Errorf("module %q has upstream inputs but no demono.graph.tfvars", b.Module)
 			}
 		}
 	}
@@ -132,9 +132,9 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	}
 }
 
-// planStandalone inits and plans the module root with NO -var flags — it relies
-// entirely on generated.auto.tfvars being auto-loaded. Returns create/destroy
-// counts.
+// planStandalone inits and plans the module root with NO -var flags — the
+// only value source is demono.graph.tfvars, loaded explicitly via -var-file
+// (the file is deliberately not auto-loaded). Returns create/destroy counts.
 func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (add, destroy int) {
 	t.Helper()
 	tf, err := tfexec.NewTerraform(dir, execPath)
@@ -145,7 +145,11 @@ func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (ad
 		t.Fatalf("init %q: %v", dir, err)
 	}
 	planPath := filepath.Join(dir, "demono-e2e.tfplan")
-	if _, err := tf.Plan(ctx, tfexec.Out(planPath), tfexec.Refresh(false)); err != nil {
+	planOpts := []tfexec.PlanOption{tfexec.Out(planPath), tfexec.Refresh(false)}
+	if gv := filepath.Join(dir, statevars.GraphTfvarsName); fileExists(gv) {
+		planOpts = append(planOpts, tfexec.VarFile(gv))
+	}
+	if _, err := tf.Plan(ctx, planOpts...); err != nil {
 		t.Fatalf("plan %q: %v", dir, err)
 	}
 	plan, err := tf.ShowPlanFile(ctx, planPath)
@@ -166,6 +170,11 @@ func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (ad
 		}
 	}
 	return add, destroy
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func copyFile(src, dst string) error {
@@ -303,7 +312,7 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 			notWant: []string{`data "tls_public_key"`},
 		},
 		// catchall uses the random provider only; no locals/vars/tls.
-		"monolith": {
+		"legacy": {
 			want:    []string{`provider "random"`},
 			notWant: []string{"locals", `variable "name_prefix"`, `provider "tls"`},
 		},
