@@ -40,7 +40,7 @@ func refactorCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "refactor",
-		Short: "Carve the monolith's code: map → run → verify",
+		Short: "Split the monolith's code: map → run → verify",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRefactorPipeline(f)
@@ -48,11 +48,11 @@ func refactorCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default `modules`)")
+	flags.StringVar(&f.out, "out", "", "directory the new module directories are written to, resolved against --root-dir and required to be inside it (default `modules`)")
 	flags.StringVar(&f.remainder, "remainder-module", "legacy", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
-	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: carve roots without backend blocks")
+	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: write the modules without backend blocks")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough of the whole pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the plan automatically instead of pausing for confirmation before run")
@@ -65,7 +65,7 @@ func refactorMapCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "map",
-		Short: "Analyze the monolith and write the map of the split — the reviewable plan; nothing is emitted",
+		Short: "Analyze the monolith and write the map of the split — the reviewable plan; no module directories are written yet",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -84,13 +84,13 @@ func refactorMapCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.out, "out", "", "output directory for carved roots, resolved against --root-dir and required to be inside it (default `modules`)")
+	flags.StringVar(&f.out, "out", "", "directory the new module directories are written to, resolved against --root-dir and required to be inside it (default `modules`)")
 	flags.StringVar(&f.remainder, "remainder-module", "legacy", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
-	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: carve roots without backend blocks")
+	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: write the modules without backend blocks")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
-	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for parameters, triage the catchall, confirm before writing the manifest")
+	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for parameters, triage the catchall, confirm before writing the map")
 	return cmd
 }
 
@@ -98,7 +98,7 @@ func refactorRunCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Execute the map: emit carved roots, backends, and bootstrap; finalize the checksum",
+		Short: "Execute the map: write the new module directories; finalize the checksum",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -377,7 +377,7 @@ func checkTargetDirs(a *pipeline.Analysis, rootDir, outDir string, withBootstrap
 	if withBootstrap {
 		for _, name := range targets {
 			if name == bootstrap.DirName {
-				return fmt.Errorf("module name %q is reserved for the Snap CD bootstrap module; rename the carved module or pass --no-bootstrap", bootstrap.DirName)
+				return fmt.Errorf("module name %q is reserved for the Snap CD bootstrap module; rename the module or pass --no-bootstrap", bootstrap.DirName)
 			}
 		}
 		targets = append(append([]string(nil), targets...), bootstrap.DirName)
@@ -394,7 +394,7 @@ func checkTargetDirs(a *pipeline.Analysis, rootDir, outDir string, withBootstrap
 		}
 	}
 	if len(foreign) > 0 {
-		return fmt.Errorf("target module dir(s) already exist and are not demonolith output: %s — refusing to emit into content demonolith does not own; rename the carved module(s) or move the existing dir(s)", strings.Join(foreign, ", "))
+		return fmt.Errorf("target module dir(s) already exist and are not demonolith output: %s — refusing to write into content demonolith does not own; rename the module(s) or move the existing dir(s)", strings.Join(foreign, ", "))
 	}
 	return nil
 }

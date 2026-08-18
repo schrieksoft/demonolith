@@ -193,7 +193,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 			continue
 		}
 
-		outf("\nNext step: write the manifest (%s) recording this map of %d module root(s) — the reviewable plan that `refactor run` executes.\n", manifest.FileName, len(a.Placement.ModuleNames()))
+		outf("\nNext step: write the map (%s) for %d module(s) — the reviewable plan that `refactor run` executes.\n", manifest.FileName, len(a.Placement.ModuleNames()))
 		writeOK, err := promptYesNo("\nWrite it? (\"n\" aborts; decorators already written stay in the source)", true)
 		if err != nil {
 			return f, err
@@ -339,9 +339,9 @@ func confirmMigrateMap(rootDir string, m *manifest.Manifest, f migrateFlags) (bo
 	}
 	status := fmt.Sprintf("%d move(s)", len(m.StateMoves))
 	if receipt != nil && receipt.Complete {
-		status = "already carved; will skip"
+		status = "already done; will skip"
 	}
-	outf("\n%s %s\n", heading("State moves to carve")+" ("+manifest.FileName+"):", dim(status))
+	outf("\n%s %s\n", heading("State moves to perform")+" ("+manifest.FileName+"):", dim(status))
 	total := 0
 	if receipt == nil || !receipt.Complete {
 		for _, mv := range m.StateMoves {
@@ -353,5 +353,5 @@ func confirmMigrateMap(rootDir string, m *manifest.Manifest, f migrateFlags) (bo
 	if engine == "" {
 		engine = f.execPath
 	}
-	return promptYesNo(fmt.Sprintf("\nCarve %d move(s) with %s (local copies only; a backup is written first)?", total, engine), true)
+	return promptYesNo(fmt.Sprintf("\nPerform %d state move(s) with %s (into local copies only; a backup is written first)?", total, engine), true)
 }

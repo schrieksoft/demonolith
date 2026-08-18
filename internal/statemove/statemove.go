@@ -197,7 +197,7 @@ func verifySameLineage(ctx context.Context, srcDir, monolithState, backupState s
 		}
 	}
 	if srcLineage == "" || srcLineage != workLineage {
-		return fmt.Errorf("the working state in %s has a different lineage than the current source state — it is stale (an earlier backend or source?); delete the directory to carve fresh", filepath.Dir(monolithState))
+		return fmt.Errorf("the working state in %s has a different lineage than the current source state — it is stale (an earlier backend or source?); delete the directory to start the split fresh", filepath.Dir(monolithState))
 	}
 	return nil
 }

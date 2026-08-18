@@ -1,5 +1,5 @@
 version: 1
-created: "2026-08-18T16:21:15Z"
+created: "2026-08-18T17:04:26Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/sample/out/cli-verify-monorepo/src
@@ -150,4 +150,4 @@ ordering_edges:
       producer_module: networking
       consumer: module.cluster
       producer: random_uuid.nat_gateway_id
-emit_checksum: sha256:4d4b2db0f70bee216b3c41044e7b30a9041267845c1844475ae19ee2162e76df
+emit_checksum: sha256:bac0fed2d55ee2855b2945d56460fde8c9534b7c1e5c1aeabac0421c27ff781a

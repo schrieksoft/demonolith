@@ -162,7 +162,7 @@ func Run(ctx context.Context, moduleDirs, moduleStates map[string]string, bound 
 			planDone(module, "plan FAILED")
 			return nil, fmt.Errorf("plan module %q: %w", module, err)
 		}
-		verdict := "zero-diff"
+		verdict := "zero changes"
 		if !mp.ZeroDiff {
 			verdict = fmt.Sprintf("CHANGES +%d ~%d -%d", mp.AddCount, mp.Change, mp.Destroy)
 		}

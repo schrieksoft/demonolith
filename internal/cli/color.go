@@ -19,7 +19,7 @@ import (
 //	fail      a failing verdict or refusal         red
 //
 // The house rule: any line that introduces an indented list is a heading;
-// outcome words (moved, pushed, skipped, zero-diff, FAILED) use the status
+// outcome words (moved, pushed, skipped, zero changes, FAILED) use the status
 // roles; ordinary informational sentences stay plain.
 //
 // colorEnabled gates ANSI output: a real terminal on stdout, NO_COLOR unset,
@@ -46,10 +46,10 @@ func success(s string) string  { return colorize("32", s) }
 func warn(s string) string     { return colorize("33", s) }
 func fail(s string) string     { return colorize("31", s) }
 
-// colorVerdict colors a per-module proof verdict line: zero-diff success,
+// colorVerdict colors a per-module proof verdict line: zero changes success,
 // anything else fail.
 func colorVerdict(v string) string {
-	if v == "zero-diff" {
+	if v == "zero changes" {
 		return success(v)
 	}
 	return fail(v)

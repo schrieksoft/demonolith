@@ -15,7 +15,7 @@ func migrateVerifyCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "verify",
-		Short: "Judge the executed migration: plan each root against its real backend, assert zero changes",
+		Short: "Judge the executed migration: plan each module against its real backend, assert zero changes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigrateVerify(cmd.Context(), f)
@@ -25,10 +25,10 @@ func migrateVerifyCmd() *cobra.Command {
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
+	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
-	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
+	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	return cmd
 }
@@ -58,7 +58,7 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 		return err
 	}
 	if runReceipt == nil || !runReceipt.Complete {
-		return fmt.Errorf("no completed migrate run for this map generation; run `demonolith migrate run` first")
+		return fmt.Errorf("no completed migrate run for this map; run `demonolith migrate run` first")
 	}
 	a, err := analyzeMatching(rootDir, m)
 	if err != nil {

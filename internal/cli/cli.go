@@ -68,7 +68,7 @@ func Root() *cobra.Command {
 	var noColor bool
 	root := &cobra.Command{
 		Use:           "demonolith",
-		Short:         "Refactor a monolithic Terraform root into per-module roots",
+		Short:         "Split a monolithic Terraform root into standalone per-module directories",
 		Version:       fmt.Sprintf("%s (%s)", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,

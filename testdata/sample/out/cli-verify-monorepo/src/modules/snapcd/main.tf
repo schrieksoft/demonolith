@@ -23,9 +23,10 @@ data "snapcd_runner" "this" {
 }
 
 resource "snapcd_namespace" "this" {
-  name           = var.namespace_name
-  stack_id       = data.snapcd_stack.this.id
-  default_engine = var.engine
+  name                                = var.namespace_name
+  stack_id                            = data.snapcd_stack.this.id
+  default_engine                      = var.engine
+  default_trigger_path_filter_enabled = true
 }
 
 resource "snapcd_module" "app" {

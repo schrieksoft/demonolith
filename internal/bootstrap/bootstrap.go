@@ -123,9 +123,13 @@ resource "snapcd_namespace" "this" {
   name           = var.namespace_name
   stack_id       = data.snapcd_stack.this.id
   default_engine = var.engine
-}
-
 `)
+	if m.Output.Monorepo {
+		// Monorepo carve: modules should only redeploy when a commit touches
+		// their own directory, not on every commit to the shared repo.
+		b.WriteString("  default_trigger_path_filter_enabled = true\n")
+	}
+	b.WriteString("}\n\n")
 
 	// One snapcd_module per carved root, subdirectory from the manifest.
 	for _, name := range names {
@@ -256,12 +260,12 @@ variable "engine" {
 }
 
 variable "source_url" {
-  description = "Git URL of the repository holding the carved module roots"
+  description = "Git URL of the repository holding the new module directories"
   type        = string
 }
 
 variable "source_revision" {
-  description = "Git revision (branch or tag) of the carved module roots"
+  description = "Git revision (branch or tag) of the new module directories"
   type        = string
   default     = "main"
 }

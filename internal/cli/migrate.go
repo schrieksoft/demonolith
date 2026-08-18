@@ -52,12 +52,12 @@ func migrateCmd() *cobra.Command {
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.StringVar(&f.stateFile, "state-file", "", "carve this state snapshot instead of pulling from the configured backend")
+	flags.StringVar(&f.stateFile, "state-file", "", "split this local state file instead of pulling from the configured backend")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
-	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
-	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
-	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a target whose state does not match the carve (state push -force); the occupant is lost — default refuses")
+	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
+	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
+	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials — then the pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
@@ -70,7 +70,7 @@ func migrateMapCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "map",
-		Short: "Materialize the migration: pull read-only, back up, carve local state copies, write the map receipt",
+		Short: "Prepare the migration: pull the state read-only, back it up, split it into per-module local copies, write the map receipt",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigrateMap(cmd.Context(), f)
@@ -80,7 +80,7 @@ func migrateMapCmd() *cobra.Command {
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.StringVar(&f.stateFile, "state-file", "", "carve this state snapshot instead of pulling from the configured backend")
+	flags.StringVar(&f.stateFile, "state-file", "", "split this local state file instead of pulling from the configured backend")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for root/engine/state source, preview the moves, confirm")
 	return cmd
@@ -102,10 +102,10 @@ func loadRunManifest(rootDir string) (*manifest.Manifest, error) {
 	}
 	sum, err := manifest.Checksum(m.ChecksumDirs(rootDir))
 	if err != nil {
-		return nil, verdictf("map %s: emitted roots unreadable: %v", manifest.FileName, err)
+		return nil, verdictf("map %s: module directories unreadable: %v", manifest.FileName, err)
 	}
 	if sum != m.EmitChecksum {
-		return nil, verdictf("map %s is stale: the emitted roots changed after it was written; re-run `demonolith refactor`", manifest.FileName)
+		return nil, verdictf("map %s is stale: the module directories changed after it was written; re-run `demonolith refactor`", manifest.FileName)
 	}
 	return m, nil
 }
@@ -181,7 +181,7 @@ func runMigrateMap(ctx context.Context, f migrateFlags) error {
 			f.engine = engine
 		}
 		if f.stateFile == "" {
-			sf, err := promptLine("Local .tfstate copy to carve from, if you have one (Enter = pull the monolith's state from its backend): ")
+			sf, err := promptLine("Local .tfstate copy to split, if you have one (Enter = pull the monolith's state from its backend): ")
 			if err != nil {
 				return err
 			}
@@ -235,7 +235,7 @@ func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, exe
 	}
 	if receipt != nil && receipt.Complete && carveArtifactsExist(rootDir, receipt) {
 		rep.Skipped = true
-		rep.SkipReason = "already carved (complete map receipt found)"
+		rep.SkipReason = "already split (complete map receipt found)"
 		return rep, nil
 	}
 
@@ -261,7 +261,7 @@ func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, exe
 
 	res, err := statemove.Execute(ctx, rootDir, workDir, prep, filtered, opts)
 	if err != nil {
-		return nil, fmt.Errorf("state carve: %w", err)
+		return nil, fmt.Errorf("state split: %w", err)
 	}
 	// A resumed run may have executed no moves for a module whose state was
 	// carved earlier; the receipt must still record every carved state file.
@@ -338,13 +338,13 @@ func mapReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, 
 		return nil, nil, "", err
 	}
 	if receipt == nil || !receipt.Complete {
-		return nil, nil, "", fmt.Errorf("no complete migrate map for this map generation; run `demonolith migrate map` first")
+		return nil, nil, "", fmt.Errorf("no completed migrate map for this map; run `demonolith migrate map` first")
 	}
 	states := map[string]string{}
 	for mod, p := range receipt.ModuleStates {
 		rp := manifest.Resolve(rootDir, p)
 		if _, err := os.Stat(rp); err != nil {
-			return nil, nil, "", fmt.Errorf("carved state for module %q missing (%s); re-run `demonolith migrate map`", mod, rp)
+			return nil, nil, "", fmt.Errorf("state copy for module %q missing (%s); re-run `demonolith migrate map`", mod, rp)
 		}
 		states[mod] = rp
 	}
@@ -571,10 +571,10 @@ func relForReceipt(rootDir, p string) string {
 
 func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 	if rep.Skipped {
-		outf("%s %s\n", heading("Carving state moves:"), warn("skipped — "+rep.SkipReason))
+		outf("%s %s\n", heading("Splitting the state:"), warn("skipped — "+rep.SkipReason))
 		return
 	}
-	outln(heading("Carving state moves") + " (from " + rep.Manifest + "):")
+	outln(heading("Splitting the state") + " (moves from " + rep.Manifest + "):")
 	for _, mv := range rep.Moves {
 		oc := fmt.Sprintf("%-8s", mv.Outcome)
 		if mv.Outcome == "moved" {
@@ -584,7 +584,7 @@ func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 		}
 		outf("  %s %-40s -> %s\n", oc, mv.Address, mv.Module)
 	}
-	outln("\n" + heading("Carved state") + " (local copies, nothing pushed yet):")
+	outln("\n" + heading("Per-module state files written") + " (local copies, nothing pushed yet):")
 	mods := make([]string, 0, len(rep.ModuleStates))
 	for m := range rep.ModuleStates {
 		mods = append(mods, m)
@@ -643,12 +643,12 @@ func runMigratePipeline(ctx context.Context, f migrateFlags) error {
 			if !stdinIsTTY() {
 				return fmt.Errorf("the pipeline pauses for approval after prove; pass -y to approve automatically, or run the subcommands individually")
 			}
-			ok, err := promptYesNo("\nProceed with the migration (seed the state destinations)?", true)
+			ok, err := promptYesNo("\nProceed with the migration (push each module's state to its new location)?", true)
 			if err != nil {
 				return err
 			}
 			if !ok {
-				outln("Stopped before migrate run; the carve and proof are in place.")
+				outln("Stopped before migrate run; the state copies and proof are in place.")
 				return nil
 			}
 		}

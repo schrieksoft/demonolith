@@ -128,16 +128,16 @@ func DeriveLocation(value, module string) string {
 // via -backend-config cannot be derived and is a refusal, not a guess.
 func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byModule map[string]string, err error) {
 	if b.Type == "cloud" {
-		return "", nil, fmt.Errorf("the cloud block drives workspaces on a remote platform, not a derivable state location; pass --no-backend to carve without backend blocks and create per-module workspaces in the platform")
+		return "", nil, fmt.Errorf("the cloud block drives workspaces on a remote platform, not a derivable state location; pass --no-backend to write the modules without backend blocks and create per-module workspaces in the platform")
 	}
 	attrs, ok := locationAttrs[b.Type]
 	if !ok {
-		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: %s — pass --no-backend to carve without backend blocks", b.Type, supportedTypesList())
+		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: %s — pass --no-backend to write the modules without backend blocks", b.Type, supportedTypesList())
 	}
 	if b.Type == "remote" {
 		if _, named := b.locationValue("workspaces.name"); !named {
 			if _, prefixed := b.locationValue("workspaces.prefix"); prefixed {
-				return "", nil, fmt.Errorf("remote backend in workspaces.prefix mode maps CLI workspaces onto many remote workspaces; only workspaces.name mode is derivable — pass --no-backend to carve without backend blocks")
+				return "", nil, fmt.Errorf("remote backend in workspaces.prefix mode maps CLI workspaces onto many remote workspaces; only workspaces.name mode is derivable — pass --no-backend to write the modules without backend blocks")
 			}
 		}
 	}

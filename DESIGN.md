@@ -15,7 +15,7 @@ and applied as one unit. Monoliths get slow, risky, and coupled: a one-line
 change re-plans the whole world, and one broken resource can block unrelated
 ones.
 
-The goal is to carve that monolith into **independent per-module roots**, each a
+The goal is to split that monolith into **independent per-module roots**, each a
 self-contained Terraform root with its own state, that can be planned and applied
 on its own. In production these roots are orchestrated by **Snap CD**: where the
 monolith passed a value from resource A to resource B implicitly (same graph,
@@ -23,10 +23,10 @@ same state), the split roots pass it explicitly — module A publishes an `outpu
 module B declares a `variable`, and Snap CD wires one to the other at runtime.
 
 The hard requirement is that the split be **operationally inert**: after
-carving, planning each new root against its share of the old state must show
+split, planning each new root against its share of the old state must show
 **zero changes** — no creates, no destroys, no in-place updates. Nothing is
 rebuilt or altered; only the *organization*
-of the code and state changes. Demonolith's job is to perform that carve and to
+of the code and state changes. Demonolith's job is to perform that split and to
 *prove* the inertness.
 
 ### v1 scope
@@ -36,17 +36,17 @@ design: **string-typed inputs** — every generated `variable` is
 `type = string`, matching Snap CD's stringified value-passing; richer type
 coercion is deferred.
 
-State handling is staged, never destructive: `migrate map` carves **local
+State handling is staged, never destructive: `migrate map` splits **local
 copies** (the monolith's backend is only ever read), the proof consumes those
 copies, and `migrate run` seeds each module's **new, empty** backend location
 from them — the monolith's own state is never written, and retiring it is a
 deliberate human cutover.
 
-The carved roots themselves are plain Terraform with `variable`/`output`
+The module directories themselves are plain Terraform with `variable`/`output`
 boundaries — usable detached, with no control plane at all. The wiring into
 Snap CD ships alongside them: by default `refactor` also emits a **bootstrap
 module** (§12a) of `snapcd_*` resources that instructs Snap CD to deploy the
-carved modules, generated entirely from the map.
+split-out modules, generated entirely from the map.
 
 What it keeps — and what makes it more than a code generator — is the **proof
 oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
@@ -64,14 +64,14 @@ pipeline, connected by the map:
         │
    refactor map ──► demonolith-refactor-map.yaml     the reviewable plan: placement,
         │            (written: no checksum yet)    moves, wiring, state locations
-   refactor run ───► carved roots + backends      executes the plan verbatim;
+   refactor run ───► module directories + backends      executes the plan verbatim;
         │            + bootstrap; checksum        refuses a drifted source
    refactor verify   committed output ≡ source    the provenance gate (PR CI)
         │
-   migrate map ───► local carve + receipt        pull read-only, back up, carve
+   migrate map ───► local split + receipt        pull read-only, back up, split
         │
    migrate prove ──► prove receipt                threaded zero-diff proof over
-        │                                         plan's exact carved artifacts
+        │                                         plan's exact split artifacts
    migrate run ────► seeded backends + receipt    guarded push: empty targets
         │                                         only, never forced
    migrate verify ─► final receipt                the same proof against the
@@ -93,7 +93,7 @@ Cycle gate  refuse impossible splits                   [cycle]
 ```
 
 The stages that do I/O sit behind the commands: Emit (`refactor run`) writes
-the carved roots via `hclwrite`; StateCarve (`migrate map`), the proofs
+the module directories via `hclwrite`; StateCarve (`migrate map`), the proofs
 (`migrate prove`/`verify`), and the push (`migrate run`) shell out to a real
 `terraform`/`tofu` binary via `terraform-exec`.
 
@@ -299,7 +299,7 @@ an error and the pipeline never reaches emission.
 
 ---
 
-## 8. Emit — carving the code  `[internal/emit]`
+## 8. Emit — splitting the code  `[internal/emit]`
 
 Emit writes one subdirectory per module, each a complete Terraform root:
 
@@ -324,14 +324,14 @@ Emit writes one subdirectory per module, each a complete Terraform root:
   output, exposing exactly the attribute recorded in `RefAttrs` (so
   `.result`, not the whole object). Written empty-skipped.
 - **A `terraform{}` block** carrying `required_providers` propagated from the
-  monolith root into every carved root, so each root can resolve its providers
+  monolith root into every module directory, so each root can resolve its providers
   independently.
 
 **Structural blocks** (`structural.go`) — beyond resource/data, three kinds of
 block travel with the module that uses them, duplicated in the same way
 `required_providers` is (never split, since they carry no state):
 
-- **`provider` blocks** — carved into every module that uses that provider
+- **`provider` blocks** — copied into every module that uses that provider
   (derived from its resource/data types). A provider's *own body* is walked for
   references too: a `var`/`local` used only in provider config (e.g. a
   region/endpoint) is pulled into the module, and a cross-module producer
@@ -346,30 +346,30 @@ block travel with the module that uses them, duplicated in the same way
   *not* treat it as an external input — only an *undeclared* `var.*` becomes one.
 
 **Module calls** are first-class: a `@demono:move` on a `module` block places it
-(arity 1, a stateful singleton), `movedBlocks` carves the block, its local
+(arity 1, a stateful singleton), `movedBlocks` moves the block, its local
 `source = "./..."` directory is copied into the owning root, its input refs to
 cross-module producers rewrite to `var.<input>`, and a `module.<name>.<output>`
 consumed elsewhere becomes a CrossEdge (producer root re-exposes it as an
 `output`). State moves the whole `module.<name>.*` subtree (§9). In
 **monorepo mode** (`--monorepo`) local child-module dirs are not copied:
-the call's `source` is rewritten to the relative path from the carved root back
-to the original in-repo dir. The default carves fully standalone roots,
+the call's `source` is rewritten to the relative path from the module directory back
+to the original in-repo dir. The default writes fully standalone roots,
 shippable to separate repos.
 
 Decorator comments are stripped from moved blocks (they've served their purpose
 and would be dead noise in the output). Everything is run through
 `hclwrite.Format` before writing.
 
-**The carved roots stay plain Terraform** — no `snapcd_*` blocks inside them,
+**The module directories stay plain Terraform** — no `snapcd_*` blocks inside them,
 so they are valid standalone roots. The Snap CD wiring lives in the separate
 bootstrap module (§12a), generated from the map's CrossEdges and
 OrderingEdges.
 
 ---
 
-## 9. State carve — carving the state  `[internal/statemove]`
+## 9. State split — splitting the state  `[internal/statemove]`
 
-Code without state would re-create everything. State carving relocates each
+Code without state would re-create everything. The state split relocates each
 resource's state entry into its module's own state file, so the new roots adopt
 the *existing* infrastructure rather than rebuilding it.
 
@@ -380,13 +380,13 @@ The operation is deliberately **local-only and reversible**:
    backend. (Pull reads; it does not lock or write the backend.)
 2. **Back it up** before any mutation, so a mid-run failure recovers to the
    pre-run snapshot.
-3. **Carve** with `state mv -state=<monolith> -state-out=<module> src dst`
+3. **Split** with `state mv -state=<monolith> -state-out=<module> src dst`
    (`tfexec.StateMv` with `State`/`StateOut`), which reads one local file and
    writes another — the backend is never touched.
 4. **The remainder module inherits the leftovers.** Its resources are *not*
    moved (moving a resource to itself within one file is an error). After every
-   other module is carved out, the monolith state contains exactly the
-   remainder's resources, so that carved-down file simply *becomes* the
+   other module is moved out, the monolith state contains exactly the
+   remainder's resources, so that whittled-down file simply *becomes* the
    remainder's state. This subtlety — separating "move these out" from "keep the
    rest" — was a real bug fix, not incidental.
 
@@ -394,7 +394,7 @@ Only **managed resources** carry state, so `BuildPlan` moves resources and skips
 data sources entirely. A duplicated data source contributes **no** move — its
 copies are re-read in each module at plan time.
 
-**Nothing is pushed.** In v1 the carved per-module state files are the artifact;
+**Nothing is pushed.** In v1 the split per-module state files are the artifact;
 guarded push to new/empty backend locations (with serial/lineage conflicts as
 surfaced errors, never `-force`) is a later feature.
 
@@ -408,7 +408,7 @@ exists so nested re-addressing can be added without an interface change.
 This is the most ambitious piece and the reason Demonolith is a migration tool,
 not just a generator.
 
-**The problem it solves:** a carved module planned *in isolation* has its
+**The problem it solves:** a split-out module planned *in isolation* has its
 upstream-sourced inputs **unset**, because the input↔output wiring
 (`snapcd_module_input_from_output` in production) is runtime metadata Terraform
 never sees. Plan it naively and Terraform either errors on a missing variable or
@@ -423,7 +423,7 @@ plans a spurious diff. So a naive per-module plan can't prove inertness.
    `--var`-style options; upstream inputs **threaded** from the *already-extracted
    output values* of the producing module. (A missing upstream value at this
    point is a topo/threading bug and is surfaced as an error, not defaulted.)
-3. **Plans** the carved root against a *copy* of its carved state, with those
+3. **Plans** the module directory against a *copy* of its split state, with those
    inputs supplied as `-var`, and refresh **off** by default (fast,
    credential-free, state-only; `--refresh` gives the authoritative run).
 4. **Asserts zero-diff**: counts create/destroy/update from the plan JSON;
@@ -440,7 +440,7 @@ is known at plan time and no apply is ever needed — the whole proof is
 plan-only.
 
 **The proof** is the bundle of per-module plans, each showing zero changes
-against carved state with correctly threaded inputs. `Result.OK` is true iff
+against split state with correctly threaded inputs. `Result.OK` is true iff
 every module is zero-diff. That's the evidence the split changes nothing
 operationally *and* that the computed wiring is correct — because a wrong
 `CrossEdge` would thread a wrong value and surface as a diff.
@@ -473,8 +473,8 @@ demonolith refactor run          # execute the map: emit everything (offline)
 demonolith refactor verify       # committed output ≡ committed source (offline)
 
 demonolith migrate               # map → prove → run → verify
-demonolith migrate map          # pull read-only, back up, carve local copies
-demonolith migrate prove         # threaded zero-diff proof over the carved copies
+demonolith migrate map          # pull read-only, back up, split into local copies
+demonolith migrate prove         # threaded zero-diff proof over the local state copies
 demonolith migrate run           # guarded push into the derived backends
 demonolith migrate verify        # the same proof against the real backends
 ```
@@ -492,7 +492,7 @@ default** (`--exec-path` overrides resolution).
   runnable plan: target-dir collisions (a dir that exists and is not
   demonolith's own recorded output refuses the plan with nothing written),
   backend-type support, and the reserved `snapcd` module name.
-- **`refactor run`** executes the map verbatim — emit carved roots,
+- **`refactor run`** executes the map verbatim — emit module directories,
   derived backends inside each root.tf, a `.gitignore` per root covering the local
   artifacts later stages leave behind (`.terraform/`, `*.tfstate`, `demono.env`,
   `demono.root.tfvars`, `demono.graph.tfvars`, …), and the bootstrap — then finalizes the
@@ -503,16 +503,16 @@ default** (`--exec-path` overrides resolution).
   committed plan being confirmed; `--quiet` is the outcome line, `--silent`
   the exit code only. `--validate` additionally engine-validates each
   committed root (`init -backend=false` + `validate`; needs `--engine`, still
-  credential-free). Undo on the code side is git — the carved roots and
+  credential-free). Undo on the code side is git — the module directories and
   map are ordinary committed files.
-- **`migrate map`** is the local carve (§9 mechanics): read-only pull (or
+- **`migrate map`** is the local split (§9 mechanics): read-only pull (or
   `--state-file`), backup, `state mv` into per-module files under
   `<out>/.demono/`, an action-"plan" receipt. Idempotent per generation;
   resumable after partial failure via state-address inspection.
 - **`migrate prove`** proves *plan's output*: it requires the generation's
   complete plan receipt with intact artifacts, threads producer outputs into
   consumer inputs (the control plane's runtime role), plans every root against
-  its carved copy, and writes a mode-"prove" receipt. Variable values resolve
+  its local copy, and writes a mode-"prove" receipt. Variable values resolve
   in the engine's own precedence — `TF_VAR_*` env, auto-loaded tfvars,
   `--var-file`, `--var`, ascending — and cross-module inputs are never
   user-suppliable. Each module's resolved root values are materialized into its
@@ -534,10 +534,10 @@ default** (`--exec-path` overrides resolution).
   Then per module, with a
   progress line per step: init its derived backend (`--backend-config` passes
   out-of-band values), `state pull` to confirm the target is **empty** (an
-  occupant matching the carve — same lineage, or identical content from a
-  re-carve — is an idempotent skip, which is what makes a crashed run
-  retryable by just re-running), `state push` the carved file — not forced by
-  default. A non-matching occupant refuses unless `--overwrite` explicitly
+  existing state matching this migration — same lineage, or identical content from a
+  fresh split — is an idempotent skip, which is what makes a crashed run
+  retryable by just re-running), `state push` the module's state file — not forced by
+  default. Non-matching existing state refuses unless `--overwrite` explicitly
   sacrifices it (`state push -force`, with a loud warning naming every
   replaced target). A monolith without a backend gets local seeding: each
   root receives its `terraform.tfstate` in place. An action-"run" receipt records every
@@ -581,19 +581,19 @@ freshly written map has no `emit_checksum` yet, and every downstream command
 refuses it until `refactor run` executes the plan and finalizes the checksum. The monolith root is the single refactor
 source: the plan is always re-derived from it in full, so there is no
 meaningful sequence of maps — history lives in version control, and
-re-refactoring an already-carved root (decorating inside emitted output) is
+re-refactoring an already-module directory (decorating inside emitted output) is
 deliberately out of scope.
 
 **Contents:** module assignments (`modules`, with root-relative dirs and each
 module's external input *names*), the `catchall` list, `duplicated_data`,
 `state_moves` (managed addresses only; remainder resources are absent because
-the carved-down monolith state *becomes* the remainder's state), `cross_edges`
+the whittled-down monolith state *becomes* the remainder's state), `cross_edges`
 (the value wiring a control plane needs at adoption time, attribute included),
 `ordering_edges`, the output mode (`monorepo`, `bootstrap`, `bootstrap_dir`),
 the `backend` section — the monolith's backend type and **each module's
 derived state location**, putting where every state will live into the
 reviewed plan — and `emit_checksum` — a hash over all generated output
-(carved roots plus the bootstrap module) that excludes later-stage artifacts
+(module directories plus the bootstrap module) that excludes later-stage artifacts
 (lock files, state files, plan files, generated tfvars), so running the
 pipeline never invalidates its own map.
 
@@ -613,14 +613,14 @@ version control:
 - **Receipts** (`demonolith-migrate-map.yaml`, `demonolith-migrate-run.yaml`)
   — one canonical file per migrate step, overwritten per execution: the *plan*
   receipt records which moves ran, the
-  carved state paths, and the backup path; a *run* receipt records where each
+  split state paths, and the backup path; a *run* receipt records where each
   module's state was pushed. Both carry the executed map's
   `emit_checksum`, which ties them to one map *generation* (the filename
   is constant), so re-running `refactor` invalidates old receipts. Idempotency
-  consults the receipt first; on resume after a partial carve, migrate reuses
+  consults the receipt first; on resume after a partial split, migrate reuses
   the working monolith state (never re-pulls — that would corrupt a partial
-  carve) and classifies each move by inspecting state addresses.
-- **Verdicts** — mode-"prove" (`demonolith-migrate-prove.yaml`) judges the carved
+  split) and classifies each move by inspecting state addresses.
+- **Verdicts** — mode-"prove" (`demonolith-migrate-prove.yaml`) judges the split
   artifacts before the push; mode-"final" (`demonolith-migrate-verify.yaml`) judges
   the pushed states against the real backends. Both carry per-module create/destroy/update counts, the
   proof order, external input *names*, and the generation checksum — which is
@@ -631,14 +631,14 @@ scrollback.
 
 ## 12a. The Snap CD bootstrap module  `[internal/bootstrap]`
 
-By default `refactor` emits one more root, `<out>/snapcd` (the carved-module
+By default `refactor` emits one more root, `<out>/snapcd` (the module
 name `snapcd` is reserved for it): a Terraform root of `snapcd_*` resources
-that instructs Snap CD to deploy the carved modules. It is generated **from
+that instructs Snap CD to deploy the split-out modules. It is generated **from
 the map alone** — proof that the public contract carries everything a
 control plane needs:
 
 - a `snapcd_namespace` (into a stack/runner looked up by name), and one
-  `snapcd_module` per carved root, its `source_subdirectory` derived from the
+  `snapcd_module` per module directory, its `source_subdirectory` derived from the
   map's module dir (prefixed by `var.source_subdirectory_prefix` for
   monoliths that don't sit at the repo root);
 - every cross edge realized as `snapcd_module_input_from_output` — the
@@ -676,7 +676,7 @@ read-only from whatever backend the root configures.
 - **Team CI.** The dev authors the plan (decorators, `refactor`, committed
   roots + map in the PR); PR CI judges it — `refactor verify` gates
   provenance credential-free, then `migrate map` + `migrate prove` gate
-  inertness with backend read access, the carve artifacts living and dying in
+  inertness with backend read access, the split artifacts living and dying in
   the job workspace; external inputs injected via `TF_VAR_*` or `--var`, nothing landing on disk
   by default. A post-merge job executes the
   reviewed generation verbatim: `migrate map` → `prove` → `run` → `verify`,
@@ -741,8 +741,8 @@ go test ./...   # state/proof tests skip without a terraform/tofu binary
 - **Value edges and ordering edges are different things.** Conflating them
   produces spurious wiring; keeping them separate (`CrossEdge` vs.
   `OrderingEdge`, `Refs` vs. `DependsOnOnly`) is a load-bearing distinction.
-- **Never touch the real backend in v1.** Pull (read-only) and carve local
-  copies; back up before mutating; the carved files are the artifact.
+- **Never touch the real backend in v1.** Pull (read-only) and split local
+  copies; back up before mutating; the split files are the artifact.
 - **Prove, don't assert.** Inertness is demonstrated by a real graph-threaded
   plan bundle against real state, not asserted from the model — which is what
   makes the tool trustworthy for a production migration.

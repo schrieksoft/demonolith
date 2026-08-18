@@ -1,3 +1,3 @@
 # Cross-module input values, resolved from the applied monolith state or
-# threaded from the proof's planned producer outputs.
+# filled in from the producer values the proof computed.
 random_integer_seed = "48"

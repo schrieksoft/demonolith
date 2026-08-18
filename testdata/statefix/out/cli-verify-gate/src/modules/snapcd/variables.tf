@@ -54,12 +54,12 @@ variable "engine" {
 }
 
 variable "source_url" {
-  description = "Git URL of the repository holding the carved module roots"
+  description = "Git URL of the repository holding the new module directories"
   type        = string
 }
 
 variable "source_revision" {
-  description = "Git revision (branch or tag) of the carved module roots"
+  description = "Git revision (branch or tag) of the new module directories"
   type        = string
   default     = "main"
 }

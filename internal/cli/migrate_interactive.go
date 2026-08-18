@@ -46,7 +46,7 @@ func migrateInputsWizard(f *migrateFlags) (string, *manifest.Manifest, error) {
 		outf("Engine: %s (from --engine)\n", f.engine)
 	}
 
-	sf, err := promptString("Local .tfstate copy to carve from, if you have one (empty = pull the monolith's state from its backend)", f.stateFile)
+	sf, err := promptString("Local .tfstate copy to split, if you have one (empty = pull the monolith's state from its backend)", f.stateFile)
 	if err != nil {
 		return "", nil, err
 	}
@@ -174,7 +174,7 @@ func wizardVariables(rootDir string, m *manifest.Manifest, bound *boundary.Resul
 // accepting extra -backend-config values for init.
 func wizardBackend(rootDir string, m *manifest.Manifest, f *migrateFlags) error {
 	if m.Backend == nil {
-		outln("\nBackend: none declared — each root is seeded with a local terraform.tfstate.")
+		outln("\nBackend: none declared — each module gets a local terraform.tfstate.")
 		return nil
 	}
 	outf("\n%s, derived per module:\n", heading(fmt.Sprintf("Backend (%s)", m.Backend.Type)))
@@ -206,7 +206,7 @@ func wizardBackend(rootDir string, m *manifest.Manifest, f *migrateFlags) error 
 		}
 	}
 	if len(f.backendConfig) > 0 {
-		outf("Out-of-band -backend-config from flags: %s\n", strings.Join(f.backendConfig, ", "))
+		outf("Extra -backend-config from flags: %s\n", strings.Join(f.backendConfig, ", "))
 	}
 	for {
 		in, err := promptLine("\nAdditional -backend-config for init (key=value), or Enter to continue: ")

@@ -21,7 +21,7 @@ func refactorVerifyCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "verify",
-		Short: "Gate: do the emitted roots and the map still match the source?",
+		Short: "Gate: do the written module directories and the map still match the source?",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			mode, err := parseOutput(f.output)
@@ -36,7 +36,7 @@ func refactorVerifyCmd() *cobra.Command {
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.quiet, "quiet", "q", false, "verdict only; skip the per-module placement listing")
 	flags.BoolVar(&f.silent, "silent", false, "no output at all; the result is the exit code")
-	flags.BoolVar(&f.validate, "validate", false, "also engine-validate each committed root (init -backend=false + validate; credential-free, needs --engine)")
+	flags.BoolVar(&f.validate, "validate", false, "also run the engine's validate on each module directory (init -backend=false + validate; credential-free, needs --engine)")
 	flags.StringVar(&f.engine, "engine", "", "engine for --validate: terraform or tofu")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	return cmd
@@ -116,7 +116,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	committedHashes, err := manifest.FileHashes(committed.ChecksumDirs(rootDir))
 	if err != nil {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, fmt.Sprintf("roots unreadable: %v", err))
+		rep.Reasons = append(rep.Reasons, fmt.Sprintf("module directories unreadable: %v", err))
 		return reportRefactorVerify(rep, committed, mode, f)
 	}
 	freshHashes, err := manifest.FileHashes(freshDirs)
@@ -132,7 +132,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	}
 	if committed.EmitChecksum != manifest.ChecksumOf(committedHashes) {
 		rep.Differs = true
-		rep.Reasons = append(rep.Reasons, "the roots on disk were edited after the map was written (emit_checksum mismatch)")
+		rep.Reasons = append(rep.Reasons, "the module directories on disk were edited after the map was written (emit_checksum mismatch)")
 	}
 	if !manifest.SemanticEqual(fresh, committed) {
 		rep.Differs = true
@@ -272,7 +272,7 @@ func diffHashes(fresh, committed map[string]string) []string {
 	for k, fv := range fresh {
 		cv, ok := committed[k]
 		if !ok {
-			out = append(out, k+" (missing from committed roots)")
+			out = append(out, k+" (missing on disk)")
 		} else if cv != fv {
 			out = append(out, k)
 		}
@@ -314,7 +314,7 @@ func reportRefactorVerify(rep verifyReport, m *manifest.Manifest, mode outputMod
 				outf("  %s\n", d)
 			}
 		} else {
-			outf("%s: the roots and map %s match the source.\n", success("In sync"), rep.Manifest)
+			outf("%s: the module directories and map %s match the source.\n", success("In sync"), rep.Manifest)
 		}
 	}
 	if rep.Differs {

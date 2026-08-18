@@ -23,7 +23,7 @@ func migrateRunCmd() *cobra.Command {
 	var f migrateFlags
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Execute the migration: seed each module's derived backend with its carved state (guarded, never forced)",
+		Short: "Execute the migration: push each module's state to its new backend (guarded, never forced)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMigrateRun(cmd.Context(), f)
@@ -33,12 +33,12 @@ func migrateRunCmd() *cobra.Command {
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required unless the monolith has no backend)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
-	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "out-of-band backend config value for init, as key=value (repeatable)")
+	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
-	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not materialize demono.root.tfvars/demono.graph.tfvars; thread all values in memory only (for tests)")
+	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-receipt precondition (explicitly run an unproven migration)")
-	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a target whose state does not match the carve (state push -force); the occupant is lost — default refuses")
+	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
 	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "confirm the per-module destinations before pushing")
 	return cmd
@@ -91,7 +91,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			return err
 		}
 		if v == nil {
-			return fmt.Errorf("no prove receipt for this map generation; run `demonolith migrate prove` first (or pass --unproven)")
+			return fmt.Errorf("no prove receipt for this map; run `demonolith migrate prove` first (or pass --unproven)")
 		}
 		if !v.OK {
 			return verdictf("the prove receipt for this generation is negative; fix the map before running")
@@ -119,9 +119,9 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		for _, name := range modules {
 			outf("  %-16s %s\n", name, destinationLabel(m, name))
 		}
-		prompt := "Seed these destinations from the carved state copies (empty targets only, never forced)?"
+		prompt := "Push each module's state to these destinations (empty destinations only, never forced)?"
 		if f.overwrite {
-			prompt = "Seed these destinations from the carved state copies (--overwrite: non-matching occupants will be REPLACED)?"
+			prompt = "Push each module's state to these destinations (--overwrite: non-matching existing state will be REPLACED)?"
 		}
 		ok, err := promptYesNo(prompt, false)
 		if err != nil {
@@ -152,14 +152,14 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	rep := migrateRunReport{Manifest: manifest.FileName}
 	if mode == outputText {
 		if f.overwrite {
-			outln("\n" + heading("Seeding state destinations") + " (--overwrite: non-matching occupants will be replaced):")
+			outln("\n" + heading("Pushing state to destinations") + " (--overwrite: non-matching existing state will be replaced):")
 		} else {
-			outln("\n" + heading("Seeding state destinations") + " (empty targets only, never forced):")
+			outln("\n" + heading("Pushing state to destinations") + " (empty destinations only, never forced):")
 		}
 	}
 	for _, name := range modules {
 		if mode == outputText {
-			outf("  %s: seeding %s ... ", name, destinationLabel(m, name))
+			outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
 		}
 		var outcome manifest.PushOutcome
 		if m.Backend == nil {
@@ -189,7 +189,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			case "skipped":
 				label = warn("skipped (target already holds this module's state)")
 			case "overwritten":
-				label = fail("OVERWRITTEN — replaced a non-matching occupant")
+				label = fail("OVERWRITTEN — replaced existing state that did not match")
 			}
 			outln(label)
 		}
@@ -211,7 +211,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	if len(overwrote) > 0 {
-		fmt.Fprintf(os.Stderr, "WARNING: --overwrite replaced non-matching state at %d target(s): %s. The previous occupants are gone.\n", len(overwrote), strings.Join(overwrote, ", "))
+		fmt.Fprintf(os.Stderr, "WARNING: --overwrite replaced non-matching state at %d destination(s): %s. The previous state there is gone.\n", len(overwrote), strings.Join(overwrote, ", "))
 	}
 
 	// The graph tfvars are a post-migration artifact for detached use, not an
@@ -234,7 +234,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	outln("\n" + heading("Receipt:"))
 	outf("  %s\n", displayPath(rootDir, rep.ReceiptPath))
 	if len(graph.Files) > 0 {
-		outln("\n" + heading("Materialized cross-module input values (demono.graph.tfvars):"))
+		outln("\n" + heading("Cross-module input values written (demono.graph.tfvars):"))
 		mods := make([]string, 0, len(graph.Files))
 		for name := range graph.Files {
 			mods = append(mods, name)
@@ -245,7 +245,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	if len(graph.Unresolved) > 0 {
-		outln("\nCross-module inputs not in the graph tfvars (child-module outputs are not stored in state); a control plane threads these at runtime — pass as -var when planning a root detached:")
+		outln("\nCross-module inputs not in the graph tfvars (child-module outputs are not stored in state); a control plane supplies these at runtime — pass them as -var when planning a module on its own:")
 		for _, u := range graph.Unresolved {
 			outf("  %s\n", u)
 		}
@@ -290,7 +290,7 @@ func seedLocal(m *manifest.Manifest, rootDir, module, carved string, f migrateFl
 			return out, nil
 		}
 		if !f.overwrite {
-			return out, fmt.Errorf("destination %s already holds state that does not match this carve; refusing to overwrite. If it is left over from an earlier migration attempt, inspect it and remove it before re-running — or re-run with --overwrite to replace it (the occupant is lost)", dest)
+			return out, fmt.Errorf("destination %s already holds state that does not match this migration; refusing to overwrite. If it is left over from an earlier migration attempt, inspect it and remove it before re-running — or re-run with --overwrite to replace it (the existing state is lost)", dest)
 		}
 		overwriting = true
 	}
@@ -359,7 +359,7 @@ func seedBackend(ctx context.Context, m *manifest.Manifest, rootDir, module, car
 			return out, nil
 		}
 		if !f.overwrite {
-			return out, fmt.Errorf("target %s already holds state that does not match this carve; refusing to push (not forced by default). If it is left over from an earlier migration attempt, inspect it (`state pull` in %s) and empty that remote state before re-running — or re-run with --overwrite to force-push over it (the occupant is lost)", out.Location, displayPath(rootDir, dir))
+			return out, fmt.Errorf("target %s already holds state that does not match this migration; refusing to push (not forced by default). If it is left over from an earlier migration attempt, inspect it (`state pull` in %s) and empty that remote state before re-running — or re-run with --overwrite to force-push over it (the existing state is lost)", out.Location, displayPath(rootDir, dir))
 		}
 		overwriting = true
 	}

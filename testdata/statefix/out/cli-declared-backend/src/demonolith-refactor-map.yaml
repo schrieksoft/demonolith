@@ -1,5 +1,5 @@
 version: 1
-created: "2026-08-18T16:20:40Z"
+created: "2026-08-18T17:03:51Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-declared-backend/src
@@ -46,4 +46,4 @@ backend:
         a: monolith-a.tfstate
         b: monolith-b.tfstate
         legacy: monolith-legacy.tfstate
-emit_checksum: sha256:abd3dad9c5940c4c8c4c79405b21f475ca97143bbd1c03ce4c7ebaef0e249e04
+emit_checksum: sha256:32c7a77ef650a0232747738cb754859621d1d27354ddc429efed2e0fecd5e828

@@ -325,13 +325,13 @@ func Load(path string) (*Manifest, error) {
 	}
 	var m Manifest
 	if err := yaml.Unmarshal(b, &m); err != nil {
-		return nil, fmt.Errorf("parse manifest %s: %w", path, err)
+		return nil, fmt.Errorf("parse map %s: %w", path, err)
 	}
 	if m.Version > SchemaVersion {
-		return nil, fmt.Errorf("manifest %s has schema version %d; this build supports up to %d", path, m.Version, SchemaVersion)
+		return nil, fmt.Errorf("map %s has schema version %d; this build supports up to %d", path, m.Version, SchemaVersion)
 	}
 	if m.Version < 1 {
-		return nil, fmt.Errorf("manifest %s has no schema version", path)
+		return nil, fmt.Errorf("map %s has no schema version", path)
 	}
 	return &m, nil
 }

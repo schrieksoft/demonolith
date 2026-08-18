@@ -257,7 +257,7 @@ func WriteRoot(moduleDirs map[string]string, vals map[string]map[string]string) 
 // Modules with no values get no file.
 func WriteGraph(moduleDirs map[string]string, vals map[string]map[string]string) (*Result, error) {
 	return writeTfvars(moduleDirs, vals, GraphTfvarsName,
-		"# Cross-module input values, resolved from the applied monolith state or\n# threaded from the proof's planned producer outputs.\n")
+		"# Cross-module input values, resolved from the applied monolith state or\n# filled in from the producer values the proof computed.\n")
 }
 
 func writeTfvars(moduleDirs map[string]string, vals map[string]map[string]string, filename, header string) (*Result, error) {
