@@ -40,7 +40,7 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **Shows up as:** `migrate run` refusing with "target … already holds state that does not match this migration" on a location an earlier, different migration attempt wrote to.
 
-**Handle it:** inspect the existing state (`state pull` in the module dir) and decide which side is right. If it is a stale artifact of an abandoned attempt, empty or delete that remote state and re-run — or re-run with `--overwrite` to force-push over it (the existing state is lost; the run warns loudly). The per-module state files are reproducible and the monolith's own state is never touched.
+**Handle it:** inspect the existing state (`state pull` in the module dir) and decide which side is right. If it is a stale artifact of an abandoned attempt, empty or delete that remote state and re-run — or re-run with `--force` to force-push over it (the existing state is lost; the run warns loudly). The per-module state files are reproducible and the monolith's own state is never touched.
 
 ## Drift is out of scope — except through data sources
 

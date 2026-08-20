@@ -32,7 +32,7 @@ type migrateFlags struct {
 	vars          []string
 	backendConfig []string
 	unproven      bool
-	overwrite     bool
+	force         bool
 	yes           bool
 }
 
@@ -55,7 +55,7 @@ func migrateCmd() *cobra.Command {
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
-	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
+	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials — then the pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
 

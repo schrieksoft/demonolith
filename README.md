@@ -120,7 +120,7 @@ matched by lineage or, after a fresh split, by identical content — and pushes
 the rest. The one thing that stops a retry is a destination holding state that
 genuinely does not match this migration (typically an earlier migration of a
 since-changed monolith): inspect it with `state pull` in the module dir and
-empty that remote state before re-running — or pass `--overwrite` to
+empty that remote state before re-running — or pass `--force` to
 force-push over it, which loses the existing state and is warned about
 loudly. Nothing else is ever forced.
 
@@ -184,9 +184,9 @@ modules instead of copying), `--no-bootstrap`, `--no-backend` (refactor map);
 (refactor validate and every migrate step);
 `--state-file` (migrate map); `--no-tfvars`, `--var-file`,
 `--var` (migrate prove);
-`--backend-config`, `--unproven` (migrate run); `--overwrite` (refactor
-run: delete and rewrite existing target dirs; migrate run: replace
-non-matching destination state); `--no-color`
+`--backend-config`, `--unproven`, `--force` (migrate run: replace
+non-matching destination state); `--overwrite` (refactor run: delete and
+rewrite existing target dirs); `--no-color`
 (any command); `--interactive`/`-i` where applicable.
 
 ## What each stage does

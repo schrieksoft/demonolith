@@ -379,9 +379,9 @@ func TestMigrateRun_RequiresProof(t *testing.T) {
 		t.Errorf("partial receipt should record the 1 completed push and not be complete, got complete=%v pushes=%d", partial.Complete, len(partial.Pushes))
 	}
 
-	// --overwrite replaces the mismatched occupant; matching targets still skip.
-	if err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath, "--unproven", "--overwrite"); err != nil {
-		t.Errorf("retry with --overwrite should proceed: %v", err)
+	// --force replaces the mismatched occupant; matching targets still skip.
+	if err := run(t, "migrate", "run", "--root-dir", srcDir, "--exec-path", execPath, "--unproven", "--force"); err != nil {
+		t.Errorf("retry with --force should proceed: %v", err)
 	}
 	overwritten, err := manifest.LoadReceipt(filepath.Join(srcDir, manifest.RunReceiptFile))
 	if err != nil {
@@ -389,10 +389,10 @@ func TestMigrateRun_RequiresProof(t *testing.T) {
 	}
 	for _, p := range overwritten.Pushes {
 		if p.Module == "b" && p.Outcome != "overwritten" {
-			t.Errorf("module b with --overwrite: outcome %q, want overwritten", p.Outcome)
+			t.Errorf("module b with --force: outcome %q, want overwritten", p.Outcome)
 		}
 		if p.Module == "a" && p.Outcome != "skipped" {
-			t.Errorf("module a with --overwrite: outcome %q, want skipped", p.Outcome)
+			t.Errorf("module a with --force: outcome %q, want skipped", p.Outcome)
 		}
 	}
 

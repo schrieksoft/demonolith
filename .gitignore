@@ -45,6 +45,10 @@ crash.*.log
 # is intentionally NOT ignored.
 *.tfstate.*.backup
 
+# Test scratch output. testsupport.OutDir wipes and regenerates these per run;
+# fixtures (inputs and seed statefiles) live in testdata/*/in and stay tracked.
+testdata/*/out/
+
 
 ##############################################################################
 # IDE / editor state

@@ -555,7 +555,7 @@ default** (`--exec-path` overrides resolution).
   existing state matching this migration — same lineage, or identical content from a
   fresh split — is an idempotent skip, which is what makes a crashed run
   retryable by just re-running), `state push` the module's state file — not forced by
-  default. Non-matching existing state refuses unless `--overwrite` explicitly
+  default. Non-matching existing state refuses unless `--force` explicitly
   sacrifices it (`state push -force`, with a loud warning naming every
   replaced target). A monolith without a backend gets local seeding: each
   root receives its `terraform.tfstate` in place. An action-"run" receipt records every
