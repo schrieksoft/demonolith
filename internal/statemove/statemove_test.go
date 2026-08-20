@@ -69,8 +69,8 @@ func TestCarve_SplitsStateByModule(t *testing.T) {
 	}
 
 	want := map[string]map[string]bool{
-		"a":        {"random_integer.seed": true, "random_pet.name_a": true},
-		"b":        {"random_pet.name_b": true},
+		"a":      {"random_integer.seed": true, "random_pet.name_a": true},
+		"b":      {"random_pet.name_b": true},
 		"legacy": {"random_pet.leftover": true},
 	}
 	for module, wantSet := range want {

@@ -23,7 +23,7 @@ const (
 // Receipt actions.
 const (
 	ActionMap = "map"
-	ActionRun  = "run"
+	ActionRun = "run"
 )
 
 // Verdict modes.
@@ -153,9 +153,9 @@ type Verdict struct {
 	ManifestChecksum string          `yaml:"map_checksum"`
 	Mode             string          `yaml:"mode"`
 	Refresh          bool            `yaml:"refresh"`
-	OK       bool            `yaml:"ok"`
-	Order    []string        `yaml:"order"`
-	Modules  []ModuleVerdict `yaml:"modules"`
+	OK               bool            `yaml:"ok"`
+	Order            []string        `yaml:"order"`
+	Modules          []ModuleVerdict `yaml:"modules"`
 	// ExternalInputs lists the names of externally supplied inputs (values are
 	// deliberately not recorded).
 	ExternalInputs []string `yaml:"external_inputs,omitempty"`

@@ -32,10 +32,6 @@ import (
 // Options configures a proof run.
 type Options struct {
 	ExecPath string
-	// Refresh controls whether plan refreshes state against real providers.
-	// false (default) is fast, credential-free, state-only — right for local
-	// iteration. true gives an authoritative PR-proof run.
-	Refresh bool
 	// ExternalInputs supplies values for external/root inputs (former monolith
 	// var.<name>), keyed by input name.
 	ExternalInputs map[string]string
@@ -51,7 +47,8 @@ type Options struct {
 	OnPlanDone  func(module, verdict string)
 	// UseBackend plans each root against its configured real backend instead of
 	// a staged local state copy: a full init (backend included) and no state
-	// staging. This is migrate verify's mode — judgment against reality.
+	// staging. This is migrate verify's mode — judgment over the pushed state
+	// in its real destination.
 	UseBackend bool
 	// BackendConfig passes -backend-config values through to init when
 	// UseBackend is set (out-of-band backend settings never stored in HCL).
@@ -276,9 +273,14 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 	}
 
 	planPath := filepath.Join(dir, "demono.tfplan")
+	// Never refresh: managed-resource drift is out of scope. The proofs judge
+	// the migration's fidelity to the pulled state; reality is the
+	// prerequisite monolith plan's job, and the control plane's after
+	// adoption. Data sources are the exception — plan reads them live
+	// regardless of refresh, so their answers must hold still too.
 	planOpts := []tfexec.PlanOption{
 		tfexec.Out(planPath),
-		tfexec.Refresh(opts.Refresh),
+		tfexec.Refresh(false),
 	}
 	// The materialized tfvars files are loaded explicitly (they are not
 	// .auto.tfvars), before the threaded -var values so threading wins.

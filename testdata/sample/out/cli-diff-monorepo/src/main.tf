@@ -2,19 +2,14 @@
 # The monolith.
 #
 # One root, one state, everything in it: networking, a database, a Kubernetes
-# cluster, and the app on top — plus the shared plumbing (a config-file data
-# source, a deploy key, locals) that all of them read. Every resource is a
+# cluster, and the app on top — plus the shared plumbing (environment
+# settings arriving as one JSON string variable, a deploy key, locals) that
+# all of them read. Every resource is a
 # mock (random/tls providers), so this applies anywhere with no cloud
 # credentials; the reference structure is the point, not the infrastructure.
 # ===========================================================================
 
 # --- shared plumbing -------------------------------------------------------
-
-# Environment settings, read from a checked-in file and decoded in locals.tf.
-# Consumed by the database, cluster, and app sections below.
-data "local_file" "environment" {
-  filename = "${path.module}/config/environment.json"
-}
 
 # The deployment signing key; its public half is read back through a data
 # source and referenced by the app section. The key lives with the app: its

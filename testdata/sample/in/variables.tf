@@ -33,3 +33,8 @@ variable "database_port" {
   type        = number
   default     = 5432
 }
+
+variable "environment_json" {
+  description = "Environment settings as a JSON string (the content of config/environment.json)"
+  type        = string
+}

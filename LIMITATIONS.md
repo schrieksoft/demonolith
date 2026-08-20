@@ -8,7 +8,7 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **Shows up as:** `migrate prove` (or any plan of a module directory) failing with file-not-found. Because data sources follow their consumers automatically, one file-reading data source can land in several module directories — every one of them needs the file.
 
-**Handle it:** the durable fix is restructuring the monolith before refactoring to pass file *content* through a variable (`var.environment_json` + `jsondecode`) so nothing path-relative crosses the split. Copying the referenced files into the module directories also works, but interacts with the guards: files added after `refactor run` invalidate the emit checksum, so the migrate family refuses. The sequence that works is copy the files into the module directories, then `refactor run` **again** so the checksum includes them — migrate then passes, but `refactor diff` still refuses (a fresh run does not produce the copies), so a team flow gated on diff needs the restructure, not the copy.
+**Handle it:** restructure the monolith before refactoring to pass file *content* through a variable (`var.environment_json` + `jsondecode`) so nothing path-relative crosses the split. There is no supported way to add the files by hand: `refactor run` owns the target directories entirely — they must not exist, or `--overwrite` deletes them whole — so hand-added files never survive a run, and the migrate family refuses directories that do not match the map's checksum. Anything manual is your own workflow, outside demonolith's guarantees.
 
 ## Sensitive values crossing a boundary
 
@@ -42,13 +42,13 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **Handle it:** inspect the existing state (`state pull` in the module dir) and decide which side is right. If it is a stale artifact of an abandoned attempt, empty or delete that remote state and re-run — or re-run with `--overwrite` to force-push over it (the existing state is lost; the run warns loudly). The per-module state files are reproducible and the monolith's own state is never touched.
 
-## The prove receipt ages between prove and run
+## Drift is out of scope — except through data sources
 
-**What:** `migrate prove` judges the split against the state as it was when `migrate map` pulled it; `migrate run` pushes at a later moment. Real infrastructure drifting in between is invisible to the proof — the same plan/apply gap every plan-then-execute system has.
+**What:** every proof judges the migration against the state as `migrate map` pulled it — no demonolith step ever refreshes, `migrate verify` included. Managed resources changing out-of-band are invisible to the whole pipeline by design: demonolith proves the split and the state move are faithful, and drift has nothing to do with either. Data sources are the one exception — a plan reads them live regardless of the refresh setting, so a data source whose answer changed since the monolith's clean plan can still redden a proof (or quietly alter one).
 
-**Shows up as:** `migrate verify` (which plans against the real backends, refresh on) reporting diffs that prove did not.
+**Shows up as:** managed-resource drift, nowhere — it surfaces at the first refreshed plan after adoption, the control plane's or your own. Data-source drift, as a prove or verify failure whose diffs trace to values a data source feeds — volatile lookups (`most_recent` AMIs, "latest" anything) are the usual culprits — easily misread as a migration bug. Both steps print each module's live reads up front, so the suspects are named before any plan runs.
 
-**Handle it:** keep the plan→prove→run window short (the bare `demonolith migrate` pipeline makes it seconds), run the migration inside a change freeze for the monolith, and treat `migrate verify` as the final authority.
+**Handle it:** rule drift out at the door — the prerequisite is a monolith that plans clean, refresh included, immediately before you start — and hold a change freeze for the map→run window that covers **whatever the data sources read**, not just the managed resources (the bare `demonolith migrate` pipeline makes the window seconds). After adoption, drift detection is back where it always lives: the next plan.
 
 ## Whole-block placement only
 

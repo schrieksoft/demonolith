@@ -143,9 +143,9 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 
 	rep := migrateRunReport{Manifest: manifest.FileName}
 	if f.overwrite {
-		outln("\n" + heading("Pushing state to destinations") + " (--overwrite: non-matching existing state will be replaced):")
+		outln(heading("Pushing state to destinations") + " (--overwrite: non-matching existing state will be replaced):")
 	} else {
-		outln("\n" + heading("Pushing state to destinations") + " (empty destinations only, never forced):")
+		outln(heading("Pushing state to destinations") + " (empty destinations only, never forced):")
 	}
 	for _, name := range modules {
 		outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
@@ -194,7 +194,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	if len(overwrote) > 0 {
-		fmt.Fprintf(os.Stderr, "WARNING: --overwrite replaced non-matching state at %d destination(s): %s. The previous state there is gone.\n", len(overwrote), strings.Join(overwrote, ", "))
+		fmt.Fprintf(os.Stderr, "\n%s\n", warn(fmt.Sprintf("WARNING: --overwrite replaced non-matching state at %d destination(s): %s. The previous state there is gone.", len(overwrote), strings.Join(overwrote, ", "))))
 	}
 
 	// The graph tfvars are a post-migration artifact for detached use, not an
@@ -231,6 +231,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	outln("\nYour original monolith state file remains untouched!")
+	outln()
 	return nil
 }
 

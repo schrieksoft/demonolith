@@ -77,7 +77,7 @@ pipeline, connected by the map:
    migrate run ────► seeded backends + receipt    guarded push: empty targets
         │                                         only, never forced
    migrate verify ─► final receipt                the same proof against the
-                                                  real backends — reality
+                                                  state as pushed
 ```
 
 Underneath, the code side is one shared analysis pipeline, `pipeline.Analyze` —
@@ -426,8 +426,10 @@ plans a spurious diff. So a naive per-module plan can't prove inertness.
    output values* of the producing module. (A missing upstream value at this
    point is a topo/threading bug and is surfaced as an error, not defaulted.)
 3. **Plans** the module directory against a *copy* of its split state, with those
-   inputs supplied as `-var`, and refresh **off** by default (fast,
-   credential-free, state-only; `--refresh` gives the authoritative run).
+   inputs supplied as `-var`, and refresh **always off**: the proofs judge the
+   migration's fidelity to the pulled state. Drift is out of scope by design —
+   ruled out by the prerequisite clean monolith plan, and watched by whatever
+   plans the modules after adoption.
 4. **Asserts zero-diff**: counts create/destroy/update from the plan JSON;
    `ZeroDiff` requires **zero changes of any kind** — an in-place update fails
    too, because a wrong input value that does not force a replacement still
@@ -471,7 +473,7 @@ heuristic; ambient credentials stay uncaptured by design) — closing by
 printing the equivalent non-interactive command.
 
 ```bash
-demonolith refactor              # map → run → diff
+demonolith refactor              # map → run → validate → diff
 demonolith refactor map         # analyze → write the map (offline)
 demonolith refactor run          # execute the map: emit everything (offline)
 demonolith refactor validate     # the engine accepts the written directories (needs --engine)
@@ -493,11 +495,13 @@ default** (`--exec-path` overrides resolution).
   choice as flags recorded into the map: `--out` (resolved against the
   root, must be inside it; default `modules`), `--remainder-module`, `--monorepo`
   (relink in-repo child modules instead of copying, §8), `--no-bootstrap`,
-  `--no-backend`. Run's pre-flights are enforced here so a written plan is a
-  runnable plan: target-dir collisions (a dir that exists and is not
-  demonolith's own recorded output refuses the plan with nothing written),
-  backend-type support, and the reserved `snapcd` module name.
-- **`refactor run`** executes the map verbatim — emit module directories,
+  `--no-backend`. Backend-type support and the reserved `snapcd` module name
+  are checked here; whether the target dirs may exist is run's own gate
+  (they must be gone, or `--overwrite` deletes them whole).
+- **`refactor run`** owns its target directories outright: they must not
+  exist, or `--overwrite` deletes them whole (a loud warning names them)
+  before rewriting — hand-added content never survives a run. It executes
+  the map verbatim — emit module directories,
   derived backends inside each root.tf, a `.gitignore` per root covering the local
   artifacts later stages leave behind (`.terraform/`, `*.tfstate`, `demono.env`,
   `demono.root.tfvars`, `demono.graph.tfvars`, …), and the bootstrap — then finalizes the
@@ -507,19 +511,22 @@ default** (`--exec-path` overrides resolution).
   included (`init -backend=false` + `validate`: providers installed,
   references resolved, types checked against provider schemas). Needs
   `--engine` but no credentials — only the provider registry is contacted.
-  It is the developer's pre-commit check; the bare pipeline skips it so
-  `refactor` itself stays engine-free.
+  It is the developer's pre-commit check; the bare pipeline runs it when
+  `--engine` is given and otherwise skips it with a hint, so `refactor`
+  stays engine-free by default.
 - **`refactor diff`** re-runs analysis+emit in memory and diffs the result
   against the committed output — the provenance gate, with `diff(1)`'s exit
   semantics: 0 when identical. Default output shows the committed plan being
   confirmed; `--quiet` is the outcome line, `--silent` the exit code only.
   It compares files and never asks the engine — that is `refactor
-  validate`'s job, and the in-sync verdict says so. Undo on the code side is
+  validate`'s job. Undo on the code side is
   git — the module directories and map are ordinary committed files.
 - **`migrate map`** is the local split (§9 mechanics): read-only pull (or
   `--state-file`), backup, `state mv` into per-module files under
-  `<out>/.demono/`, an action-"plan" receipt. Idempotent per generation;
-  resumable after partial failure via state-address inspection.
+  `<out>/.demono/`, an action-"plan" receipt. The pull and the split happen
+  in full on every run — a leftover carve is never trusted, only compared:
+  modules whose fresh carve matches the previous one are reported as already
+  correct.
 - **`migrate prove`** proves *plan's output*: it requires the generation's
   complete plan receipt with intact artifacts, threads producer outputs into
   consumer inputs (the control plane's runtime role), plans every root against
@@ -557,9 +564,11 @@ default** (`--exec-path` overrides resolution).
   exists. The monolith's own state is never written.
 - **`migrate verify`** is the post-run judgment: the same threaded proof
   executed against each root's **real backend** — a full init that must find
-  the seeded state, then a refreshed plan that must show zero changes
+  the seeded state, then a no-refresh plan that must show zero changes
   (a missing state would plan everything as a create) — writing a mode-"final"
-  receipt. Materializes `demono.env` and `demono.root.tfvars` like the
+  receipt. It judges the migration, never the world of managed resources:
+  a red verify means the migration or its inputs are wrong — or a data
+  source's answer moved, the one live read a plan always makes. Materializes `demono.env` and `demono.root.tfvars` like the
   earlier steps, so it works standalone. Requires the run receipt.
 
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational

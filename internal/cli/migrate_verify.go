@@ -34,6 +34,8 @@ func migrateVerifyCmd() *cobra.Command {
 
 // runMigrateVerify is the post-run judgment: the threaded proof executed
 // against each root's real backend — no staged state copies, a full init.
+// It judges the migration's fidelity, never the world: plans do not refresh,
+// so drift is invisible here by design.
 // Requires the migration to have been run (a complete run receipt).
 func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
@@ -79,13 +81,13 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	}
 	opts := proof.Options{
 		ExecPath:       execPath,
-		Refresh:        true,
 		ExternalInputs: extVals,
 		UseBackend:     true,
 		BackendConfig:  f.backendConfig,
 		RootInputs:     rootInputs,
 	}
-	outln("\n" + heading("Verifying modules in dependency order") + " (init + refresh plan against the real backends):")
+	printLiveReads(a.Placement)
+	outln("\n" + heading("Verifying modules in dependency order") + " (init + plan against the real backends):")
 	opts.OnPlanStart = func(module string) { outf("  %s: verifying ... ", module) }
 	opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
 	pres, err := proof.Run(ctx, m.ModuleDirs(rootDir), nil, a.Boundary, opts)
@@ -111,7 +113,7 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 		Manifest:         manifest.FileName,
 		ManifestChecksum: m.EmitChecksum,
 		Mode:             manifest.ModeFinal,
-		Refresh:          true,
+		Refresh:          false,
 		OK:               pres.OK,
 		Order:            pres.Order,
 		Modules:          rep.Modules,

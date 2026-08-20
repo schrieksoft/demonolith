@@ -1,3 +1,8 @@
+variable "environment_json" {
+  description = "Environment settings as a JSON string (the content of config/environment.json)"
+  type        = string
+}
+
 variable "name_prefix" {
   description = "Prefix for every named resource in the deployment"
   type        = string
@@ -14,13 +19,7 @@ locals {
   cluster_name = "${local.name}-cluster"
   environment  = local.settings.environment
   name         = "${var.name_prefix}-${local.environment}"
-  settings     = jsondecode(data.local_file.environment.content)
-}
-
-# Environment settings, read from a checked-in file and decoded in locals.tf.
-# Consumed by the database, cluster, and app sections below.
-data "local_file" "environment" {
-  filename = "${path.module}/config/environment.json"
+  settings     = jsondecode(var.environment_json)
 }
 
 # Also external-style, also a local source.

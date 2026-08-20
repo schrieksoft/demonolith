@@ -239,7 +239,7 @@ func reportRefactorDiff(rep diffReport, m *manifest.Manifest, f refactorFlags) e
 			outf("  %s\n", d)
 		}
 	} else {
-		outf("%s: the module directories and map %s match the source. %s\n", success("In sync"), rep.Manifest, dim("(files compared; whether the engine accepts them is `demonolith refactor validate`)"))
+		outf("%s: splitting the current source again would reproduce %s and the module directories exactly.\n\n", success("In sync"), rep.Manifest)
 	}
 	if rep.Differs {
 		return verdictf("the output on disk does not match what the source produces; re-run `demonolith refactor` to regenerate it (and commit the result if the roots are tracked)")

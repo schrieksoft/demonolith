@@ -1,5 +1,5 @@
 version: 1
-created: "2026-08-20T08:46:20Z"
+created: "2026-08-20T11:28:19Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-prove-guard/src

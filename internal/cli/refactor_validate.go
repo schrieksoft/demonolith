@@ -108,7 +108,10 @@ func reportRefactorValidate(rep validateReport, f refactorFlags) error {
 		return nil
 	}
 	if rep.Valid {
-		outf("%s: the engine accepts all %d module directories.\n", success("Valid"), len(rep.Modules))
+		if !f.quiet {
+			outln()
+		}
+		outf("%s: the engine accepts all %d module directories.\n\n", success("Valid"), len(rep.Modules))
 	} else if f.quiet {
 		for _, d := range rep.Diagnostics {
 			outf("  %s\n", d)

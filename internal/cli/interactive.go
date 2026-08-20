@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -223,7 +224,7 @@ func runRefactorInteractivePipeline(ctx context.Context, f refactorFlags) error 
 		return err
 	}
 	rootDir := resolveRoot(resolved.rootDir)
-	runOK, err := promptYesNo("\nRun the refactor now?", true)
+	runOK, err := promptYesNo("Run the refactor now?", true)
 	if err != nil {
 		return err
 	}
@@ -231,11 +232,29 @@ func runRefactorInteractivePipeline(ctx context.Context, f refactorFlags) error 
 		outln("Map written; run later with `demonolith refactor run`.")
 		return nil
 	}
-	outf("\n%s\n\n", banner("── refactor run ──"))
-	if err := runRefactorRun(rootDir); err != nil {
+	if !resolved.overwrite {
+		existing, err := existingRunTargets(rootDir)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			ok, err := promptYesNo(fmt.Sprintf("\nTarget module directories already exist (%s). Delete them entirely and rewrite?", strings.Join(existing, ", ")), false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				outln("Left in place; delete them yourself or re-run with --overwrite.")
+				return nil
+			}
+			resolved.overwrite = true
+		}
+	}
+	outln()
+	outf("%s\n\n", banner("── refactor run ──"))
+	if err := runRefactorRun(rootDir, resolved.overwrite); err != nil {
 		return err
 	}
-	outf("\n%s\n\n", banner("── refactor validate ──"))
+	outf("%s\n\n", banner("── refactor validate ──"))
 	if resolved.engine == "" && resolved.execPath == "" {
 		ok, err := promptYesNo("Have the engine check the new module directories now (init -backend=false + validate; credential-free)?", true)
 		if err != nil {
@@ -252,7 +271,7 @@ func runRefactorInteractivePipeline(ctx context.Context, f refactorFlags) error 
 	if err := pipelineValidate(ctx, rootDir, resolved); err != nil {
 		return err
 	}
-	outf("\n%s\n\n", banner("── refactor diff ──"))
+	outf("%s\n\n", banner("── refactor diff ──"))
 	vf := resolved
 	vf.quiet = true
 	return runRefactorDiff(rootDir, vf)
