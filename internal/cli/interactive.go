@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func runRefactorMapInteractive(f refactorFlags) error {
 }
 
 // refactorMapInteractive returns the resolved flags so the pipeline can
-// continue with run/verify after an interactive plan.
+// continue with run/diff after an interactive plan.
 func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 	if !stdinIsTTY() {
 		return f, fmt.Errorf("--interactive requires a terminal")
@@ -202,7 +203,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 			outln("Aborted; source decorators kept, nothing else written.")
 			return f, errInteractiveAborted
 		}
-		if _, err := runRefactorMap(f, outputText); err != nil {
+		if _, err := runRefactorMap(f); err != nil {
 			return f, err
 		}
 		return f, nil
@@ -213,8 +214,8 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 var errInteractiveAborted = fmt.Errorf("aborted")
 
 // runRefactorInteractivePipeline is the bare `refactor -i`: interactive plan,
-// then confirmed run and a quiet verify.
-func runRefactorInteractivePipeline(f refactorFlags) error {
+// then confirmed run, an offered validate, and a quiet diff.
+func runRefactorInteractivePipeline(ctx context.Context, f refactorFlags) error {
 	resolved, err := refactorMapInteractive(f)
 	if err != nil {
 		if err == errInteractiveAborted {
@@ -223,7 +224,7 @@ func runRefactorInteractivePipeline(f refactorFlags) error {
 		return err
 	}
 	rootDir := resolveRoot(resolved.rootDir)
-	runOK, err := promptYesNo("\nRun the refactor now?", true)
+	runOK, err := promptYesNo("Run the refactor now?", true)
 	if err != nil {
 		return err
 	}
@@ -231,14 +232,49 @@ func runRefactorInteractivePipeline(f refactorFlags) error {
 		outln("Map written; run later with `demonolith refactor run`.")
 		return nil
 	}
-	outf("\n%s\n\n", banner("── refactor run ──"))
-	if err := runRefactorRun(rootDir, outputText); err != nil {
+	if !resolved.overwrite {
+		existing, err := existingRunTargets(rootDir)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			ok, err := promptYesNo(fmt.Sprintf("\nTarget module directories already exist (%s). Delete them entirely and rewrite?", strings.Join(existing, ", ")), false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				outln("Left in place; delete them yourself or re-run with --overwrite.")
+				return nil
+			}
+			resolved.overwrite = true
+		}
+	}
+	outln()
+	outf("%s\n\n", banner("── refactor run ──"))
+	if err := runRefactorRun(rootDir, resolved.overwrite); err != nil {
 		return err
 	}
-	outf("\n%s\n\n", banner("── refactor verify ──"))
+	outf("%s\n\n", banner("── refactor validate ──"))
+	if resolved.engine == "" && resolved.execPath == "" {
+		ok, err := promptYesNo("Have the engine check the new module directories now (init -backend=false + validate; credential-free)?", true)
+		if err != nil {
+			return err
+		}
+		if ok {
+			engine, err := promptEngine()
+			if err != nil {
+				return err
+			}
+			resolved.engine = engine
+		}
+	}
+	if err := pipelineValidate(ctx, rootDir, resolved); err != nil {
+		return err
+	}
+	outf("%s\n\n", banner("── refactor diff ──"))
 	vf := resolved
 	vf.quiet = true
-	return runRefactorVerify(rootDir, outputText, vf)
+	return runRefactorDiff(rootDir, vf)
 }
 
 func splitTargets(s string) []string {

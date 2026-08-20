@@ -108,7 +108,6 @@ func TestProof_ZeroDiffWithThreading(t *testing.T) {
 
 	res, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, proof.Options{
 		ExecPath: execPath,
-		Refresh:  false,
 	})
 	if err != nil {
 		t.Fatalf("proof.Run: %v", err)

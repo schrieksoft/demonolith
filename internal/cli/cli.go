@@ -84,22 +84,6 @@ func Root() *cobra.Command {
 	return root
 }
 
-// outputMode is the report format shared by all commands.
-type outputMode string
-
-const (
-	outputText outputMode = "text"
-	outputJSON outputMode = "json"
-)
-
-func parseOutput(s string) (outputMode, error) {
-	switch outputMode(s) {
-	case outputText, outputJSON:
-		return outputMode(s), nil
-	}
-	return "", fmt.Errorf("invalid --output %q (want text or json)", s)
-}
-
 // engineExecPath resolves the binary for --engine/--exec-path. --engine has no
 // default: the terraform-vs-tofu choice must be explicit.
 func engineExecPath(engine, execPath string) (string, error) {

@@ -5,10 +5,11 @@ per-module projects — code, state, and control-plane wiring — in two command
 families split at the code/state line, connected by a map:
 
 ```
-demonolith refactor            # map → run → verify        (the code split)
+demonolith refactor            # map → run → validate → diff   (the code split)
   refactor map                 #   analyze → write the map (the review artifact)
-  refactor run                 #   execute the map: write the new module directories
-  refactor verify              #   gate: committed output ≡ committed source
+  refactor run                 #   execute the map: write the new module directories (they must not exist yet)
+  refactor validate            #   ask the engine whether it accepts what was written
+  refactor diff                #   gate: committed output ≡ committed source
 
 demonolith migrate             # map → prove → run → verify (the state migration)
   migrate map                  #   pull read-only, back up, split into local state copies
@@ -20,9 +21,13 @@ demonolith migrate             # map → prove → run → verify (the state mig
 The bare family commands run their steps in order, pausing for approval
 before the run step — refactor after showing the map, migrate after the
 proof — with `-y`/`--yes` approving automatically; each subcommand stands
-alone. `refactor map/run/verify` are pure and offline. The migrate family
-needs an engine (`--engine terraform` or `--engine tofu` — no default, the
-choice is explicit). Exit codes are uniform: `0` success, `1` operational
+alone. `refactor map/run/diff` are pure and offline. `refactor validate`
+and the migrate family need an engine (`--engine terraform` or `--engine
+tofu` — no default, the choice is explicit); validate stays credential-free,
+contacting only the provider registry. The bare `refactor` runs the validate
+step when given `--engine`, and otherwise skips it with a note saying how to
+run it before committing.
+Exit codes are uniform: `0` success, `1` operational
 error, `2` negative verdict (a difference, a failed proof, a stale map).
 
 ## Decorators
@@ -72,7 +77,12 @@ later step to this exact generation. The migrate steps write theirs —
 carrying its `created` datetime and the generation's `map_checksum`, so an
 external system can tell what ran, when, and for which map; history lives in
 version control. Undo on the code side is git: everything demonolith writes
-is ordinary committed files.
+is ordinary committed files. The target module directories belong to
+demonolith outright: `refactor run` refuses when they already contain files,
+and `--overwrite` deletes them entirely — engine artifacts and any local
+state included, with a loud warning — before rewriting. Hand-added files
+never survive a run; anything manual is your own workflow, outside
+demonolith's checks.
 
 **Backends** are derived, not hand-written: the monolith's `backend` block is
 carried into every new module directory with its state location postfixed per module
@@ -102,14 +112,15 @@ with no backend stays local: each module directory receives its
 **Crashes and retries.** Every migrate step is safe to just re-run. Prove,
 run, and verify print one line per module as they work, and a failed run
 leaves a partial (non-complete) run receipt recording how far it got, so the
-crash point is never a mystery. On the retry, `migrate map` skips while its
-split state copies still exist and redoes the split if they were lost, and
+crash point is never a mystery. On the retry, `migrate map` pulls the
+monolith's state fresh and redoes the whole split — a module copy that comes
+out matching the previous carve is noted as already correct — and
 `migrate run` skips every destination that already holds this module's state —
 matched by lineage or, after a fresh split, by identical content — and pushes
 the rest. The one thing that stops a retry is a destination holding state that
 genuinely does not match this migration (typically an earlier migration of a
 since-changed monolith): inspect it with `state pull` in the module dir and
-empty that remote state before re-running — or pass `--overwrite` to
+empty that remote state before re-running — or pass `--force` to
 force-push over it, which loses the existing state and is warned about
 loudly. Nothing else is ever forced.
 
@@ -144,8 +155,14 @@ receipt no older than the map receipt (`--unproven` is the explicit
 override).
 
 **Prerequisite — one shell session.** The monolith root must `init` and
-`plan` cleanly before you start, and every demonolith command should run in
-that same shell session. Provider and init-time environment (`AWS_PROFILE`,
+`plan` cleanly before you start — a normal, refreshed plan with zero
+changes. That clean plan is also where drift is ruled out: no demonolith
+step ever refreshes, so the proofs judge the migration's fidelity to the
+pulled state, never the world — drift stays the job of that plan before,
+and of whatever plans the modules after adoption. The one live channel left
+is data sources — every plan reads them fresh, refresh or not — so the
+change freeze must also hold whatever they read. Every demonolith command
+should run in that same shell session. Provider and init-time environment (`AWS_PROFILE`,
 `ARM_*`, plugin mirrors, …) is not captured: demonolith writes only
 backend credentials (`demono.env`) and variable values (`demono.root.tfvars`,
 `demono.graph.tfvars`);
@@ -163,13 +180,14 @@ a flag. Flags passed alongside `-i` pre-fill the answers.
 
 Key flags: `--out`, `--remainder-module`, `--monorepo` (link in-repo child
 modules instead of copying), `--no-bootstrap`, `--no-backend` (refactor map);
-`--quiet`/`--silent`, `--validate` (refactor verify: run the engine's validate on each
-module directory, still credential-free); `--engine`, `--exec-path`,
-`--state-file` (migrate map); `--refresh`, `--no-tfvars`, `--var-file`,
+`--quiet`/`--silent` (refactor validate/diff); `--engine`, `--exec-path`
+(refactor validate and every migrate step);
+`--state-file` (migrate map); `--no-tfvars`, `--var-file`,
 `--var` (migrate prove);
-`--backend-config`, `--unproven`, `--overwrite` (migrate run); `--no-color`
-(any command); `--output
-{text|json}` and `--interactive`/`-i` where applicable.
+`--backend-config`, `--unproven`, `--force` (migrate run: replace
+non-matching destination state); `--overwrite` (refactor run: delete and
+rewrite existing target dirs); `--no-color`
+(any command); `--interactive`/`-i` where applicable.
 
 ## What each stage does
 
@@ -204,13 +222,47 @@ handle them manually.
 
 The near-truth is "a developer runs `refactor`, CI runs `migrate`" — but the two halves split differently across people and pipelines, because one is reversible and one is not:
 
-- **A developer runs `refactor` locally** and opens a PR. Decorators, the map, and the new module directories are ordinary files, so the PR *is* the review: teammates read the map (placement, state moves, wiring, state locations) like any other diff, and rejecting the PR undoes everything.
-- **CI runs `refactor verify` on every PR and push** — the standing gate that the committed module directories still match the source. Offline, no engine, no credentials, seconds. This is the piece that keeps the split honest while the PR is iterated on, and forever after.
+- **A developer runs `refactor` locally**, then `refactor validate` — the engine's own check that the written directories are valid, credential-free — and opens a PR. Decorators, the map, and the new module directories are ordinary files, so the PR *is* the review: teammates read the map (placement, state moves, wiring, state locations) like any other diff, and rejecting the PR undoes everything.
+- **CI runs `refactor diff` on every PR and push** — the standing gate that the committed module directories still match the source. Offline, no engine, no credentials, seconds. This is the piece that keeps the split honest while the PR is iterated on, and forever after. It compares files, not validity — validity was `refactor validate`'s job before the commit.
 - **CI can rehearse the migration on the PR**: `migrate map` pulls the monolith's state read-only and splits local copies; `migrate prove` plans every module to zero changes. Nothing is pushed, so a rejected PR leaves the world untouched. This lane needs the working-session inputs as CI secrets — backend credentials, `TF_VAR_*` values, and any `-var`-only value passed as `--var`.
 - **`migrate run` is not a PR job.** Pushing state from an unmerged branch means the world has already changed when the PR is rejected. Merge first, then run `demonolith migrate --engine …` once — a manually triggered pipeline or a person at a terminal — inside a change freeze on the monolith, keeping the prove-to-run window short. A crashed run is retried by just re-running, and the receipts record what happened for anyone who looks later.
 - **Adoption and retirement stay human**: apply the bootstrap, watch every module verify clean, then retire the monolith's pipelines and old state.
 
-[`sample-deployment-demonolith`](https://github.com/snapcd-samples/sample-deployment-demonolith) carries this as a runnable GitHub Actions workflow — verify on every PR, a read-only rehearsal on every PR, and the migration behind a manual `workflow_dispatch`.
+[`sample-deployment-demonolith`](https://github.com/snapcd-samples/sample-deployment-demonolith) carries this as a runnable GitHub Actions workflow — diff on every PR, a read-only rehearsal on every PR, and the migration behind a manual `workflow_dispatch`.
+
+## The unproven path
+
+Every check in the pipeline can be declined, each through its own front
+door — for when you want the mechanical refactor and migration and accept
+the risk yourself:
+
+```bash
+demonolith refactor map                            # write the plan
+demonolith refactor run                            # write the module directories
+demonolith migrate map --engine tofu               # pull, back up, split
+demonolith migrate run --engine tofu --unproven    # push, no proof demanded
+```
+
+No `--engine` on `refactor` skips validate; `refactor diff` and
+`migrate verify` are simply not run; `--unproven` waives `migrate run`'s
+one precondition. The four commands are deliberate — each step you type is
+a check you visibly declined — and there is no unproven variant of the bare
+`migrate` pipeline, because its approval pause is built on showing you the
+proof.
+
+What it costs: a wrong carve or wiring surfaces after adoption as a plan
+diff instead of before the push; the first syntax or schema error in the
+emitted code shows up at the first real plan; and two artifacts go
+missing, not just two checks — `demono.root.tfvars` is written by prove
+(and verify), and the graph tfvars' expression-valued cross-module inputs
+are filled from the proof's planned outputs, so planning a module detached
+needs its values passed by hand. Adoption through Snap CD is unaffected
+(inputs arrive at runtime).
+
+What it does not cost: `migrate run`'s own guards are unconditional —
+destinations must be empty or already matching, nothing is ever forced,
+the backup is taken, and the monolith's own state is never written. The
+unproven path skips judgment, not care.
 
 ## Running a module by hand
 
@@ -306,7 +358,7 @@ whole, and separating it spares you surgery on the terraform block. Give
 every root a `.gitignore` covering `.terraform/`, `*.tfstate*`, `.env`, and
 the tfvars file from step 7, so nothing local can be committed by accident.
 
-**5. Gate the split** (what `refactor verify` does): redo steps 3–4 from
+**5. Gate the split** (what `refactor diff` does): redo steps 3–4 from
 scratch and compare the results file by file — in practice, a careful code
 review of every new file against the monolith source, repeated after every
 source change.
@@ -375,8 +427,8 @@ state push` its state file from step 6 — never forced. The monolith's own stat
 touched.
 
 **10. Adopt** (what `migrate verify` does). Per root, prove the migration
-against reality: a fresh `tofu init` must find the pushed state in the new
-backend, and a refresh-on plan must show zero changes — a plan that
+landed: a fresh `tofu init` must find the pushed state in the new
+backend, and a no-refresh plan must show zero changes — a plan that
 wants to create everything means the init did not find the state you pushed.
 From then on, every producer output must reach its consumers somehow:
 re-extract values by hand whenever an upstream changes, or let a control plane

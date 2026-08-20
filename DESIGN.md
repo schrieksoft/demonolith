@@ -66,7 +66,9 @@ pipeline, connected by the map:
         │            (written: no checksum yet)    moves, wiring, state locations
    refactor run ───► module directories + backends      executes the plan verbatim;
         │            + bootstrap; checksum        refuses a drifted source
-   refactor verify   committed output ≡ source    the provenance gate (PR CI)
+   refactor validate the engine accepts the       init -backend=false + validate;
+        │            output                       credential-free, pre-commit
+   refactor diff     committed output ≡ source    the provenance gate (PR CI)
         │
    migrate map ───► local split + receipt        pull read-only, back up, split
         │
@@ -75,11 +77,11 @@ pipeline, connected by the map:
    migrate run ────► seeded backends + receipt    guarded push: empty targets
         │                                         only, never forced
    migrate verify ─► final receipt                the same proof against the
-                                                  real backends — reality
+                                                  state as pushed
 ```
 
 Underneath, the code side is one shared analysis pipeline, `pipeline.Analyze` —
-pure, offline, deterministic — run by `refactor map` (to compute), `refactor run` and `refactor verify` (to
+pure, offline, deterministic — run by `refactor map` (to compute), `refactor run` and `refactor diff` (to
 re-derive and compare), and the migrate proofs (to recover the boundary they
 thread values over):
 
@@ -424,8 +426,10 @@ plans a spurious diff. So a naive per-module plan can't prove inertness.
    output values* of the producing module. (A missing upstream value at this
    point is a topo/threading bug and is surfaced as an error, not defaulted.)
 3. **Plans** the module directory against a *copy* of its split state, with those
-   inputs supplied as `-var`, and refresh **off** by default (fast,
-   credential-free, state-only; `--refresh` gives the authoritative run).
+   inputs supplied as `-var`, and refresh **always off**: the proofs judge the
+   migration's fidelity to the pulled state. Drift is out of scope by design —
+   ruled out by the prerequisite clean monolith plan, and watched by whatever
+   plans the modules after adoption.
 4. **Asserts zero-diff**: counts create/destroy/update from the plan JSON;
    `ZeroDiff` requires **zero changes of any kind** — an in-place update fails
    too, because a wrong input value that does not force a replacement still
@@ -451,7 +455,9 @@ operationally *and* that the computed wiring is correct — because a wrong
 
 Two command families split exactly at the code/state line, connected by the
 map (§12). Every verb has one meaning: `plan` produces, `run` executes
-with guards, `verify` judges the family's output, `prove` rehearses. The bare
+with guards, `validate` asks the engine, `diff` compares the committed
+code split against its source, `verify` judges the migration's output,
+`prove` rehearses. The bare
 family commands run their steps in order and **pause for approval before the
 run step** — refactor after showing the plan, migrate after showing the proof
 — with `-y`/`--yes` approving automatically (without a TTY the pause is a
@@ -467,10 +473,11 @@ heuristic; ambient credentials stay uncaptured by design) — closing by
 printing the equivalent non-interactive command.
 
 ```bash
-demonolith refactor              # map → run → verify
+demonolith refactor              # map → run → validate → diff
 demonolith refactor map         # analyze → write the map (offline)
 demonolith refactor run          # execute the map: emit everything (offline)
-demonolith refactor verify       # committed output ≡ committed source (offline)
+demonolith refactor validate     # the engine accepts the written directories (needs --engine)
+demonolith refactor diff         # committed output ≡ committed source (offline)
 
 demonolith migrate               # map → prove → run → verify
 demonolith migrate map          # pull read-only, back up, split into local copies
@@ -488,27 +495,38 @@ default** (`--exec-path` overrides resolution).
   choice as flags recorded into the map: `--out` (resolved against the
   root, must be inside it; default `modules`), `--remainder-module`, `--monorepo`
   (relink in-repo child modules instead of copying, §8), `--no-bootstrap`,
-  `--no-backend`. Run's pre-flights are enforced here so a written plan is a
-  runnable plan: target-dir collisions (a dir that exists and is not
-  demonolith's own recorded output refuses the plan with nothing written),
-  backend-type support, and the reserved `snapcd` module name.
-- **`refactor run`** executes the map verbatim — emit module directories,
+  `--no-backend`. Backend-type support and the reserved `snapcd` module name
+  are checked here; whether the target dirs may exist is run's own gate
+  (they must be gone, or `--overwrite` deletes them whole).
+- **`refactor run`** owns its target directories outright: they must not
+  exist, or `--overwrite` deletes them whole (a loud warning names them)
+  before rewriting — hand-added content never survives a run. It executes
+  the map verbatim — emit module directories,
   derived backends inside each root.tf, a `.gitignore` per root covering the local
   artifacts later stages leave behind (`.terraform/`, `*.tfstate`, `demono.env`,
   `demono.root.tfvars`, `demono.graph.tfvars`, …), and the bootstrap — then finalizes the
   `emit_checksum`. No mode flags: everything comes from the map. It
   refuses when the source no longer matches the plan (semantic staleness).
-- **`refactor verify`** re-runs analysis+emit in memory and compares against
-  the committed output — the provenance gate. Default output shows the
-  committed plan being confirmed; `--quiet` is the outcome line, `--silent`
-  the exit code only. `--validate` additionally engine-validates each
-  committed root (`init -backend=false` + `validate`; needs `--engine`, still
-  credential-free). Undo on the code side is git — the module directories and
-  map are ordinary committed files.
+- **`refactor validate`** engine-validates each written root, bootstrap
+  included (`init -backend=false` + `validate`: providers installed,
+  references resolved, types checked against provider schemas). Needs
+  `--engine` but no credentials — only the provider registry is contacted.
+  It is the developer's pre-commit check; the bare pipeline runs it when
+  `--engine` is given and otherwise skips it with a hint, so `refactor`
+  stays engine-free by default.
+- **`refactor diff`** re-runs analysis+emit in memory and diffs the result
+  against the committed output — the provenance gate, with `diff(1)`'s exit
+  semantics: 0 when identical. Default output shows the committed plan being
+  confirmed; `--quiet` is the outcome line, `--silent` the exit code only.
+  It compares files and never asks the engine — that is `refactor
+  validate`'s job. Undo on the code side is
+  git — the module directories and map are ordinary committed files.
 - **`migrate map`** is the local split (§9 mechanics): read-only pull (or
   `--state-file`), backup, `state mv` into per-module files under
-  `<out>/.demono/`, an action-"plan" receipt. Idempotent per generation;
-  resumable after partial failure via state-address inspection.
+  `<out>/.demono/`, an action-"plan" receipt. The pull and the split happen
+  in full on every run — a leftover carve is never trusted, only compared:
+  modules whose fresh carve matches the previous one are reported as already
+  correct.
 - **`migrate prove`** proves *plan's output*: it requires the generation's
   complete plan receipt with intact artifacts, threads producer outputs into
   consumer inputs (the control plane's runtime role), plans every root against
@@ -537,7 +555,7 @@ default** (`--exec-path` overrides resolution).
   existing state matching this migration — same lineage, or identical content from a
   fresh split — is an idempotent skip, which is what makes a crashed run
   retryable by just re-running), `state push` the module's state file — not forced by
-  default. Non-matching existing state refuses unless `--overwrite` explicitly
+  default. Non-matching existing state refuses unless `--force` explicitly
   sacrifices it (`state push -force`, with a loud warning naming every
   replaced target). A monolith without a backend gets local seeding: each
   root receives its `terraform.tfstate` in place. An action-"run" receipt records every
@@ -546,17 +564,19 @@ default** (`--exec-path` overrides resolution).
   exists. The monolith's own state is never written.
 - **`migrate verify`** is the post-run judgment: the same threaded proof
   executed against each root's **real backend** — a full init that must find
-  the seeded state, then a refreshed plan that must show zero changes
+  the seeded state, then a no-refresh plan that must show zero changes
   (a missing state would plan everything as a create) — writing a mode-"final"
-  receipt. Materializes `demono.env` and `demono.root.tfvars` like the
+  receipt. It judges the migration, never the world of managed resources:
+  a red verify means the migration or its inputs are wrong — or a data
+  source's answer moved, the one live read a plan always makes. Materializes `demono.env` and `demono.root.tfvars` like the
   earlier steps, so it works standalone. Requires the run receipt.
 
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational
 error, `2` **negative verdict** — the run worked but the answer is "no" (the
 committed output differs, a module plans a create/destroy, a stale or
-inapplicable map). `--output json` replaces the human report with one
-JSON document. Without a TTY nothing ever prompts; `--interactive` is an
-error rather than a silent fallback.
+inapplicable map). Beyond the exit code, the machine-readable record of what
+happened is the receipts (§12) — stdout is for people. Without a TTY nothing
+ever prompts; `--interactive` is an error rather than a silent fallback.
 
 Not yet built, by design: interactive cycle resolution (a cycle is reported,
 the breaking moves are not yet offered). Remote pushes are exercised end to
@@ -651,7 +671,7 @@ control plane needs:
   values are supplied where the bootstrap is applied (an external input whose
   name collides with a bootstrap variable is a refusal, not a rename).
 
-The bootstrap is covered by the emit checksum (so `refactor verify` and the
+The bootstrap is covered by the emit checksum (so `refactor diff` and the
 staleness guards treat it as generated output) but is **not** a placement
 module: it
 appears in no state move and is never planned by `prove` — it needs a Snap CD
@@ -674,7 +694,7 @@ read-only from whatever backend the root configures.
   nothing passed by hand); the generated wiring files become the permanent
   value-passing mechanism for detached roots.
 - **Team CI.** The dev authors the plan (decorators, `refactor`, committed
-  roots + map in the PR); PR CI judges it — `refactor verify` gates
+  roots + map in the PR); PR CI judges it — `refactor diff` gates
   provenance credential-free, then `migrate map` + `migrate prove` gate
   inertness with backend read access, the split artifacts living and dying in
   the job workspace; external inputs injected via `TF_VAR_*` or `--var`, nothing landing on disk

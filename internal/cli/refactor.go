@@ -1,10 +1,11 @@
 package cli
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,16 +24,15 @@ type refactorFlags struct {
 	rootDir     string
 	out         string
 	remainder   string
-	output      string
 	interactive bool
 	monorepo    bool
 	noBootstrap bool
 	noBackend   bool
 	quiet       bool
 	silent      bool
-	validate    bool
 	engine      string
 	execPath    string
+	overwrite   bool
 	yes         bool
 }
 
@@ -40,10 +40,10 @@ func refactorCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "refactor",
-		Short: "Split the monolith's code: map → run → verify",
+		Short: "Split the monolith's code: map → run → validate → diff",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRefactorPipeline(f)
+			return runRefactorPipeline(cmd.Context(), f)
 		},
 	}
 	flags := cmd.Flags()
@@ -53,11 +53,13 @@ func refactorCmd() *cobra.Command {
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
 	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: write the modules without backend blocks")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
+	flags.StringVar(&f.engine, "engine", "", "engine for the validate step: terraform or tofu (omitted: validate is skipped with a hint)")
+	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
+	flags.BoolVar(&f.overwrite, "overwrite", false, "delete existing target module directories entirely and rewrite them (everything inside is lost, engine artifacts and any local state included); default refuses when a target directory already has files")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough of the whole pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the plan automatically instead of pausing for confirmation before run")
 
-	cmd.AddCommand(refactorMapCmd(), refactorRunCmd(), refactorVerifyCmd())
+	cmd.AddCommand(refactorMapCmd(), refactorRunCmd(), refactorValidateCmd(), refactorDiffCmd())
 	return cmd
 }
 
@@ -68,17 +70,10 @@ func refactorMapCmd() *cobra.Command {
 		Short: "Analyze the monolith and write the map of the split — the reviewable plan; no module directories are written yet",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mode, err := parseOutput(f.output)
-			if err != nil {
-				return err
-			}
 			if f.interactive {
-				if mode == outputJSON {
-					return fmt.Errorf("--interactive and --output json are mutually exclusive")
-				}
 				return runRefactorMapInteractive(f)
 			}
-			_, err = runRefactorMap(f, mode)
+			_, err := runRefactorMap(f)
 			return err
 		},
 	}
@@ -89,7 +84,6 @@ func refactorMapCmd() *cobra.Command {
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
 	flags.BoolVar(&f.noBackend, "no-backend", false, "skip backend derivation: write the modules without backend blocks")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for parameters, triage the catchall, confirm before writing the map")
 	return cmd
 }
@@ -101,35 +95,19 @@ func refactorRunCmd() *cobra.Command {
 		Short: "Execute the map: write the new module directories; finalize the checksum",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mode, err := parseOutput(f.output)
-			if err != nil {
-				return err
-			}
-			return runRefactorRun(resolveRoot(f.rootDir), mode)
+			return runRefactorRun(resolveRoot(f.rootDir), f.overwrite)
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
+	flags.BoolVar(&f.overwrite, "overwrite", false, "delete existing target module directories entirely and rewrite them (everything inside is lost, engine artifacts and any local state included); default refuses when a target directory already has files")
 	return cmd
 }
 
-// planReport is the machine-facing result of refactor map.
-type planReport struct {
-	Modules        map[string]int    `json:"modules"`
-	Catchall       []string          `json:"catchall,omitempty"`
-	OrderingEdges  []string          `json:"ordering_edges,omitempty"`
-	PlannedDirs    map[string]string `json:"planned_dirs"`
-	BackendType    string            `json:"backend_type,omitempty"`
-	StateLocations map[string]string `json:"state_locations,omitempty"`
-	Bootstrap      bool              `json:"bootstrap"`
-	ManifestPath   string            `json:"map_path"`
-}
-
 // runRefactorMap analyzes and writes the planned manifest. Nothing is emitted;
-// run's pre-flights (target-dir collisions, backend-type support, the reserved
-// bootstrap name) are enforced here so a written plan is a runnable plan.
-func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error) {
+// backend-type support and the reserved bootstrap name are checked here.
+// Whether the target dirs may exist is run's own gate (--overwrite).
+func runRefactorMap(f refactorFlags) (*manifest.Manifest, error) {
 	rootDir := resolveRoot(f.rootDir)
 	outDir, err := resolveOut(rootDir, f.out)
 	if err != nil {
@@ -156,9 +134,7 @@ func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error
 		}
 	}
 
-	// Pre-flight against the manifest currently on disk (the previous
-	// generation's ownership record) before overwriting it.
-	if err := checkTargetDirs(a, rootDir, outDir, opts.Bootstrap); err != nil {
+	if err := checkReservedNames(a, opts.Bootstrap); err != nil {
 		return nil, err
 	}
 
@@ -166,25 +142,6 @@ func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error
 	path := manifest.Path(rootDir)
 	if err := manifest.Write(m, path); err != nil {
 		return nil, err
-	}
-
-	if mode == outputJSON {
-		rep := planReport{Modules: map[string]int{}, PlannedDirs: map[string]string{}, Bootstrap: opts.Bootstrap, ManifestPath: path}
-		for _, name := range a.Placement.ModuleNames() {
-			rep.Modules[name] = len(a.Placement.Modules[name])
-			rep.PlannedDirs[name] = m.Modules[name].Dir
-		}
-		for _, addr := range a.Placement.Catchall {
-			rep.Catchall = append(rep.Catchall, addr.String())
-		}
-		for _, oe := range a.Boundary.OrderingEdges {
-			rep.OrderingEdges = append(rep.OrderingEdges, fmt.Sprintf("%s -> %s (%s depends_on %s)", oe.ConsumerModule, oe.ProducerModule, oe.Consumer, oe.Producer))
-		}
-		if m.Backend != nil {
-			rep.BackendType = m.Backend.Type
-			rep.StateLocations = m.Backend.Modules
-		}
-		return m, printJSON(rep)
 	}
 
 	reportAnalysis(a)
@@ -206,20 +163,49 @@ func runRefactorMap(f refactorFlags, mode outputMode) (*manifest.Manifest, error
 	if !f.interactive {
 		outln("\nReview it, then `demonolith refactor run`.")
 	}
+	outln()
 	return m, nil
 }
 
-// runReport is the machine-facing result of refactor run.
-type runReport struct {
-	EmittedDirs  map[string]string `json:"emitted_dirs"`
-	BootstrapDir string            `json:"bootstrap_dir,omitempty"`
-	ManifestPath string            `json:"map_path"`
+// runTargets is the full set of directories the map claims for emit: every
+// module directory plus the bootstrap's. refactor run owns them entirely.
+func runTargets(m *manifest.Manifest, rootDir string) []string {
+	dirs := m.ModuleDirs(rootDir)
+	names := make([]string, 0, len(dirs))
+	for name := range dirs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		out = append(out, dirs[name])
+	}
+	if m.Output.Bootstrap {
+		out = append(out, filepath.Join(m.OutDir(rootDir), bootstrap.DirName))
+	}
+	return out
+}
+
+// existingRunTargets lists the map's emit destinations that already hold
+// files, as display paths.
+func existingRunTargets(rootDir string) ([]string, error) {
+	m, err := manifest.Load(manifest.Path(rootDir))
+	if err != nil {
+		return nil, err
+	}
+	var existing []string
+	for _, d := range runTargets(m, rootDir) {
+		if dirHasFiles(d) {
+			existing = append(existing, displayPath(rootDir, d))
+		}
+	}
+	return existing, nil
 }
 
 // runRefactorRun executes the planned manifest verbatim: emit the carved roots
 // (and backends and bootstrap per the plan), then finalize the checksum. The
 // source must still match the plan.
-func runRefactorRun(rootDir string, mode outputMode) error {
+func runRefactorRun(rootDir string, overwrite bool) error {
 	path := manifest.Path(rootDir)
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("no %s found in %s; run `demonolith refactor map` first", manifest.FileName, rootDir)
@@ -253,6 +239,27 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 		}
 	}
 
+	// run owns the target directories entirely: they must not exist, or
+	// --overwrite deletes them whole. Hand-added files never survive a run.
+	var existing []string
+	targets := runTargets(m, rootDir)
+	for _, d := range targets {
+		if dirHasFiles(d) {
+			existing = append(existing, displayPath(rootDir, d))
+		}
+	}
+	if len(existing) > 0 {
+		if !overwrite {
+			return fmt.Errorf("target module directories already exist: %s — refactor run owns them entirely: delete them, or pass --overwrite to delete and rewrite them (everything inside is lost, engine artifacts and any local state included)", strings.Join(existing, ", "))
+		}
+		fmt.Fprintf(os.Stderr, "%s\n\n", warn(fmt.Sprintf("WARNING: --overwrite: deleting existing module directories and everything in them: %s", strings.Join(existing, ", "))))
+		for _, d := range targets {
+			if err := os.RemoveAll(d); err != nil {
+				return err
+			}
+		}
+	}
+
 	e := &emit.Emitter{SrcDir: rootDir, OutDir: outDir, Graph: a.Graph, Place: a.Placement, Bound: a.Boundary, Monorepo: m.Output.Monorepo, Backend: block}
 	ems, err := e.Emit()
 	if err != nil {
@@ -273,13 +280,6 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 		return err
 	}
 
-	if mode == outputJSON {
-		rep := runReport{EmittedDirs: map[string]string{}, ManifestPath: path, BootstrapDir: m.Output.BootstrapDir}
-		for _, em := range ems {
-			rep.EmittedDirs[em.Module] = em.Dir
-		}
-		return printJSON(rep)
-	}
 	outln(heading("Module directories written:"))
 	for _, em := range ems {
 		outf("  %-16s %s (%d files)\n", em.Module, displayPath(rootDir, em.Dir), len(em.Files))
@@ -288,7 +288,7 @@ func runRefactorRun(rootDir string, mode outputMode) error {
 		outf("  %-16s %s (Snap CD bootstrap)\n", bootstrap.DirName, displayPath(rootDir, bsDir))
 	}
 	outln("\n" + heading("Receipt:"))
-	outf("  %s %s\n", displayPath(rootDir, path), dim("(finalized)"))
+	outf("  %s %s\n\n", displayPath(rootDir, path), dim("(finalized)"))
 	return nil
 }
 
@@ -313,29 +313,24 @@ func freshSemantic(a *pipeline.Analysis, rootDir string, committed *manifest.Man
 	return fresh, nil
 }
 
-// runRefactorPipeline is the bare `demonolith refactor`: map → run → verify.
-func runRefactorPipeline(f refactorFlags) error {
-	mode, err := parseOutput(f.output)
-	if err != nil {
-		return err
-	}
+// runRefactorPipeline is the bare `demonolith refactor`: map → run →
+// validate → diff. Validate needs an engine, so without --engine/--exec-path
+// it is skipped with a hint rather than failing the pipeline.
+func runRefactorPipeline(ctx context.Context, f refactorFlags) error {
 	if f.interactive {
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
-		return runRefactorInteractivePipeline(f)
+		return runRefactorInteractivePipeline(ctx, f)
 	}
 	outf("\n%s\n\n", banner("── refactor map ──"))
 	mf := f
 	mf.interactive = true // suppress the standalone "review it, then run" hint
-	if _, err := runRefactorMap(mf, mode); err != nil {
+	if _, err := runRefactorMap(mf); err != nil {
 		return err
 	}
 	if !f.yes {
 		if !stdinIsTTY() {
 			return fmt.Errorf("the pipeline pauses for approval after plan; pass -y to approve automatically, or run the subcommands individually")
 		}
-		ok, err := promptYesNo("\nRun the refactor now?", false)
+		ok, err := promptYesNo("Run the refactor now?", false)
 		if err != nil {
 			return err
 		}
@@ -343,58 +338,46 @@ func runRefactorPipeline(f refactorFlags) error {
 			outln("Map written; run later with `demonolith refactor run`.")
 			return nil
 		}
+		outln()
 	}
 	rootDir := resolveRoot(f.rootDir)
-	outf("\n%s\n\n", banner("── refactor run ──"))
-	if err := runRefactorRun(rootDir, mode); err != nil {
+	outf("%s\n\n", banner("── refactor run ──"))
+	if err := runRefactorRun(rootDir, f.overwrite); err != nil {
 		return err
 	}
-	outf("\n%s\n\n", banner("── refactor verify ──"))
+	outf("%s\n\n", banner("── refactor validate ──"))
+	if err := pipelineValidate(ctx, rootDir, f); err != nil {
+		return err
+	}
+	outf("%s\n\n", banner("── refactor diff ──"))
 	vf := f
 	vf.quiet = true
-	return runRefactorVerify(rootDir, mode, vf)
+	return runRefactorDiff(rootDir, vf)
 }
 
-// checkTargetDirs refuses, before the manifest is overwritten, any target
-// module dir that already exists and is not demonolith's own previous output (a
-// dir the manifest on disk records). Emitting into a foreign dir — typically an
-// existing child module sharing a carved module's name — would merge generated
-// output into content demonolith does not own. All collisions are reported at
-// once, and nothing is written. This runs at plan time; run trusts the plan,
-// accepting only dirs the manifest itself records.
-func checkTargetDirs(a *pipeline.Analysis, rootDir, outDir string, withBootstrap bool) error {
-	owned := map[string]bool{}
-	if prev, err := manifest.Load(manifest.Path(rootDir)); err == nil {
-		for _, d := range prev.ChecksumDirs(rootDir) {
-			owned[filepath.Clean(d)] = true
-		}
-		// A planned-but-never-run previous manifest still owns its planned dirs.
-		for _, d := range prev.ModuleDirs(rootDir) {
-			owned[filepath.Clean(d)] = true
-		}
+// pipelineValidate is the validate step inside the bare and interactive
+// pipelines: run when an engine is named, otherwise say how to run it.
+func pipelineValidate(ctx context.Context, rootDir string, f refactorFlags) error {
+	if f.engine == "" && f.execPath == "" {
+		outln("Skipped: no engine given. Before committing, have the engine check the new module directories (credential-free) with:")
+		outln("  demonolith refactor validate --engine {terraform|tofu}")
+		outln()
+		return nil
 	}
-	targets := a.Placement.ModuleNames()
-	if withBootstrap {
-		for _, name := range targets {
-			if name == bootstrap.DirName {
-				return fmt.Errorf("module name %q is reserved for the Snap CD bootstrap module; rename the module or pass --no-bootstrap", bootstrap.DirName)
-			}
-		}
-		targets = append(append([]string(nil), targets...), bootstrap.DirName)
+	return runRefactorValidate(ctx, rootDir, f)
+}
+
+// checkReservedNames refuses a carved module named after the bootstrap dir.
+// Whether target dirs may exist is run's decision (they must be gone, or
+// --overwrite deletes them), so map performs no existence checks.
+func checkReservedNames(a *pipeline.Analysis, withBootstrap bool) error {
+	if !withBootstrap {
+		return nil
 	}
-	var foreign []string
-	for _, name := range targets {
-		dir := filepath.Clean(filepath.Join(outDir, name))
-		if _, err := os.Stat(dir); err != nil {
-			continue
+	for _, name := range a.Placement.ModuleNames() {
+		if name == bootstrap.DirName {
+			return fmt.Errorf("module name %q is reserved for the Snap CD bootstrap module; rename the module or pass --no-bootstrap", bootstrap.DirName)
 		}
-		// A dir without a single file in it holds nothing to protect.
-		if !owned[dir] && dirHasFiles(dir) {
-			foreign = append(foreign, displayPath(rootDir, dir))
-		}
-	}
-	if len(foreign) > 0 {
-		return fmt.Errorf("target module dir(s) already exist and are not demonolith output: %s — refusing to write into content demonolith does not own; rename the module(s) or move the existing dir(s)", strings.Join(foreign, ", "))
 	}
 	return nil
 }
@@ -435,13 +418,4 @@ func reportAnalysis(a *pipeline.Analysis) {
 			}
 		}
 	}
-}
-
-func printJSON(v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintln(os.Stdout, string(b))
-	return nil
 }

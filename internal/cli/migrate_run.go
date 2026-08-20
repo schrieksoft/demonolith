@@ -38,20 +38,19 @@ func migrateRunCmd() *cobra.Command {
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-receipt precondition (explicitly run an unproven migration)")
-	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
+	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "confirm the per-module destinations before pushing")
 	return cmd
 }
 
 // migrateRunReport records where each module's state landed.
 type migrateRunReport struct {
-	Manifest        string                 `json:"map"`
-	Pushes          []manifest.PushOutcome `json:"pushes"`
-	ReceiptPath     string                 `json:"receipt_path"`
-	TfvarsFiles     map[string]string      `json:"tfvars_files,omitempty"`
-	UnresolvedGraph []string               `json:"unresolved_graph,omitempty"`
-	FilledFromProof int                    `json:"filled_from_proof,omitempty"`
+	Manifest        string
+	Pushes          []manifest.PushOutcome
+	ReceiptPath     string
+	TfvarsFiles     map[string]string
+	UnresolvedGraph []string
+	FilledFromProof int
 }
 
 // runMigrateRun executes the migration: for every module, seed its state
@@ -63,14 +62,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	mode, err := parseOutput(f.output)
-	if err != nil {
-		return err
-	}
 	if f.interactive {
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
@@ -120,8 +112,8 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			outf("  %-16s %s\n", name, destinationLabel(m, name))
 		}
 		prompt := "Push each module's state to these destinations (empty destinations only, never forced)?"
-		if f.overwrite {
-			prompt = "Push each module's state to these destinations (--overwrite: non-matching existing state will be REPLACED)?"
+		if f.force {
+			prompt = "Push each module's state to these destinations (--force: non-matching existing state will be REPLACED)?"
 		}
 		ok, err := promptYesNo(prompt, false)
 		if err != nil {
@@ -150,17 +142,13 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	}
 
 	rep := migrateRunReport{Manifest: manifest.FileName}
-	if mode == outputText {
-		if f.overwrite {
-			outln("\n" + heading("Pushing state to destinations") + " (--overwrite: non-matching existing state will be replaced):")
-		} else {
-			outln("\n" + heading("Pushing state to destinations") + " (empty destinations only, never forced):")
-		}
+	if f.force {
+		outln(heading("Pushing state to destinations") + " (--force: non-matching existing state will be replaced):")
+	} else {
+		outln(heading("Pushing state to destinations") + " (empty destinations only, never forced):")
 	}
 	for _, name := range modules {
-		if mode == outputText {
-			outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
-		}
+		outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
 		var outcome manifest.PushOutcome
 		if m.Backend == nil {
 			outcome, err = seedLocal(m, rootDir, name, moduleStates[name], f)
@@ -168,31 +156,27 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			outcome, err = seedBackend(ctx, m, rootDir, name, moduleStates[name], f)
 		}
 		if err != nil {
-			if mode == outputText {
-				outln(fail("FAILED"))
-			}
+			outln(fail("FAILED"))
 			// Record how far the run got — but never demote a complete receipt
 			// of this generation to a partial one on a failed retry.
 			prev, perr := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionRun)
 			if perr == nil && (prev == nil || !prev.Complete) {
-				if rp, werr := writeRunReceipt(false, rep.Pushes); werr == nil && mode == outputText {
+				if rp, werr := writeRunReceipt(false, rep.Pushes); werr == nil {
 					outf("  %d of %d modules done; partial run receipt: %s\n", len(rep.Pushes), len(modules), displayPath(rootDir, rp))
 				}
 			}
 			return fmt.Errorf("module %s: %w", name, err)
 		}
-		if mode == outputText {
-			label := outcome.Outcome
-			switch label {
-			case "pushed":
-				label = success("pushed")
-			case "skipped":
-				label = warn("skipped (target already holds this module's state)")
-			case "overwritten":
-				label = fail("OVERWRITTEN — replaced existing state that did not match")
-			}
-			outln(label)
+		label := outcome.Outcome
+		switch label {
+		case "pushed":
+			label = success("pushed")
+		case "skipped":
+			label = warn("skipped (target already holds this module's state)")
+		case "overwritten":
+			label = fail("OVERWRITTEN — replaced existing state that did not match")
 		}
+		outln(label)
 		rep.Pushes = append(rep.Pushes, outcome)
 	}
 
@@ -202,8 +186,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	}
 	rep.ReceiptPath = receiptPath
 
-	// An overwrite destroyed someone's state; warn unconditionally, on stderr
-	// so JSON consumers see it too without it polluting the report.
+	// A forced push destroyed someone's state; warn unconditionally, on stderr.
 	var overwrote []string
 	for _, p := range rep.Pushes {
 		if p.Outcome == "overwritten" {
@@ -211,7 +194,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	if len(overwrote) > 0 {
-		fmt.Fprintf(os.Stderr, "WARNING: --overwrite replaced non-matching state at %d destination(s): %s. The previous state there is gone.\n", len(overwrote), strings.Join(overwrote, ", "))
+		fmt.Fprintf(os.Stderr, "\n%s\n", warn(fmt.Sprintf("WARNING: --force replaced non-matching state at %d destination(s): %s. The previous state there is gone.", len(overwrote), strings.Join(overwrote, ", "))))
 	}
 
 	// The graph tfvars are a post-migration artifact for detached use, not an
@@ -224,9 +207,6 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	rep.UnresolvedGraph = graph.Unresolved
 	rep.FilledFromProof = filledFromProof
 
-	if mode == outputJSON {
-		return printJSON(rep)
-	}
 	outln("\n" + heading("Migration executed:"))
 	for _, p := range rep.Pushes {
 		outf("  %-16s %-8s %s\n", p.Module, p.Outcome, p.Location)
@@ -251,6 +231,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	outln("\nYour original monolith state file remains untouched!")
+	outln()
 	return nil
 }
 
@@ -265,7 +246,7 @@ func destinationLabel(m *manifest.Manifest, module string) string {
 // seedLocal places the carved state as the root's local state file. An
 // existing state that matches the carve — same lineage, or identical content
 // from a re-carve of the same monolith — is an idempotent skip; anything else
-// is a refusal unless --overwrite explicitly sacrifices the occupant.
+// is a refusal unless --force explicitly sacrifices the occupant.
 func seedLocal(m *manifest.Manifest, rootDir, module, carved string, f migrateFlags) (manifest.PushOutcome, error) {
 	dest := filepath.Join(m.ModuleDirs(rootDir)[module], "terraform.tfstate")
 	out := manifest.PushOutcome{Module: module, Location: relForReceipt(rootDir, dest)}
@@ -289,8 +270,8 @@ func seedLocal(m *manifest.Manifest, rootDir, module, carved string, f migrateFl
 			out.Outcome = "skipped"
 			return out, nil
 		}
-		if !f.overwrite {
-			return out, fmt.Errorf("destination %s already holds state that does not match this migration; refusing to overwrite. If it is left over from an earlier migration attempt, inspect it and remove it before re-running — or re-run with --overwrite to replace it (the existing state is lost)", dest)
+		if !f.force {
+			return out, fmt.Errorf("destination %s already holds state that does not match this migration; refusing to overwrite. If it is left over from an earlier migration attempt, inspect it and remove it before re-running — or re-run with --force to replace it (the existing state is lost)", dest)
 		}
 		overwriting = true
 	}
@@ -358,8 +339,8 @@ func seedBackend(ctx context.Context, m *manifest.Manifest, rootDir, module, car
 			out.Outcome = "skipped"
 			return out, nil
 		}
-		if !f.overwrite {
-			return out, fmt.Errorf("target %s already holds state that does not match this migration; refusing to push (not forced by default). If it is left over from an earlier migration attempt, inspect it (`state pull` in %s) and empty that remote state before re-running — or re-run with --overwrite to force-push over it (the existing state is lost)", out.Location, displayPath(rootDir, dir))
+		if !f.force {
+			return out, fmt.Errorf("target %s already holds state that does not match this migration; refusing to push (not forced by default). If it is left over from an earlier migration attempt, inspect it (`state pull` in %s) and empty that remote state before re-running — or re-run with --force to force-push over it (the existing state is lost)", out.Location, displayPath(rootDir, dir))
 		}
 		overwriting = true
 	}

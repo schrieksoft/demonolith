@@ -26,15 +26,13 @@ type migrateFlags struct {
 	engine        string
 	execPath      string
 	stateFile     string
-	output        string
 	interactive   bool
-	refresh       bool
 	noTfvars      bool
 	varFiles      []string
 	vars          []string
 	backendConfig []string
 	unproven      bool
-	overwrite     bool
+	force         bool
 	yes           bool
 }
 
@@ -57,8 +55,7 @@ func migrateCmd() *cobra.Command {
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
-	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
+	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials — then the pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
 
@@ -81,7 +78,6 @@ func migrateMapCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringVar(&f.stateFile, "state-file", "", "split this local state file instead of pulling from the configured backend")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for root/engine/state source, preview the moves, confirm")
 	return cmd
 }
@@ -129,33 +125,27 @@ func analyzeMatching(rootDir string, m *manifest.Manifest) (*pipeline.Analysis, 
 
 // migrateMapReport records the plan (carve) result.
 type migrateMapReport struct {
-	Manifest     string            `json:"map"`
-	Skipped      bool              `json:"skipped"`
-	SkipReason   string            `json:"skip_reason,omitempty"`
-	Moves        []moveReport      `json:"moves,omitempty"`
-	ModuleStates map[string]string `json:"module_states,omitempty"`
-	BackupPath   string            `json:"backup_path,omitempty"`
-	ReceiptPath  string            `json:"receipt_path,omitempty"`
+	Manifest       string
+	Skipped        bool
+	SkipReason     string
+	Moves          []moveReport
+	AlreadyCorrect map[string]bool
+	ModuleStates   map[string]string
+	BackupPath     string
+	ReceiptPath    string
 }
 
 type moveReport struct {
-	Address string `json:"address"`
-	Module  string `json:"module"`
-	Outcome string `json:"outcome"` // moved | skipped
+	Address string
+	Module  string
+	Outcome string // moved
 }
 
 func runMigrateMap(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	mode, err := parseOutput(f.output)
-	if err != nil {
-		return err
-	}
 	if f.interactive {
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
@@ -211,33 +201,16 @@ func runMigrateMap(ctx context.Context, f migrateFlags) error {
 		rep = &migrateMapReport{Manifest: manifest.FileName, Skipped: true, SkipReason: err.Error()}
 	}
 
-	if mode == outputJSON {
-		if err := printJSON(rep); err != nil {
-			return err
-		}
-		return verdict
-	}
 	printMigratePlanReport(rootDir, *rep)
 	return verdict
 }
 
-// migrateCarve performs the local carve and writes the map receipt.
+// migrateCarve performs the local carve and writes the map receipt. The
+// monolith's state is always pulled fresh and the whole split re-executed —
+// a leftover carve cannot be known correct without consulting the backend.
+// Modules whose fresh carve matches the previous one are noted in the report.
 func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, execPath string, f migrateFlags) (*migrateMapReport, error) {
 	rep := &migrateMapReport{Manifest: manifest.FileName}
-
-	// Idempotency: a generation whose map receipt records a complete carve is
-	// skipped, so re-running resumes rather than erroring — but only while the
-	// recorded carve artifacts still exist. A lost workdir means re-carve, or
-	// the receipt points every later step at files that are gone.
-	receipt, err := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionMap)
-	if err != nil {
-		return nil, err
-	}
-	if receipt != nil && receipt.Complete && carveArtifactsExist(rootDir, receipt) {
-		rep.Skipped = true
-		rep.SkipReason = "already split (complete map receipt found)"
-		return rep, nil
-	}
 
 	plan := m.Plan()
 	workDir := filepath.Join(m.OutDir(rootDir), ".demono")
@@ -251,36 +224,38 @@ func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, exe
 		return nil, err
 	}
 
-	// Resume: filter out moves already applied in a prior partial run, and
-	// refuse a manifest whose moves match neither the working state nor a
-	// carved module state.
-	filtered, outcomes, err := filterApplied(prep, workDir, plan, manifest.FileName)
-	if err != nil {
-		return nil, err
+	// Capture any previous carve's module files, then clear them: the split
+	// re-executes in full, and the old files only inform the report.
+	prior := map[string][]byte{}
+	for mod := range m.Modules {
+		p := filepath.Join(workDir, mod+".tfstate")
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			continue
+		}
+		prior[mod] = b
+		if err := os.Remove(p); err != nil {
+			return nil, err
+		}
 	}
 
-	res, err := statemove.Execute(ctx, rootDir, workDir, prep, filtered, opts)
+	res, err := statemove.Execute(ctx, rootDir, workDir, prep, plan, opts)
 	if err != nil {
 		return nil, fmt.Errorf("state split: %w", err)
 	}
-	// A resumed run may have executed no moves for a module whose state was
-	// carved earlier; the receipt must still record every carved state file.
-	for mod := range plan.Moves {
-		if _, ok := res.ModuleStates[mod]; ok {
+
+	rep.AlreadyCorrect = map[string]bool{}
+	for mod, old := range prior {
+		st, ok := res.ModuleStates[mod]
+		if !ok {
 			continue
 		}
-		st := filepath.Join(workDir, mod+".tfstate")
-		if _, err := os.Stat(st); err == nil {
-			res.ModuleStates[mod] = st
+		if same, serr := sameContent(old, st); serr == nil && same {
+			rep.AlreadyCorrect[mod] = true
 		}
 	}
-
 	for _, mv := range m.StateMoves {
-		out := "moved"
-		if outcomes[mv.Address] == "skipped" {
-			out = "skipped"
-		}
-		rep.Moves = append(rep.Moves, moveReport{Address: mv.Address, Module: mv.Module, Outcome: out})
+		rep.Moves = append(rep.Moves, moveReport{Address: mv.Address, Module: mv.Module, Outcome: "moved"})
 	}
 	rep.ModuleStates = res.ModuleStates
 	rep.BackupPath = res.BackupPath
@@ -312,23 +287,6 @@ func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, exe
 	return rep, nil
 }
 
-// carveArtifactsExist reports whether every carved state file a map receipt
-// records is still on disk (paths are stored root-relative when possible).
-func carveArtifactsExist(rootDir string, r *manifest.Receipt) bool {
-	if len(r.ModuleStates) == 0 {
-		return false
-	}
-	for _, p := range r.ModuleStates {
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(rootDir, p)
-		}
-		if _, err := os.Stat(p); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
 // mapReceiptStates loads the current generation's complete map receipt and
 // resolves its carved state paths, requiring every file (and the backup) to be
 // intact.
@@ -355,46 +313,6 @@ func mapReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, 
 	return receipt, states, backup, nil
 }
 
-// filterApplied drops moves a prior partial run already executed. A move whose
-// source is absent from the working state and absent from its destination
-// module state means the manifest does not match the state at all — refused.
-func filterApplied(prep *statemove.Prepared, workDir string, plan *statemove.Plan, name string) (*statemove.Plan, map[string]string, error) {
-	outcomes := map[string]string{}
-	if !prep.Resumed {
-		return plan, outcomes, nil
-	}
-	present, err := statemove.StateAddresses(prep.MonolithState)
-	if err != nil {
-		return nil, nil, err
-	}
-	filtered := &statemove.Plan{Moves: map[string][]statemove.Move{}, Remainder: plan.Remainder, AdoptRemainder: plan.AdoptRemainder}
-	modules := make([]string, 0, len(plan.Moves))
-	for mod := range plan.Moves {
-		modules = append(modules, mod)
-	}
-	sort.Strings(modules)
-	for _, mod := range modules {
-		destAddrs := map[string]bool{}
-		if mod != plan.Remainder {
-			destAddrs, err = statemove.StateAddresses(filepath.Join(workDir, mod+".tfstate"))
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-		for _, mv := range plan.Moves[mod] {
-			switch {
-			case present[mv.SourceAddr]:
-				filtered.Moves[mod] = append(filtered.Moves[mod], mv)
-			case destAddrs[mv.DestAddr]:
-				outcomes[mv.SourceAddr] = "skipped"
-			default:
-				return nil, nil, verdictf("map %s does not match the state: %s is in neither the monolith state nor module %s's state", name, mv.SourceAddr, mod)
-			}
-		}
-	}
-	return filtered, outcomes, nil
-}
-
 // materializeBackendEnv writes each module's gitignored .env from the
 // monolith root's init-time resolved backend config — credentials as the
 // engines' official environment variables, sourced by run/verify around each
@@ -418,6 +336,7 @@ func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 	}
 	if wrote {
 		outln("Backend credentials written to per-module demono.env files")
+		outln()
 	}
 	return nil
 }
@@ -576,13 +495,11 @@ func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 	}
 	outln(heading("Splitting the state") + " (moves from " + rep.Manifest + "):")
 	for _, mv := range rep.Moves {
-		oc := fmt.Sprintf("%-8s", mv.Outcome)
-		if mv.Outcome == "moved" {
-			oc = success(oc)
-		} else {
-			oc = warn(oc)
+		note := ""
+		if rep.AlreadyCorrect[mv.Module] {
+			note = " " + dim("(pre-existing state carve was already correct)")
 		}
-		outf("  %s %-40s -> %s\n", oc, mv.Address, mv.Module)
+		outf("  %s %-40s -> %s%s\n", success(fmt.Sprintf("%-8s", mv.Outcome)), mv.Address, mv.Module, note)
 	}
 	outln("\n" + heading("Per-module state files written") + " (local copies, nothing pushed yet):")
 	mods := make([]string, 0, len(rep.ModuleStates))
@@ -593,22 +510,16 @@ func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 	for _, m := range mods {
 		outf("  %-16s %s\n", m, displayPath(rootDir, rep.ModuleStates[m]))
 	}
-	outf("  backup:  %s\n", displayPath(rootDir, rep.BackupPath))
+	outln("\n" + heading("Backup:"))
+	outf("  %s\n", displayPath(rootDir, rep.BackupPath))
 	outln("\n" + heading("Receipt:"))
-	outf("  %s\n", displayPath(rootDir, rep.ReceiptPath))
+	outf("  %s\n\n", displayPath(rootDir, rep.ReceiptPath))
 }
 
 // runMigratePipeline is the bare `demonolith migrate`: plan → prove → run →
 // verify, run's prove-verdict guard satisfied by the prove step.
 func runMigratePipeline(ctx context.Context, f migrateFlags) error {
 	if f.interactive {
-		mode, err := parseOutput(f.output)
-		if err != nil {
-			return err
-		}
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
@@ -638,12 +549,12 @@ func runMigratePipeline(ctx context.Context, f migrateFlags) error {
 		{"migrate run", func() error { return runMigrateRun(ctx, f) }, true},
 		{"migrate verify", func() error { return runMigrateVerify(ctx, f) }, false},
 	}
-	for _, s := range steps {
+	for i, s := range steps {
 		if s.confirm && !f.yes {
 			if !stdinIsTTY() {
 				return fmt.Errorf("the pipeline pauses for approval after prove; pass -y to approve automatically, or run the subcommands individually")
 			}
-			ok, err := promptYesNo("\nProceed with the migration (push each module's state to its new location)?", true)
+			ok, err := promptYesNo("Proceed with the migration (push each module's state to its new location)?", true)
 			if err != nil {
 				return err
 			}
@@ -651,8 +562,15 @@ func runMigratePipeline(ctx context.Context, f migrateFlags) error {
 				outln("Stopped before migrate run; the state copies and proof are in place.")
 				return nil
 			}
+			outln()
 		}
-		outf("\n%s\n\n", banner("── "+s.name+" ──"))
+		// Every step ends its output with a blank line, so only the first
+		// banner needs to open one.
+		if i == 0 {
+			outf("\n%s\n\n", banner("── "+s.name+" ──"))
+		} else {
+			outf("%s\n\n", banner("── "+s.name+" ──"))
+		}
 		if err := s.fn(); err != nil {
 			return err
 		}

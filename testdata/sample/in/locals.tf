@@ -1,7 +1,8 @@
 locals {
-  # Environment settings live in a checked-in config file; everything below
-  # reads them through this one decoded object.
-  settings = jsondecode(data.local_file.environment.content)
+  # Environment settings arrive as one JSON string variable (the content of
+  # config/environment.json): content instead of a path, so nothing
+  # path-relative crosses the split.
+  settings = jsondecode(var.environment_json)
 
   environment = local.settings.environment
   name        = "${var.name_prefix}-${local.environment}"

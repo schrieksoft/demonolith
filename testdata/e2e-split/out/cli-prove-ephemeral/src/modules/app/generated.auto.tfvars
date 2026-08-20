@@ -1,5 +1,0 @@
-module_idgen          = "evident-cowbird"
-random_integer_net_id = "9098"
-random_pet_fp_tag     = "needlessly-lasting-polliwog"
-random_pet_net_name   = "demo-locally-pleasant-sawfish"
-random_string_token   = "njpJY7c4x0jp"
