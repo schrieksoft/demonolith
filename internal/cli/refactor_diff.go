@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/hashicorp/terraform-exec/tfexec"
 	"github.com/spf13/cobra"
 
 	"github.com/schrieksoft/demonolith/internal/bootstrap"
@@ -17,52 +15,43 @@ import (
 	"github.com/schrieksoft/demonolith/internal/pipeline"
 )
 
-func refactorVerifyCmd() *cobra.Command {
+func refactorDiffCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
-		Use:   "verify",
-		Short: "Gate: do the written module directories and the map still match the source?",
+		Use:   "diff",
+		Short: "Gate: diff the written module directories and the map against what the source produces; exit 0 when identical",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mode, err := parseOutput(f.output)
-			if err != nil {
-				return err
-			}
-			return runRefactorVerify(resolveRoot(f.rootDir), mode, f)
+			return runRefactorDiff(resolveRoot(f.rootDir), f)
 		},
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.quiet, "quiet", "q", false, "verdict only; skip the per-module placement listing")
 	flags.BoolVar(&f.silent, "silent", false, "no output at all; the result is the exit code")
-	flags.BoolVar(&f.validate, "validate", false, "also run the engine's validate on each module directory (init -backend=false + validate; credential-free, needs --engine)")
-	flags.StringVar(&f.engine, "engine", "", "engine for --validate: terraform or tofu")
-	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	return cmd
 }
 
-// verifyReport is the machine-facing result of refactor verify.
-type verifyReport struct {
-	Differs        bool     `json:"differs"`
-	Manifest       string   `json:"map,omitempty"`
-	ChangedFiles   []string `json:"changed_files,omitempty"`
-	DiffDetail     []string `json:"-"`
-	Reasons        []string `json:"reasons,omitempty"`
-	InvalidModules []string `json:"invalid_modules,omitempty"`
+// diffReport collects the comparison result for reporting.
+type diffReport struct {
+	Differs      bool
+	Manifest     string
+	ChangedFiles []string
+	DiffDetail   []string
+	Reasons      []string
 }
 
-// runRefactorVerify re-runs analysis+emit into a temp dir and compares against
+// runRefactorDiff re-runs analysis+emit into a temp dir and compares against
 // the committed roots and manifest. The remainder-module name comes from the
 // committed manifest, so no placement flag can skew the comparison. Nothing is
 // written to the root or output dirs; any mismatch is a negative verdict.
-func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
-	rep := verifyReport{}
+func runRefactorDiff(rootDir string, f refactorFlags) error {
+	rep := diffReport{}
 	path := manifest.Path(rootDir)
 	if _, err := os.Stat(path); err != nil {
 		rep.Differs = true
 		rep.Reasons = append(rep.Reasons, "no "+manifest.FileName+" found; run `demonolith refactor map` first")
-		return reportRefactorVerify(rep, nil, mode, f)
+		return reportRefactorDiff(rep, nil, f)
 	}
 	rep.Manifest = manifest.FileName
 	committed, err := manifest.Load(path)
@@ -72,14 +61,14 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	if !committed.IsRun() {
 		rep.Differs = true
 		rep.Reasons = append(rep.Reasons, "the map has not been run yet; run `demonolith refactor run` and commit its output")
-		return reportRefactorVerify(rep, committed, mode, f)
+		return reportRefactorDiff(rep, committed, f)
 	}
 
 	a, err := pipeline.Analyze(rootDir, pipeline.Options{Remainder: committed.Source.RemainderModule})
 	if err != nil {
 		return err
 	}
-	tmp, err := os.MkdirTemp("", "demono-verify-*")
+	tmp, err := os.MkdirTemp("", "demono-diff-*")
 	if err != nil {
 		return err
 	}
@@ -117,7 +106,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 	if err != nil {
 		rep.Differs = true
 		rep.Reasons = append(rep.Reasons, fmt.Sprintf("module directories unreadable: %v", err))
-		return reportRefactorVerify(rep, committed, mode, f)
+		return reportRefactorDiff(rep, committed, f)
 	}
 	freshHashes, err := manifest.FileHashes(freshDirs)
 	if err != nil {
@@ -139,66 +128,7 @@ func runRefactorVerify(rootDir string, mode outputMode, f refactorFlags) error {
 		rep.Reasons = append(rep.Reasons, "the map differs from what the source produces")
 	}
 
-	if f.validate && !rep.Differs {
-		invalid, err := validateRoots(committed, rootDir, f)
-		if err != nil {
-			return err
-		}
-		if len(invalid) > 0 {
-			rep.Differs = true
-			rep.InvalidModules = invalid
-			rep.Reasons = append(rep.Reasons, "engine validation failed for: "+joinComma(invalid))
-		}
-	}
-	return reportRefactorVerify(rep, committed, mode, f)
-}
-
-// validateRoots runs `init -backend=false` + `validate` on each committed root
-// (bootstrap included): engine-grade validity, still credential-free.
-func validateRoots(m *manifest.Manifest, rootDir string, f refactorFlags) ([]string, error) {
-	execPath, err := engineExecPath(f.engine, f.execPath)
-	if err != nil {
-		return nil, fmt.Errorf("--validate needs an engine: %w", err)
-	}
-	ctx := context.Background()
-	dirs := m.ChecksumDirs(rootDir)
-	names := make([]string, 0, len(dirs))
-	for name := range dirs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	var invalid []string
-	for _, name := range names {
-		tf, err := tfexec.NewTerraform(dirs[name], execPath)
-		if err != nil {
-			return nil, err
-		}
-		if err := tf.Init(ctx, tfexec.Backend(false)); err != nil {
-			return nil, fmt.Errorf("init %s: %w", name, err)
-		}
-		out, err := tf.Validate(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("validate %s: %w", name, err)
-		}
-		if !out.Valid {
-			invalid = append(invalid, name)
-			for _, d := range out.Diagnostics {
-				outf("  %s: %s: %s\n", name, d.Severity, d.Summary)
-			}
-		}
-	}
-	return invalid, nil
-}
-
-func joinComma(items []string) string {
-	out := ""
-	for i, it := range items {
-		if i > 0 {
-			out += ", "
-		}
-		out += it
-	}
-	return out
+	return reportRefactorDiff(rep, committed, f)
 }
 
 // diffPreview shows, per differing file (capped at three), the first line
@@ -286,7 +216,7 @@ func diffHashes(fresh, committed map[string]string) []string {
 	return out
 }
 
-func reportRefactorVerify(rep verifyReport, m *manifest.Manifest, mode outputMode, f refactorFlags) error {
+func reportRefactorDiff(rep diffReport, m *manifest.Manifest, f refactorFlags) error {
 	if f.silent {
 		// Exit code only: an empty-message verdict that main does not print.
 		if rep.Differs {
@@ -294,28 +224,22 @@ func reportRefactorVerify(rep verifyReport, m *manifest.Manifest, mode outputMod
 		}
 		return nil
 	}
-	if mode == outputJSON {
-		if err := printJSON(rep); err != nil {
-			return err
+	if !f.quiet && m != nil {
+		printPlacement(m)
+	}
+	if rep.Differs {
+		outln(fail("Out of sync") + " — the output on disk does not match what the source produces:")
+		for _, r := range rep.Reasons {
+			outf("  - %s\n", r)
+		}
+		for _, fl := range rep.ChangedFiles {
+			outf("    %s\n", fl)
+		}
+		for _, d := range rep.DiffDetail {
+			outf("  %s\n", d)
 		}
 	} else {
-		if !f.quiet && m != nil {
-			printPlacement(m)
-		}
-		if rep.Differs {
-			outln(fail("Out of sync") + " — the output on disk does not match what the source produces:")
-			for _, r := range rep.Reasons {
-				outf("  - %s\n", r)
-			}
-			for _, fl := range rep.ChangedFiles {
-				outf("    %s\n", fl)
-			}
-			for _, d := range rep.DiffDetail {
-				outf("  %s\n", d)
-			}
-		} else {
-			outf("%s: the module directories and map %s match the source.\n", success("In sync"), rep.Manifest)
-		}
+		outf("%s: the module directories and map %s match the source. %s\n", success("In sync"), rep.Manifest, dim("(files compared; whether the engine accepts them is `demonolith refactor validate`)"))
 	}
 	if rep.Differs {
 		return verdictf("the output on disk does not match what the source produces; re-run `demonolith refactor` to regenerate it (and commit the result if the roots are tracked)")

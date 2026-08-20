@@ -30,30 +30,25 @@ func migrateProveCmd() *cobra.Command {
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable; overrides the root's auto-loaded files)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable; overrides tfvars files and TF_VAR_*)")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	return cmd
 }
 
-// proveReport is the machine-facing proof result. External input values are
-// deliberately absent — names only.
+// proveReport collects the proof result for reporting. External input values
+// are deliberately absent — names only.
 type proveReport struct {
-	Manifest       string                   `json:"map"`
-	Mode           string                   `json:"mode"`
-	OK             bool                     `json:"ok"`
-	Order          []string                 `json:"order"`
-	Modules        []manifest.ModuleVerdict `json:"modules"`
-	ExternalInputs []string                 `json:"external_inputs,omitempty"`
-	TfvarsFiles    map[string]string        `json:"tfvars_files,omitempty"`
-	VerdictPath    string                   `json:"receipt_path"`
+	Manifest       string
+	Mode           string
+	OK             bool
+	Order          []string
+	Modules        []manifest.ModuleVerdict
+	ExternalInputs []string
+	TfvarsFiles    map[string]string
+	VerdictPath    string
 }
 
 func runMigrateProve(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	mode, err := parseOutput(f.output)
-	if err != nil {
-		return err
 	}
 	rootDir := resolveRoot(f.rootDir)
 	execPath, err := engineExecPath(f.engine, f.execPath)
@@ -100,11 +95,9 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 		ExternalInputs: extVals,
 		RootInputs:     rootInputs,
 	}
-	if mode == outputText {
-		outln(heading("Proving modules in dependency order") + " (plans against the local state copies):")
-		opts.OnPlanStart = func(module string) { outf("  %s: proving ... ", module) }
-		opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
-	}
+	outln(heading("Proving modules in dependency order") + " (plans against the local state copies):")
+	opts.OnPlanStart = func(module string) { outf("  %s: proving ... ", module) }
+	opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
 	pres, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, opts)
 	if err != nil {
 		return fmt.Errorf("proof: %w", err)
@@ -142,13 +135,7 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 	}
 	rep.VerdictPath = vpath
 
-	if mode == outputJSON {
-		if err := printJSON(rep); err != nil {
-			return err
-		}
-	} else {
-		printProofReport(rootDir, rep)
-	}
+	printProofReport(rootDir, rep)
 	if !pres.OK {
 		return verdictf("proof failed: at least one module's plan shows changes")
 	}

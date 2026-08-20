@@ -39,19 +39,18 @@ func migrateRunCmd() *cobra.Command {
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-receipt precondition (explicitly run an unproven migration)")
 	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "confirm the per-module destinations before pushing")
 	return cmd
 }
 
 // migrateRunReport records where each module's state landed.
 type migrateRunReport struct {
-	Manifest        string                 `json:"map"`
-	Pushes          []manifest.PushOutcome `json:"pushes"`
-	ReceiptPath     string                 `json:"receipt_path"`
-	TfvarsFiles     map[string]string      `json:"tfvars_files,omitempty"`
-	UnresolvedGraph []string               `json:"unresolved_graph,omitempty"`
-	FilledFromProof int                    `json:"filled_from_proof,omitempty"`
+	Manifest        string
+	Pushes          []manifest.PushOutcome
+	ReceiptPath     string
+	TfvarsFiles     map[string]string
+	UnresolvedGraph []string
+	FilledFromProof int
 }
 
 // runMigrateRun executes the migration: for every module, seed its state
@@ -63,14 +62,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	mode, err := parseOutput(f.output)
-	if err != nil {
-		return err
-	}
 	if f.interactive {
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
@@ -150,17 +142,13 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	}
 
 	rep := migrateRunReport{Manifest: manifest.FileName}
-	if mode == outputText {
-		if f.overwrite {
-			outln("\n" + heading("Pushing state to destinations") + " (--overwrite: non-matching existing state will be replaced):")
-		} else {
-			outln("\n" + heading("Pushing state to destinations") + " (empty destinations only, never forced):")
-		}
+	if f.overwrite {
+		outln("\n" + heading("Pushing state to destinations") + " (--overwrite: non-matching existing state will be replaced):")
+	} else {
+		outln("\n" + heading("Pushing state to destinations") + " (empty destinations only, never forced):")
 	}
 	for _, name := range modules {
-		if mode == outputText {
-			outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
-		}
+		outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
 		var outcome manifest.PushOutcome
 		if m.Backend == nil {
 			outcome, err = seedLocal(m, rootDir, name, moduleStates[name], f)
@@ -168,31 +156,27 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 			outcome, err = seedBackend(ctx, m, rootDir, name, moduleStates[name], f)
 		}
 		if err != nil {
-			if mode == outputText {
-				outln(fail("FAILED"))
-			}
+			outln(fail("FAILED"))
 			// Record how far the run got — but never demote a complete receipt
 			// of this generation to a partial one on a failed retry.
 			prev, perr := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionRun)
 			if perr == nil && (prev == nil || !prev.Complete) {
-				if rp, werr := writeRunReceipt(false, rep.Pushes); werr == nil && mode == outputText {
+				if rp, werr := writeRunReceipt(false, rep.Pushes); werr == nil {
 					outf("  %d of %d modules done; partial run receipt: %s\n", len(rep.Pushes), len(modules), displayPath(rootDir, rp))
 				}
 			}
 			return fmt.Errorf("module %s: %w", name, err)
 		}
-		if mode == outputText {
-			label := outcome.Outcome
-			switch label {
-			case "pushed":
-				label = success("pushed")
-			case "skipped":
-				label = warn("skipped (target already holds this module's state)")
-			case "overwritten":
-				label = fail("OVERWRITTEN — replaced existing state that did not match")
-			}
-			outln(label)
+		label := outcome.Outcome
+		switch label {
+		case "pushed":
+			label = success("pushed")
+		case "skipped":
+			label = warn("skipped (target already holds this module's state)")
+		case "overwritten":
+			label = fail("OVERWRITTEN — replaced existing state that did not match")
 		}
+		outln(label)
 		rep.Pushes = append(rep.Pushes, outcome)
 	}
 
@@ -202,8 +186,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	}
 	rep.ReceiptPath = receiptPath
 
-	// An overwrite destroyed someone's state; warn unconditionally, on stderr
-	// so JSON consumers see it too without it polluting the report.
+	// An overwrite destroyed someone's state; warn unconditionally, on stderr.
 	var overwrote []string
 	for _, p := range rep.Pushes {
 		if p.Outcome == "overwritten" {
@@ -224,9 +207,6 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	rep.UnresolvedGraph = graph.Unresolved
 	rep.FilledFromProof = filledFromProof
 
-	if mode == outputJSON {
-		return printJSON(rep)
-	}
 	outln("\n" + heading("Migration executed:"))
 	for _, p := range rep.Pushes {
 		outf("  %-16s %-8s %s\n", p.Module, p.Outcome, p.Location)

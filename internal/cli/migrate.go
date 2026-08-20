@@ -26,7 +26,6 @@ type migrateFlags struct {
 	engine        string
 	execPath      string
 	stateFile     string
-	output        string
 	interactive   bool
 	refresh       bool
 	noTfvars      bool
@@ -58,7 +57,6 @@ func migrateCmd() *cobra.Command {
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
 	flags.BoolVar(&f.overwrite, "overwrite", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials — then the pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
 
@@ -81,7 +79,6 @@ func migrateMapCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringVar(&f.stateFile, "state-file", "", "split this local state file instead of pulling from the configured backend")
-	flags.StringVar(&f.output, "output", "text", "report format: text or json")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for root/engine/state source, preview the moves, confirm")
 	return cmd
 }
@@ -129,33 +126,26 @@ func analyzeMatching(rootDir string, m *manifest.Manifest) (*pipeline.Analysis, 
 
 // migrateMapReport records the plan (carve) result.
 type migrateMapReport struct {
-	Manifest     string            `json:"map"`
-	Skipped      bool              `json:"skipped"`
-	SkipReason   string            `json:"skip_reason,omitempty"`
-	Moves        []moveReport      `json:"moves,omitempty"`
-	ModuleStates map[string]string `json:"module_states,omitempty"`
-	BackupPath   string            `json:"backup_path,omitempty"`
-	ReceiptPath  string            `json:"receipt_path,omitempty"`
+	Manifest     string
+	Skipped      bool
+	SkipReason   string
+	Moves        []moveReport
+	ModuleStates map[string]string
+	BackupPath   string
+	ReceiptPath  string
 }
 
 type moveReport struct {
-	Address string `json:"address"`
-	Module  string `json:"module"`
-	Outcome string `json:"outcome"` // moved | skipped
+	Address string
+	Module  string
+	Outcome string // moved | skipped
 }
 
 func runMigrateMap(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	mode, err := parseOutput(f.output)
-	if err != nil {
-		return err
-	}
 	if f.interactive {
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
@@ -211,12 +201,6 @@ func runMigrateMap(ctx context.Context, f migrateFlags) error {
 		rep = &migrateMapReport{Manifest: manifest.FileName, Skipped: true, SkipReason: err.Error()}
 	}
 
-	if mode == outputJSON {
-		if err := printJSON(rep); err != nil {
-			return err
-		}
-		return verdict
-	}
 	printMigratePlanReport(rootDir, *rep)
 	return verdict
 }
@@ -602,13 +586,6 @@ func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 // verify, run's prove-verdict guard satisfied by the prove step.
 func runMigratePipeline(ctx context.Context, f migrateFlags) error {
 	if f.interactive {
-		mode, err := parseOutput(f.output)
-		if err != nil {
-			return err
-		}
-		if mode == outputJSON {
-			return fmt.Errorf("--interactive and --output json are mutually exclusive")
-		}
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}

@@ -8,7 +8,7 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **Shows up as:** `migrate prove` (or any plan of a module directory) failing with file-not-found. Because data sources follow their consumers automatically, one file-reading data source can land in several module directories — every one of them needs the file.
 
-**Handle it:** the durable fix is restructuring the monolith before refactoring to pass file *content* through a variable (`var.environment_json` + `jsondecode`) so nothing path-relative crosses the split. Copying the referenced files into the module directories also works, but interacts with the guards: files added after `refactor run` invalidate the emit checksum, so the migrate family refuses. The sequence that works is copy the files into the module directories, then `refactor run` **again** so the checksum includes them — migrate then passes, but `refactor verify` still refuses (a fresh run does not produce the copies), so a team flow gated on verify needs the restructure, not the copy.
+**Handle it:** the durable fix is restructuring the monolith before refactoring to pass file *content* through a variable (`var.environment_json` + `jsondecode`) so nothing path-relative crosses the split. Copying the referenced files into the module directories also works, but interacts with the guards: files added after `refactor run` invalidate the emit checksum, so the migrate family refuses. The sequence that works is copy the files into the module directories, then `refactor run` **again** so the checksum includes them — migrate then passes, but `refactor diff` still refuses (a fresh run does not produce the copies), so a team flow gated on diff needs the restructure, not the copy.
 
 ## Sensitive values crossing a boundary
 
@@ -16,7 +16,7 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **Shows up as:** the producer module erroring at plan time during `migrate prove`.
 
-**Handle it:** prefer placement that keeps the sensitive edge inside one module (decorate producer and consumer into the same module — for a data source, that means keeping its consumers with the resource it reads). Hand-editing `sensitive = true` into a module directory works mechanically but makes `refactor verify` and the staleness checksum refuse by design; if you must, do it as a documented post-adoption edit, after `migrate` and `prove` have run.
+**Handle it:** prefer placement that keeps the sensitive edge inside one module (decorate producer and consumer into the same module — for a data source, that means keeping its consumers with the resource it reads). Hand-editing `sensitive = true` into a module directory works mechanically but makes `refactor diff` and the staleness checksum refuse by design; if you must, do it as a documented post-adoption edit, after `migrate` and `prove` have run.
 
 ## Backend derivation covers common types only
 

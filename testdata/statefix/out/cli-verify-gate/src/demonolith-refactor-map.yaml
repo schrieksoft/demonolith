@@ -1,5 +1,5 @@
 version: 1
-created: "2026-08-18T17:03:25Z"
+created: "2026-08-20T08:07:12Z"
 tool: demonolith dev
 source:
     root: /home/karl/code/snapcd-all/misc/demonolith/testdata/statefix/out/cli-verify-gate/src

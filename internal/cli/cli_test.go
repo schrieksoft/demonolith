@@ -24,7 +24,7 @@ func run(t *testing.T, args ...string) error {
 
 // TestRefactor_PlanThenRun drives the plan/run split: plan writes only the
 // manifest, downstream commands refuse a planned-only manifest, run emits and
-// finalizes, verify passes, and a source edit between plan and run is refused.
+// finalizes, diff passes, and a source edit between plan and run is refused.
 func TestRefactor_PlanThenRun(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-plan-run")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
@@ -50,8 +50,8 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	if err := run(t, "migrate", "map", "--root-dir", srcDir, "--exec-path", "/bin/true"); err == nil || !strings.Contains(err.Error(), "has not been run") {
 		t.Errorf("migrate map should refuse a planned-only manifest, got: %v", err)
 	}
-	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); ExitCode(err) != ExitVerdict {
-		t.Errorf("verify of a planned-only manifest should be a verdict, got: %v", err)
+	if err := run(t, "refactor", "diff", "--root-dir", srcDir, "--quiet"); ExitCode(err) != ExitVerdict {
+		t.Errorf("diff of a planned-only manifest should be a verdict, got: %v", err)
 	}
 
 	if err := run(t, "refactor", "run", "--root-dir", srcDir); err != nil {
@@ -75,8 +75,8 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 			t.Errorf("root %s .gitignore missing expected entries:\n%s", mod, gi)
 		}
 	}
-	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); err != nil {
-		t.Errorf("verify after run should pass: %v", err)
+	if err := run(t, "refactor", "diff", "--root-dir", srcDir, "--quiet"); err != nil {
+		t.Errorf("diff after run should pass: %v", err)
 	}
 
 	// Source drift between plan and run: re-plan, edit the source, run refuses.
@@ -98,7 +98,7 @@ func TestRefactor_PlanThenRun(t *testing.T) {
 	}
 }
 
-// TestRefactor_BarePipeline: bare `refactor` = map → run → verify, pausing
+// TestRefactor_BarePipeline: bare `refactor` = map → run → diff, pausing
 // for approval before run (-y approves; without a TTY it refuses).
 func TestRefactor_BarePipeline(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-refactor-bare")
@@ -128,10 +128,34 @@ func TestRefactor_BarePipeline(t *testing.T) {
 	}
 }
 
-// TestRefactorVerify_Gate: verify passes on a clean tree, fails with a verdict
+// TestRefactorValidate: refuses without an engine and before run; the engine
+// accepts a freshly written tree.
+func TestRefactorValidate(t *testing.T) {
+	execPath := testsupport.RequireEngine(t)
+	base := testsupport.OutDir(t, "statefix", "cli-validate")
+	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
+
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules"); err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if err := run(t, "refactor", "validate", "--root-dir", srcDir, "--exec-path", execPath); err == nil || !strings.Contains(err.Error(), "has not been run") {
+		t.Errorf("validate of a planned-only manifest should refuse, got: %v", err)
+	}
+	if err := run(t, "refactor", "run", "--root-dir", srcDir); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if err := run(t, "refactor", "validate", "--root-dir", srcDir); err == nil {
+		t.Error("validate without an engine should fail")
+	}
+	if err := run(t, "refactor", "validate", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
+		t.Errorf("validate of a fresh tree should pass, got: %v", err)
+	}
+}
+
+// TestRefactorDiff_Gate: diff passes on a clean tree, fails with a verdict
 // after an emitted root is edited; --silent carries no message.
-func TestRefactorVerify_Gate(t *testing.T) {
-	base := testsupport.OutDir(t, "statefix", "cli-verify-gate")
+func TestRefactorDiff_Gate(t *testing.T) {
+	base := testsupport.OutDir(t, "statefix", "cli-diff-gate")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
 
 	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
@@ -142,11 +166,11 @@ func TestRefactorVerify_Gate(t *testing.T) {
 	if err := os.WriteFile(mainTf, append(b, []byte("\n# edited\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(t, "refactor", "verify", "--root-dir", srcDir)
+	err := run(t, "refactor", "diff", "--root-dir", srcDir)
 	if ExitCode(err) != ExitVerdict {
 		t.Errorf("a difference should be a verdict (exit %d), got exit %d: %v", ExitVerdict, ExitCode(err), err)
 	}
-	err = run(t, "refactor", "verify", "--root-dir", srcDir, "--silent")
+	err = run(t, "refactor", "diff", "--root-dir", srcDir, "--silent")
 	if ExitCode(err) != ExitVerdict || (err != nil && err.Error() != "") {
 		t.Errorf("--silent must keep the verdict exit code with no message, got: %v", err)
 	}
@@ -663,17 +687,17 @@ func copyTree(src, dst string) error {
 	})
 }
 
-// TestRefactorVerify_Monorepo: monorepo-mode relative module sources must
-// verify cleanly even though verify re-emits into a scratch dir — the paths
+// TestRefactorDiff_Monorepo: monorepo-mode relative module sources must
+// diff cleanly even though diff re-emits into a scratch dir — the paths
 // are computed against the real out dir, not the physical emit dir.
-func TestRefactorVerify_Monorepo(t *testing.T) {
-	base := testsupport.OutDir(t, "sample", "cli-verify-monorepo")
+func TestRefactorDiff_Monorepo(t *testing.T) {
+	base := testsupport.OutDir(t, "sample", "cli-diff-monorepo")
 	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("sample"))
 
 	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--monorepo"); err != nil {
 		t.Fatalf("monorepo refactor failed: %v", err)
 	}
-	if err := run(t, "refactor", "verify", "--root-dir", srcDir, "--quiet"); err != nil {
-		t.Errorf("monorepo verify should pass: %v", err)
+	if err := run(t, "refactor", "diff", "--root-dir", srcDir, "--quiet"); err != nil {
+		t.Errorf("monorepo diff should pass: %v", err)
 	}
 }

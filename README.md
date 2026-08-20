@@ -5,10 +5,11 @@ per-module projects — code, state, and control-plane wiring — in two command
 families split at the code/state line, connected by a map:
 
 ```
-demonolith refactor            # map → run → verify        (the code split)
+demonolith refactor            # map → run → diff          (the code split)
   refactor map                 #   analyze → write the map (the review artifact)
   refactor run                 #   execute the map: write the new module directories
-  refactor verify              #   gate: committed output ≡ committed source
+  refactor validate            #   ask the engine whether it accepts what was written
+  refactor diff                #   gate: committed output ≡ committed source
 
 demonolith migrate             # map → prove → run → verify (the state migration)
   migrate map                  #   pull read-only, back up, split into local state copies
@@ -20,9 +21,12 @@ demonolith migrate             # map → prove → run → verify (the state mig
 The bare family commands run their steps in order, pausing for approval
 before the run step — refactor after showing the map, migrate after the
 proof — with `-y`/`--yes` approving automatically; each subcommand stands
-alone. `refactor map/run/verify` are pure and offline. The migrate family
-needs an engine (`--engine terraform` or `--engine tofu` — no default, the
-choice is explicit). Exit codes are uniform: `0` success, `1` operational
+alone. `refactor map/run/diff` are pure and offline. `refactor validate`
+and the migrate family need an engine (`--engine terraform` or `--engine
+tofu` — no default, the choice is explicit); validate stays credential-free,
+contacting only the provider registry, and because it needs an engine the
+bare `refactor` pipeline skips it — run it yourself before committing.
+Exit codes are uniform: `0` success, `1` operational
 error, `2` negative verdict (a difference, a failed proof, a stale map).
 
 ## Decorators
@@ -163,13 +167,12 @@ a flag. Flags passed alongside `-i` pre-fill the answers.
 
 Key flags: `--out`, `--remainder-module`, `--monorepo` (link in-repo child
 modules instead of copying), `--no-bootstrap`, `--no-backend` (refactor map);
-`--quiet`/`--silent`, `--validate` (refactor verify: run the engine's validate on each
-module directory, still credential-free); `--engine`, `--exec-path`,
+`--quiet`/`--silent` (refactor validate/diff); `--engine`, `--exec-path`
+(refactor validate and every migrate step);
 `--state-file` (migrate map); `--refresh`, `--no-tfvars`, `--var-file`,
 `--var` (migrate prove);
 `--backend-config`, `--unproven`, `--overwrite` (migrate run); `--no-color`
-(any command); `--output
-{text|json}` and `--interactive`/`-i` where applicable.
+(any command); `--interactive`/`-i` where applicable.
 
 ## What each stage does
 
@@ -204,13 +207,13 @@ handle them manually.
 
 The near-truth is "a developer runs `refactor`, CI runs `migrate`" — but the two halves split differently across people and pipelines, because one is reversible and one is not:
 
-- **A developer runs `refactor` locally** and opens a PR. Decorators, the map, and the new module directories are ordinary files, so the PR *is* the review: teammates read the map (placement, state moves, wiring, state locations) like any other diff, and rejecting the PR undoes everything.
-- **CI runs `refactor verify` on every PR and push** — the standing gate that the committed module directories still match the source. Offline, no engine, no credentials, seconds. This is the piece that keeps the split honest while the PR is iterated on, and forever after.
+- **A developer runs `refactor` locally**, then `refactor validate` — the engine's own check that the written directories are valid, credential-free — and opens a PR. Decorators, the map, and the new module directories are ordinary files, so the PR *is* the review: teammates read the map (placement, state moves, wiring, state locations) like any other diff, and rejecting the PR undoes everything.
+- **CI runs `refactor diff` on every PR and push** — the standing gate that the committed module directories still match the source. Offline, no engine, no credentials, seconds. This is the piece that keeps the split honest while the PR is iterated on, and forever after. It compares files, not validity — validity was `refactor validate`'s job before the commit.
 - **CI can rehearse the migration on the PR**: `migrate map` pulls the monolith's state read-only and splits local copies; `migrate prove` plans every module to zero changes. Nothing is pushed, so a rejected PR leaves the world untouched. This lane needs the working-session inputs as CI secrets — backend credentials, `TF_VAR_*` values, and any `-var`-only value passed as `--var`.
 - **`migrate run` is not a PR job.** Pushing state from an unmerged branch means the world has already changed when the PR is rejected. Merge first, then run `demonolith migrate --engine …` once — a manually triggered pipeline or a person at a terminal — inside a change freeze on the monolith, keeping the prove-to-run window short. A crashed run is retried by just re-running, and the receipts record what happened for anyone who looks later.
 - **Adoption and retirement stay human**: apply the bootstrap, watch every module verify clean, then retire the monolith's pipelines and old state.
 
-[`sample-deployment-demonolith`](https://github.com/snapcd-samples/sample-deployment-demonolith) carries this as a runnable GitHub Actions workflow — verify on every PR, a read-only rehearsal on every PR, and the migration behind a manual `workflow_dispatch`.
+[`sample-deployment-demonolith`](https://github.com/snapcd-samples/sample-deployment-demonolith) carries this as a runnable GitHub Actions workflow — diff on every PR, a read-only rehearsal on every PR, and the migration behind a manual `workflow_dispatch`.
 
 ## Running a module by hand
 
@@ -306,7 +309,7 @@ whole, and separating it spares you surgery on the terraform block. Give
 every root a `.gitignore` covering `.terraform/`, `*.tfstate*`, `.env`, and
 the tfvars file from step 7, so nothing local can be committed by accident.
 
-**5. Gate the split** (what `refactor verify` does): redo steps 3–4 from
+**5. Gate the split** (what `refactor diff` does): redo steps 3–4 from
 scratch and compare the results file by file — in practice, a careful code
 review of every new file against the monolith source, repeated after every
 source change.

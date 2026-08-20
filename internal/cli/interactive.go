@@ -69,7 +69,7 @@ func runRefactorMapInteractive(f refactorFlags) error {
 }
 
 // refactorMapInteractive returns the resolved flags so the pipeline can
-// continue with run/verify after an interactive plan.
+// continue with run/diff after an interactive plan.
 func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 	if !stdinIsTTY() {
 		return f, fmt.Errorf("--interactive requires a terminal")
@@ -202,7 +202,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 			outln("Aborted; source decorators kept, nothing else written.")
 			return f, errInteractiveAborted
 		}
-		if _, err := runRefactorMap(f, outputText); err != nil {
+		if _, err := runRefactorMap(f); err != nil {
 			return f, err
 		}
 		return f, nil
@@ -213,8 +213,8 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 var errInteractiveAborted = fmt.Errorf("aborted")
 
 // runRefactorInteractivePipeline is the bare `refactor -i`: interactive plan,
-// then confirmed run and a quiet verify.
-func runRefactorInteractivePipeline(f refactorFlags) error {
+// then confirmed run, an offered validate, and a quiet diff.
+func runRefactorInteractivePipeline(ctx context.Context, f refactorFlags) error {
 	resolved, err := refactorMapInteractive(f)
 	if err != nil {
 		if err == errInteractiveAborted {
@@ -232,13 +232,30 @@ func runRefactorInteractivePipeline(f refactorFlags) error {
 		return nil
 	}
 	outf("\n%s\n\n", banner("── refactor run ──"))
-	if err := runRefactorRun(rootDir, outputText); err != nil {
+	if err := runRefactorRun(rootDir); err != nil {
 		return err
 	}
-	outf("\n%s\n\n", banner("── refactor verify ──"))
+	outf("\n%s\n\n", banner("── refactor validate ──"))
+	if resolved.engine == "" && resolved.execPath == "" {
+		ok, err := promptYesNo("Have the engine check the new module directories now (init -backend=false + validate; credential-free)?", true)
+		if err != nil {
+			return err
+		}
+		if ok {
+			engine, err := promptEngine()
+			if err != nil {
+				return err
+			}
+			resolved.engine = engine
+		}
+	}
+	if err := pipelineValidate(ctx, rootDir, resolved); err != nil {
+		return err
+	}
+	outf("\n%s\n\n", banner("── refactor diff ──"))
 	vf := resolved
 	vf.quiet = true
-	return runRefactorVerify(rootDir, outputText, vf)
+	return runRefactorDiff(rootDir, vf)
 }
 
 func splitTargets(s string) []string {

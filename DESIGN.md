@@ -66,7 +66,9 @@ pipeline, connected by the map:
         │            (written: no checksum yet)    moves, wiring, state locations
    refactor run ───► module directories + backends      executes the plan verbatim;
         │            + bootstrap; checksum        refuses a drifted source
-   refactor verify   committed output ≡ source    the provenance gate (PR CI)
+   refactor validate the engine accepts the       init -backend=false + validate;
+        │            output                       credential-free, pre-commit
+   refactor diff     committed output ≡ source    the provenance gate (PR CI)
         │
    migrate map ───► local split + receipt        pull read-only, back up, split
         │
@@ -79,7 +81,7 @@ pipeline, connected by the map:
 ```
 
 Underneath, the code side is one shared analysis pipeline, `pipeline.Analyze` —
-pure, offline, deterministic — run by `refactor map` (to compute), `refactor run` and `refactor verify` (to
+pure, offline, deterministic — run by `refactor map` (to compute), `refactor run` and `refactor diff` (to
 re-derive and compare), and the migrate proofs (to recover the boundary they
 thread values over):
 
@@ -451,7 +453,9 @@ operationally *and* that the computed wiring is correct — because a wrong
 
 Two command families split exactly at the code/state line, connected by the
 map (§12). Every verb has one meaning: `plan` produces, `run` executes
-with guards, `verify` judges the family's output, `prove` rehearses. The bare
+with guards, `validate` asks the engine, `diff` compares the committed
+code split against its source, `verify` judges the migration's output,
+`prove` rehearses. The bare
 family commands run their steps in order and **pause for approval before the
 run step** — refactor after showing the plan, migrate after showing the proof
 — with `-y`/`--yes` approving automatically (without a TTY the pause is a
@@ -467,10 +471,11 @@ heuristic; ambient credentials stay uncaptured by design) — closing by
 printing the equivalent non-interactive command.
 
 ```bash
-demonolith refactor              # map → run → verify
+demonolith refactor              # map → run → diff
 demonolith refactor map         # analyze → write the map (offline)
 demonolith refactor run          # execute the map: emit everything (offline)
-demonolith refactor verify       # committed output ≡ committed source (offline)
+demonolith refactor validate     # the engine accepts the written directories (needs --engine)
+demonolith refactor diff         # committed output ≡ committed source (offline)
 
 demonolith migrate               # map → prove → run → verify
 demonolith migrate map          # pull read-only, back up, split into local copies
@@ -498,13 +503,19 @@ default** (`--exec-path` overrides resolution).
   `demono.root.tfvars`, `demono.graph.tfvars`, …), and the bootstrap — then finalizes the
   `emit_checksum`. No mode flags: everything comes from the map. It
   refuses when the source no longer matches the plan (semantic staleness).
-- **`refactor verify`** re-runs analysis+emit in memory and compares against
-  the committed output — the provenance gate. Default output shows the
-  committed plan being confirmed; `--quiet` is the outcome line, `--silent`
-  the exit code only. `--validate` additionally engine-validates each
-  committed root (`init -backend=false` + `validate`; needs `--engine`, still
-  credential-free). Undo on the code side is git — the module directories and
-  map are ordinary committed files.
+- **`refactor validate`** engine-validates each written root, bootstrap
+  included (`init -backend=false` + `validate`: providers installed,
+  references resolved, types checked against provider schemas). Needs
+  `--engine` but no credentials — only the provider registry is contacted.
+  It is the developer's pre-commit check; the bare pipeline skips it so
+  `refactor` itself stays engine-free.
+- **`refactor diff`** re-runs analysis+emit in memory and diffs the result
+  against the committed output — the provenance gate, with `diff(1)`'s exit
+  semantics: 0 when identical. Default output shows the committed plan being
+  confirmed; `--quiet` is the outcome line, `--silent` the exit code only.
+  It compares files and never asks the engine — that is `refactor
+  validate`'s job, and the in-sync verdict says so. Undo on the code side is
+  git — the module directories and map are ordinary committed files.
 - **`migrate map`** is the local split (§9 mechanics): read-only pull (or
   `--state-file`), backup, `state mv` into per-module files under
   `<out>/.demono/`, an action-"plan" receipt. Idempotent per generation;
@@ -554,9 +565,9 @@ default** (`--exec-path` overrides resolution).
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational
 error, `2` **negative verdict** — the run worked but the answer is "no" (the
 committed output differs, a module plans a create/destroy, a stale or
-inapplicable map). `--output json` replaces the human report with one
-JSON document. Without a TTY nothing ever prompts; `--interactive` is an
-error rather than a silent fallback.
+inapplicable map). Beyond the exit code, the machine-readable record of what
+happened is the receipts (§12) — stdout is for people. Without a TTY nothing
+ever prompts; `--interactive` is an error rather than a silent fallback.
 
 Not yet built, by design: interactive cycle resolution (a cycle is reported,
 the breaking moves are not yet offered). Remote pushes are exercised end to
@@ -651,7 +662,7 @@ control plane needs:
   values are supplied where the bootstrap is applied (an external input whose
   name collides with a bootstrap variable is a refusal, not a rename).
 
-The bootstrap is covered by the emit checksum (so `refactor verify` and the
+The bootstrap is covered by the emit checksum (so `refactor diff` and the
 staleness guards treat it as generated output) but is **not** a placement
 module: it
 appears in no state move and is never planned by `prove` — it needs a Snap CD
@@ -674,7 +685,7 @@ read-only from whatever backend the root configures.
   nothing passed by hand); the generated wiring files become the permanent
   value-passing mechanism for detached roots.
 - **Team CI.** The dev authors the plan (decorators, `refactor`, committed
-  roots + map in the PR); PR CI judges it — `refactor verify` gates
+  roots + map in the PR); PR CI judges it — `refactor diff` gates
   provenance credential-free, then `migrate map` + `migrate prove` gate
   inertness with backend read access, the split artifacts living and dying in
   the job workspace; external inputs injected via `TF_VAR_*` or `--var`, nothing landing on disk
