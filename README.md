@@ -8,14 +8,14 @@ families split at the code/state line, connected by a map:
 demonolith refactor            # map → run → validate → diff   (the code split)
   refactor map                 #   analyze → write the map (the review artifact)
   refactor run                 #   execute the map: write the new module directories (they must not exist yet)
-  refactor validate            #   ask the engine whether it accepts what was written
-  refactor diff                #   gate: committed output ≡ committed source
+  refactor validate            #   gate: ask the engine whether it accepts what was written
+  refactor diff                #   gate: the map and module directories on disk still match the source
 
 demonolith migrate             # map → prove → run → verify (the state migration)
   migrate map                  #   pull read-only, back up, split into local state copies
-  migrate prove                #   prove the split changes nothing (plans over the local copies)
+  migrate prove                #   gate: prove the split changes nothing (plans over the local copies)
   migrate run                  #   push each module's state to its new backend (guarded, never forced)
-  migrate verify               #   judge the result against the real backends
+  migrate verify               #   gate: judge the result against the real migrated backends
 ```
 
 The bare family commands run their steps in order, pausing for approval
@@ -26,7 +26,9 @@ and the migrate family need an engine (`--engine terraform` or `--engine
 tofu` — no default, the choice is explicit); validate stays credential-free,
 contacting only the provider registry. The bare `refactor` runs the validate
 step when given `--engine`, and otherwise skips it with a note saying how to
-run it before committing.
+run it before committing. Without a TTY nothing ever prompts: the approval
+pause is a refusal naming `-y`, and `--interactive` is an error, never a
+silent fallback.
 Exit codes are uniform: `0` success, `1` operational
 error, `2` negative verdict (a difference, a failed proof, a stale map).
 
@@ -58,12 +60,19 @@ and reproducible non-interactively.
 From inside the monolith root (every command also takes `--root-dir <dir>`):
 
 ```bash
-# Split the code. The new module directories land in modules/ by default (--out to change):
+# Split the code. The new module directories land in roots/ by default (--out to change):
 demonolith refactor                      # or: refactor map && refactor run
 
 # Migrate the state, end to end:
 demonolith migrate --engine tofu         # map → prove → run → verify
 ```
+
+The default is `roots/`, not `modules/`, because what demonolith writes
+are **root modules**: each carries its own backend and provider
+initialization and owns its own state. A reusable module — not strictly
+defined, but by convention — has neither; the calling root supplies both.
+Keeping the two apart also leaves `modules/` free for exactly those
+reusable child modules in a monorepo layout.
 
 Every command writes a receipt, and the audit trail is five fixed-name
 receipt files, overwritten per execution. The map receipt
@@ -76,7 +85,9 @@ later step to this exact generation. The migrate steps write theirs —
 `demonolith-migrate-prove.yaml`, `demonolith-migrate-verify.yaml` — each
 carrying its `created` datetime and the generation's `map_checksum`, so an
 external system can tell what ran, when, and for which map; history lives in
-version control. Undo on the code side is git: everything demonolith writes
+version control. The map's schema is a versioned public API — additive
+within a major version, and a consumer refuses a map whose major version it
+doesn't know rather than guessing. Undo on the code side is git: everything demonolith writes
 is ordinary committed files. The target module directories belong to
 demonolith outright: `refactor run` refuses when they already contain files,
 and `--overwrite` deletes them entirely — engine artifacts and any local
@@ -103,8 +114,8 @@ module's init. Every module directory (bootstrap included) gets its own
 (`.terraform/`, `*.tfstate`, `demono.env`, `demono.root.tfvars`,
 `demono.graph.tfvars`, …), so a module directory is safe to commit or ship to its own repo as-is. `migrate run` pushes each
 module's state to its derived location — the destination must be empty or already
-hold this module's state (an idempotent skip), a push is never forced, and
-the monolith's own state is never written. Retiring the monolith (its
+hold this module's state (an idempotent skip), a push is never forced by
+default, and the monolith's own state is never written. Retiring the monolith (its
 pipelines and its old state) is deliberately a human cutover step. A monolith
 with no backend stays local: each module directory receives its
 `terraform.tfstate` in place.
@@ -214,8 +225,8 @@ rewrite existing target dirs); `--no-color`
    backend, guarded; then **judgment** (`migrate verify`) — the same
    proof re-run against the real backends.
 
-See `DESIGN.md` for the pipeline concepts, the CLI and map design, and
-usage patterns; `LIMITATIONS.md` lists the split's known limits and how to
+See `DESIGN.md` for the concepts and internals behind these stages;
+`LIMITATIONS.md` lists the split's known limits and how to
 handle them manually.
 
 ## In a team
@@ -275,7 +286,7 @@ Only provider environment (`AWS_PROFILE`, plugin mirrors, …) stays outside
 by design — ambient, per the one-shell-session prerequisite:
 
 ```bash
-cd modules/app
+cd roots/app
 source ../../.env    # ambient provider credentials from the source project —
                      # demonolith cannot reliably detect these, so source them
                      # yourself
@@ -448,3 +459,8 @@ reason demonolith exists.
 go build ./...
 go test ./...   # state/proof tests skip without a terraform/tofu binary
 ```
+
+Pushes are exercised end to end on local-type backends in the test suite;
+the cloud backend types are unit-tested at the derivation level, with the
+runnable sample exercising the s3 derivation against a real S3-compatible
+store.

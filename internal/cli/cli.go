@@ -32,8 +32,9 @@ func toolString() string {
 }
 
 // Exit codes, uniform across commands: 0 success, 1 operational error, 2 a
-// negative verdict — the run worked but the answer is "no" (the committed output differs, a module
-// plans changes, a stale or inapplicable manifest). Pipelines can therefore
+// negative verdict — the run worked but the answer is "no" (the split on disk
+// differs from the source, a module plans changes, a stale or inapplicable
+// manifest). Pipelines can therefore
 // distinguish "the split is wrong" from "the job broke".
 const (
 	ExitOK      = 0
@@ -118,7 +119,7 @@ func resolveRoot(rootDir string) string {
 // force an absolute path into it and break every other checkout.
 func resolveOut(rootDir, out string) (string, error) {
 	if out == "" {
-		return filepath.Join(rootDir, "modules"), nil
+		return filepath.Join(rootDir, "roots"), nil
 	}
 	if !filepath.IsAbs(out) {
 		out = filepath.Join(rootDir, out)

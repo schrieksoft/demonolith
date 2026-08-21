@@ -1,9 +1,9 @@
 # Demonolith — Design
 
-This document explains what Demonolith is, the concepts it works with, and how
-its stages fit together into one pipeline. It is the conceptual companion to the
-`README.md` (which is task-oriented) and the package doc-comments (which are
-detail-oriented).
+This document explains the concepts Demonolith works with and how its stages
+fit together — the design behind the tool, for people working on it. The
+user surface — commands, flags, workflows, limitations — is the `README.md`'s
+and is not repeated here; the package doc-comments carry the detail.
 
 ---
 
@@ -56,34 +56,13 @@ oracle** (§10): a graph-threaded, zero-diff plan bundle run against real
 
 ## 2. The pipeline at a glance
 
-What a user runs is two command families, each a produce/execute/judge
-pipeline, connected by the map:
-
-```
-   decorate sources
-        │
-   refactor map ──► demonolith-refactor-map.yaml     the reviewable plan: placement,
-        │            (written: no checksum yet)    moves, wiring, state locations
-   refactor run ───► module directories + backends      executes the plan verbatim;
-        │            + bootstrap; checksum        refuses a drifted source
-   refactor validate the engine accepts the       init -backend=false + validate;
-        │            output                       credential-free, pre-commit
-   refactor diff     committed output ≡ source    the provenance gate (PR CI)
-        │
-   migrate map ───► local split + receipt        pull read-only, back up, split
-        │
-   migrate prove ──► prove receipt                threaded zero-diff proof over
-        │                                         plan's exact split artifacts
-   migrate run ────► seeded backends + receipt    guarded push: empty targets
-        │                                         only, never forced
-   migrate verify ─► final receipt                the same proof against the
-                                                  state as pushed
-```
-
-Underneath, the code side is one shared analysis pipeline, `pipeline.Analyze` —
-pure, offline, deterministic — run by `refactor map` (to compute), `refactor run` and `refactor diff` (to
-re-derive and compare), and the migrate proofs (to recover the boundary they
-thread values over):
+The user-facing surface — two command families, `refactor map → run →
+validate → diff` and `migrate map → prove → run → verify`, each pausing for
+approval before its run step — is the README's. What matters here is what
+sits underneath: the code side is one shared analysis pipeline,
+`pipeline.Analyze` — pure, offline, deterministic — run by `refactor map`
+(to compute), `refactor run` and `refactor diff` (to re-derive and compare),
+and the migrate proofs (to recover the boundary they thread values over):
 
 ```
 Parse       *.tf → reference graph                     [hclgraph]
@@ -95,9 +74,9 @@ Cycle gate  refuse impossible splits                   [cycle]
 ```
 
 The stages that do I/O sit behind the commands: Emit (`refactor run`) writes
-the module directories via `hclwrite`; StateCarve (`migrate map`), the proofs
-(`migrate prove`/`verify`), and the push (`migrate run`) shell out to a real
-`terraform`/`tofu` binary via `terraform-exec`.
+the module directories via `hclwrite`; the state split (`migrate map`), the
+proofs (`migrate prove`/`verify`), and the push (`migrate run`) shell out to
+a real `terraform`/`tofu` binary via `terraform-exec`.
 
 Module layout mirrors these stages one-package-per-stage under `internal/`.
 
@@ -396,9 +375,9 @@ Only **managed resources** carry state, so `BuildPlan` moves resources and skips
 data sources entirely. A duplicated data source contributes **no** move — its
 copies are re-read in each module at plan time.
 
-**Nothing is pushed.** In v1 the split per-module state files are the artifact;
-guarded push to new/empty backend locations (with serial/lineage conflicts as
-surfaced errors, never `-force`) is a later feature.
+**The split itself pushes nothing.** The guarded push into each module's
+derived backend is `migrate run`'s job (§11); the monolith's own backend is
+only ever read.
 
 The `SourceAddr`/`DestAddr` split in `Move` is identical for flat roots today but
 exists so nested re-addressing can be added without an interface change.
@@ -453,136 +432,57 @@ operationally *and* that the computed wiring is correct — because a wrong
 
 ## 11. The CLI  `[internal/cli]`
 
-Two command families split exactly at the code/state line, connected by the
-map (§12). Every verb has one meaning: `plan` produces, `run` executes
-with guards, `validate` asks the engine, `diff` compares the committed
-code split against its source, `verify` judges the migration's output,
-`prove` rehearses. The bare
-family commands run their steps in order and **pause for approval before the
-run step** — refactor after showing the plan, migrate after showing the proof
-— with `-y`/`--yes` approving automatically (without a TTY the pause is a
-refusal naming `-y`, never a silent proceed). `-i` on any of them is a guided
-walkthrough whose every choice resolves to a flag value or a decorator a
-non-interactive run reproduces. The bare `migrate -i` fronts the pipeline
-with a full inputs wizard: external variables shown with the value and source
-the engine's precedence resolved (accepting `name=value` / `@file`
-additions), the derived backend with its `demono.env`-bound credential
-attributes and extra `-backend-config` collection, and an advisory of the
-ambient provider environment per declared provider (best-effort prefix
-heuristic; ambient credentials stay uncaptured by design) — closing by
-printing the equivalent non-interactive command.
+(What each command does, its flags, and the workflows around them are the
+README's; this section is the design behind that surface.)
 
-```bash
-demonolith refactor              # map → run → validate → diff
-demonolith refactor map         # analyze → write the map (offline)
-demonolith refactor run          # execute the map: emit everything (offline)
-demonolith refactor validate     # the engine accepts the written directories (needs --engine)
-demonolith refactor diff         # committed output ≡ committed source (offline)
+**One meaning per verb.** `map` produces the reviewable plan, `run` executes
+it with guards, `validate` asks the engine, `diff` compares the code split
+on disk against its source, `prove` rehearses, `verify` judges the outcome.
+The bare family commands run their steps in order and **pause for approval
+before the run step**; without a TTY the pause is a refusal naming `-y`,
+never a silent proceed, and `--interactive` is likewise an error rather
+than a fallback. Every interactive choice resolves to a flag value or a
+decorator, so a guided session is reproducible non-interactively.
 
-demonolith migrate               # map → prove → run → verify
-demonolith migrate map          # pull read-only, back up, split into local copies
-demonolith migrate prove         # threaded zero-diff proof over the local state copies
-demonolith migrate run           # guarded push into the derived backends
-demonolith migrate verify        # the same proof against the real backends
-```
+**Every guard has one home.** Map-time checks — backend-type support, the
+reserved `snapcd` module name, `--out` inside the root — live in
+`refactor map` and are recorded into the map. Whether the target
+directories may exist is `refactor run`'s own gate: they must be gone, or
+`--overwrite` deletes them whole; run also refuses a source that no longer
+matches the map (semantic staleness) and is the step that finalizes the
+`emit_checksum`. On the state side the coupling is receipts: `migrate
+prove` requires the generation's migrate-map receipt with intact
+artifacts; `migrate run` requires a passing prove receipt **no older than
+the map receipt** (`--unproven` is the explicit override — run never
+proves on its own); `migrate verify` requires the run receipt. The push
+guard is run's alone: a destination must be empty or already hold this
+module's state — same lineage, or identical content from a fresh split,
+the idempotent skip that makes a crashed run retryable — and `--force` is
+the one explicit, loudly-warned exception (`state push -force`). The
+monolith's own state is never written.
 
-There are no positional arguments; every command takes `--root-dir`,
-defaulting to the current directory. `--engine {terraform|tofu}` has **no
-default** (`--exec-path` overrides resolution).
-
-- **`refactor map`** runs `pipeline.Analyze` (which includes the cycle gate)
-  and writes the mapped map — nothing emitted. It owns every map-time
-  choice as flags recorded into the map: `--out` (resolved against the
-  root, must be inside it; default `modules`), `--remainder-module`, `--monorepo`
-  (relink in-repo child modules instead of copying, §8), `--no-bootstrap`,
-  `--no-backend`. Backend-type support and the reserved `snapcd` module name
-  are checked here; whether the target dirs may exist is run's own gate
-  (they must be gone, or `--overwrite` deletes them whole).
-- **`refactor run`** owns its target directories outright: they must not
-  exist, or `--overwrite` deletes them whole (a loud warning names them)
-  before rewriting — hand-added content never survives a run. It executes
-  the map verbatim — emit module directories,
-  derived backends inside each root.tf, a `.gitignore` per root covering the local
-  artifacts later stages leave behind (`.terraform/`, `*.tfstate`, `demono.env`,
-  `demono.root.tfvars`, `demono.graph.tfvars`, …), and the bootstrap — then finalizes the
-  `emit_checksum`. No mode flags: everything comes from the map. It
-  refuses when the source no longer matches the plan (semantic staleness).
-- **`refactor validate`** engine-validates each written root, bootstrap
-  included (`init -backend=false` + `validate`: providers installed,
-  references resolved, types checked against provider schemas). Needs
-  `--engine` but no credentials — only the provider registry is contacted.
-  It is the developer's pre-commit check; the bare pipeline runs it when
-  `--engine` is given and otherwise skips it with a hint, so `refactor`
-  stays engine-free by default.
-- **`refactor diff`** re-runs analysis+emit in memory and diffs the result
-  against the committed output — the provenance gate, with `diff(1)`'s exit
-  semantics: 0 when identical. Default output shows the committed plan being
-  confirmed; `--quiet` is the outcome line, `--silent` the exit code only.
-  It compares files and never asks the engine — that is `refactor
-  validate`'s job. Undo on the code side is
-  git — the module directories and map are ordinary committed files.
-- **`migrate map`** is the local split (§9 mechanics): read-only pull (or
-  `--state-file`), backup, `state mv` into per-module files under
-  `<out>/.demono/`, an action-"plan" receipt. The pull and the split happen
-  in full on every run — a leftover carve is never trusted, only compared:
-  modules whose fresh carve matches the previous one are reported as already
-  correct.
-- **`migrate prove`** proves *plan's output*: it requires the generation's
-  complete plan receipt with intact artifacts, threads producer outputs into
-  consumer inputs (the control plane's runtime role), plans every root against
-  its local copy, and writes a mode-"prove" receipt. Variable values resolve
-  in the engine's own precedence — `TF_VAR_*` env, auto-loaded tfvars,
-  `--var-file`, `--var`, ascending — and cross-module inputs are never
-  user-suppliable. Each module's resolved root values are materialized into its
-  `demono.root.tfvars` (loaded explicitly via -var-file — the files are
-  deliberately not `.auto.tfvars`); `--no-tfvars` (for tests) writes nothing
-  and threads everything in memory. PR CI runs plan + prove in the job
-  workspace: the artifacts die with it.
-- **`migrate run`** executes the migration. Preconditions: the plan receipt,
-  and a passing prove receipt **no older than it** — missing or stale refuses
-  with "run `demonolith migrate prove`" (`--unproven` is the explicit
-  override; run never proves on its own). First it materializes each module's
-  gitignored `demono.env` (0600) — backend credentials from the root's
-  init-time resolved config as engine environment variables — and its
-  `demono.graph.tfvars` with the cross-module input values resolved from the
-  applied state; values state cannot yield (child-module outputs, expressions
-  included) are filled from the proof's threaded planned outputs, recorded by
-  prove in a gitignored workdir sidecar. Whatever remains (an --unproven run)
-  is reported rather than fatal.
-  Then per module, with a
-  progress line per step: init its derived backend (`--backend-config` passes
-  out-of-band values), `state pull` to confirm the target is **empty** (an
-  existing state matching this migration — same lineage, or identical content from a
-  fresh split — is an idempotent skip, which is what makes a crashed run
-  retryable by just re-running), `state push` the module's state file — not forced by
-  default. Non-matching existing state refuses unless `--force` explicitly
-  sacrifices it (`state push -force`, with a loud warning naming every
-  replaced target). A monolith without a backend gets local seeding: each
-  root receives its `terraform.tfstate` in place. An action-"run" receipt records every
-  destination; a failed run leaves a partial (non-complete) receipt recording
-  how far it got, unless a complete receipt for the generation already
-  exists. The monolith's own state is never written.
-- **`migrate verify`** is the post-run judgment: the same threaded proof
-  executed against each root's **real backend** — a full init that must find
-  the seeded state, then a no-refresh plan that must show zero changes
-  (a missing state would plan everything as a create) — writing a mode-"final"
-  receipt. It judges the migration, never the world of managed resources:
-  a red verify means the migration or its inputs are wrong — or a data
-  source's answer moved, the one live read a plan always makes. Materializes `demono.env` and `demono.root.tfvars` like the
-  earlier steps, so it works standalone. Requires the run receipt.
+**Artifacts are materialized by the step that owns them.** Run and verify
+write each module's gitignored `demono.env` (0600) from the root's
+init-time resolved backend config, in the engine's official environment
+variables. Prove (and verify) write `demono.root.tfvars` from the engine's
+own variable precedence. Run writes `demono.graph.tfvars` from the applied
+state, with expression-valued cross-module outputs filled from the proof's
+planned values, which prove records in a gitignored workdir sidecar.
+Cross-module inputs are never user-suppliable — the proof threads them
+itself, because a hand-supplied value would prove nothing.
 
 **Machine interface.** Exit codes are uniform: `0` success, `1` operational
 error, `2` **negative verdict** — the run worked but the answer is "no" (the
-committed output differs, a module plans a create/destroy, a stale or
+split on disk differs from the source, a module plans a create/destroy, a stale or
 inapplicable map). Beyond the exit code, the machine-readable record of what
-happened is the receipts (§12) — stdout is for people. Without a TTY nothing
-ever prompts; `--interactive` is an error rather than a silent fallback.
+happened is the receipts (§12) — stdout is for people.
 
 Not yet built, by design: interactive cycle resolution (a cycle is reported,
-the breaking moves are not yet offered). Remote pushes are exercised end to
-end against the Snap CD State Store's http backend; cloud backend types
-(s3, azurerm, gcs, consul, cos, oss, kubernetes, pg, remote) are
-unit-tested at the derivation level only.
+the breaking moves are not yet offered). Pushes are exercised end to end on
+local-type backends in the test suite; the cloud backend types (s3,
+azurerm, gcs, consul, cos, oss, kubernetes, pg, remote) are unit-tested at
+the derivation level, with the runnable sample exercising the s3 derivation
+against a real S3-compatible store.
 
 ---
 
@@ -631,15 +531,16 @@ ran, when, and for which plan without parsing filenames; history lives in
 version control:
 
 - **Receipts** (`demonolith-migrate-map.yaml`, `demonolith-migrate-run.yaml`)
-  — one canonical file per migrate step, overwritten per execution: the *plan*
-  receipt records which moves ran, the
-  split state paths, and the backup path; a *run* receipt records where each
-  module's state was pushed. Both carry the executed map's
+  — one canonical file per migrate step, overwritten per execution: the
+  action-"map" receipt records which moves ran, the
+  split state paths, and the backup path; the action-"run" receipt records where
+  each module's state was pushed. Both carry the executed map's
   `emit_checksum`, which ties them to one map *generation* (the filename
-  is constant), so re-running `refactor` invalidates old receipts. Idempotency
-  consults the receipt first; on resume after a partial split, migrate reuses
-  the working monolith state (never re-pulls — that would corrupt a partial
-  split) and classifies each move by inspecting state addresses.
+  is constant), so re-running `refactor` invalidates old receipts. A re-run
+  never trusts leftovers: `migrate map` pulls fresh and redoes the whole
+  split, comparing each new carve against any previous one, and `migrate
+  run` re-derives idempotency from the destinations themselves (lineage or
+  identical content), so a crashed run is retried by just re-running.
 - **Verdicts** — mode-"prove" (`demonolith-migrate-prove.yaml`) judges the split
   artifacts before the push; mode-"final" (`demonolith-migrate-verify.yaml`) judges
   the pushed states against the real backends. Both carry per-module create/destroy/update counts, the
@@ -680,42 +581,14 @@ server, and applying it is the adoption step, not part of the split.
 
 ---
 
-## 13. Usage patterns
+## 13. Testing & fixtures
 
-The spine is the same everywhere — decorate → `refactor` → review →
-`migrate` — and only two things vary: who executes each step, and where
-external input values come from. Where the monolith's state lives is
-deliberately not an axis: `migrate map` takes a local `--state-file` or pulls
-read-only from whatever backend the root configures.
-
-- **Solo.** One person runs both bare pipelines from inside the root
-  (`demonolith refactor --out modules`, then `demonolith migrate --engine
-  tofu`); external inputs come from the root's own tfvars files (auto-loaded,
-  nothing passed by hand); the generated wiring files become the permanent
-  value-passing mechanism for detached roots.
-- **Team CI.** The dev authors the plan (decorators, `refactor`, committed
-  roots + map in the PR); PR CI judges it — `refactor diff` gates
-  provenance credential-free, then `migrate map` + `migrate prove` gate
-  inertness with backend read access, the split artifacts living and dying in
-  the job workspace; external inputs injected via `TF_VAR_*` or `--var`, nothing landing on disk
-  by default. A post-merge job executes the
-  reviewed generation verbatim: `migrate map` → `prove` → `run` → `verify`,
-  archiving the receipts.
-- **Control plane.** Same as team CI through the merge; adoption is applying
-  the generated bootstrap module (§12a) against the Snap CD server —
-  `cross_edges` already realized as input-from-output wirings,
-  `ordering_edges` as dependency edges, external inputs bound to the
-  bootstrap's variables. The ordering the detached stories could only report
-  is enforced natively, and the monolith retires.
-
----
-
-## 14. Testing & fixtures
-
-Tests live beside each package (`internal/*/*_test.go`). Four self-contained
+Tests live beside each package (`internal/*/*_test.go`). Five self-contained
 fixtures under `testdata/` drive them, built on credential-free providers so
 the entire pipeline — **including the proof oracle** — runs **offline with zero
-credentials**:
+credentials**. Each fixture keeps its committed inputs (source and seed
+states) in `in/`; tests copy them into a gitignored `out/` scratch tree via
+`testsupport.OutDir`, so a run never mutates a fixture:
 
 - **`monolith/`** — the full-featured fixture: cross-module value edge, a
   cross-module `depends_on`, catchall resources, and a data source duplicated
@@ -729,12 +602,8 @@ credentials**:
 - **`cyclic/`** — two mutually-referencing resources in different modules; proves
   the cycle gate refuses.
 - **`sample/`** — the realistic showcase monolith (local and GitHub child
-  modules, multi-consumer data sources, a config-file path dependency), driven
-  through both full pipelines end to end.
-- **`sample-snapcd/`** — the same monolith with the Snap CD State Store as its
-  remote backend and Snap CD data sources as the shared configuration:
-  exercises remote read-only pull, http backend derivation, and real pushes
-  into the state store. Self-skips without a local server.
+  modules, multi-consumer data sources), driven through both full pipelines
+  end to end.
 
 The pure stages (parse, decorator, placement, boundary, cycle, emit) run
 anywhere. The `statemove` and `proof` tests need a real `terraform`/`tofu`
@@ -748,7 +617,7 @@ go test ./...   # state/proof tests skip without a terraform/tofu binary
 
 ---
 
-## 15. Design principles, distilled
+## 14. Design principles, distilled
 
 - **Reason over a graph, never over text.** Every decision joins on
   `Address.String()`; edges come from AST traversal so nothing hidden in a
@@ -761,8 +630,9 @@ go test ./...   # state/proof tests skip without a terraform/tofu binary
 - **Value edges and ordering edges are different things.** Conflating them
   produces spurious wiring; keeping them separate (`CrossEdge` vs.
   `OrderingEdge`, `Refs` vs. `DependsOnOnly`) is a load-bearing distinction.
-- **Never touch the real backend in v1.** Pull (read-only) and split local
-  copies; back up before mutating; the split files are the artifact.
+- **The monolith's backend is read-only.** Pull, split local copies, back up
+  before mutating; only the modules' new destinations are ever written, and
+  only through `migrate run`'s guards.
 - **Prove, don't assert.** Inertness is demonstrated by a real graph-threaded
   plan bundle against real state, not asserted from the model — which is what
   makes the tool trustworthy for a production migration.

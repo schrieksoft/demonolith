@@ -89,7 +89,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 
 	defOut := f.out
 	if defOut == "" {
-		defOut = "modules"
+		defOut = "roots"
 	}
 	for {
 		outIn, err := promptString("Output directory inside the root", defOut)

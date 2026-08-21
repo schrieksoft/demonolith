@@ -16,11 +16,11 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **Shows up as:** the producer module erroring at plan time during `migrate prove`.
 
-**Handle it:** prefer placement that keeps the sensitive edge inside one module (decorate producer and consumer into the same module — for a data source, that means keeping its consumers with the resource it reads). Hand-editing `sensitive = true` into a module directory works mechanically but makes `refactor diff` and the staleness checksum refuse by design; if you must, do it as a documented post-adoption edit, after `migrate` and `prove` have run.
+**Handle it:** prefer placement that keeps the sensitive edge inside one module (decorate producer and consumer into the same module — for a data source, that means keeping its consumers with the resource it reads). Hand-editing `sensitive = true` into a module directory works mechanically but makes `refactor diff` and the staleness checksum refuse by design; if you must, do it as a documented post-adoption edit, after the full migrate pipeline has run.
 
 ## Backend derivation covers common types only
 
-**What:** the monolith's `backend` block is carried into every module directory with the state location postfixed per module — for every built-in backend type (`local`, `s3`, `azurerm`, `gcs`, `consul`, `http`, `cos`, `oss`, `kubernetes`, `pg`, `remote` in workspace-name mode). Config supplied via `-backend-config` is handled through the init-time resolved config: locations derive from it, non-secret settings persist into each root.tf, and credential-shaped attributes land in gitignored per-module `demono.env` files that migrate sources automatically. Workspace-driven configurations (a `cloud` block, `remote` in workspaces.prefix mode) are refused at plan time, and nested backend config (e.g. s3 `assume_role`) does not survive the flag path.
+**What:** the monolith's `backend` block is carried into every module directory with the state location postfixed per module — for every built-in backend type (`local`, `s3`, `azurerm`, `gcs`, `consul`, `http`, `cos`, `oss`, `kubernetes`, `pg`, `remote` in workspace-name mode). Config supplied via `-backend-config` is handled through the init-time resolved config: locations derive from it, non-secret settings persist into each root.tf, and credential-shaped attributes land in gitignored per-module `demono.env` files that migrate sources automatically. Workspace-driven configurations (a `cloud` block, `remote` in workspaces.prefix mode) are refused at map time, and nested backend config (e.g. s3 `assume_role`) does not survive the flag path.
 
 **Shows up as:** `refactor map` refusing with the backend type or attribute named (for a flags-configured backend, the fix it names is initializing the root first, so the resolved config exists).
 
@@ -38,7 +38,7 @@ Inherent limits of the split — things demonolith cannot make true on its own, 
 
 **What:** `migrate run`'s empty-destination guard treats existing state as an idempotent skip when it matches this migration — same lineage, or identical content modulo the identity fields a fresh split regenerates (lineage, serial, engine version). A crashed run is therefore retried by just re-running: already-pushed modules skip, the rest push, and a lost workdir is re-split automatically at the next `migrate map`. What still refuses is a destination whose state *genuinely differs* — for example pushed by an earlier migration of a since-changed monolith.
 
-**Shows up as:** `migrate run` refusing with "target … already holds state that does not match this migration" on a location an earlier, different migration attempt wrote to.
+**Shows up as:** `migrate run` refusing with "destination … already holds state that does not match this migration" on a location an earlier, different migration attempt wrote to.
 
 **Handle it:** inspect the existing state (`state pull` in the module dir) and decide which side is right. If it is a stale artifact of an abandoned attempt, empty or delete that remote state and re-run — or re-run with `--force` to force-push over it (the existing state is lost; the run warns loudly). The per-module state files are reproducible and the monolith's own state is never touched.
 

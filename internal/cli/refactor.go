@@ -48,7 +48,7 @@ func refactorCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.out, "out", "", "directory the new module directories are written to, resolved against --root-dir and required to be inside it (default `modules`)")
+	flags.StringVar(&f.out, "out", "", "directory the new root modules are written to, resolved against --root-dir and required to be inside it (default `roots`)")
 	flags.StringVar(&f.remainder, "remainder-module", "legacy", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
@@ -79,7 +79,7 @@ func refactorMapCmd() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.StringVar(&f.rootDir, "root-dir", ".", "the monolith root")
-	flags.StringVar(&f.out, "out", "", "directory the new module directories are written to, resolved against --root-dir and required to be inside it (default `modules`)")
+	flags.StringVar(&f.out, "out", "", "directory the new root modules are written to, resolved against --root-dir and required to be inside it (default `roots`)")
 	flags.StringVar(&f.remainder, "remainder-module", "legacy", "catchall module name for unannotated blocks")
 	flags.BoolVar(&f.monorepo, "monorepo", false, "link in-repo child modules by relative path instead of copying them")
 	flags.BoolVar(&f.noBootstrap, "no-bootstrap", false, "skip the Snap CD bootstrap module")
