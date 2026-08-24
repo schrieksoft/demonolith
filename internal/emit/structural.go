@@ -11,7 +11,9 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 
+	"github.com/schrieksoft/demonolith/internal/boundary"
 	"github.com/schrieksoft/demonolith/internal/hclgraph"
+	"github.com/schrieksoft/demonolith/internal/placement"
 )
 
 // structural blocks (provider, locals, variable) are not placed by the
@@ -229,7 +231,7 @@ func (e *Emitter) loadSourceBlocks() (*sourceBlocks, error) {
 // emitStructural appends the module's needed provider, variable, and locals
 // blocks to body. Locals' cross-module value references are rewritten to
 // var.<input>, mirroring how moved resource bodies are rewritten.
-func (e *Emitter) emitStructural(module string, body *hclwrite.Body, sb *sourceBlocks) {
+func (e *Emitter) emitStructural(module string, body, varBody *hclwrite.Body, sb *sourceBlocks) {
 	needs := e.computeNeeds(module, sb)
 	xref := e.crossRefMap(module)
 
@@ -248,11 +250,12 @@ func (e *Emitter) emitStructural(module string, body *hclwrite.Body, sb *sourceB
 		body.AppendNewline()
 	}
 
-	// Variables (original declarations, preserving type/default).
+	// Variables (original declarations, preserving type/default) go to
+	// variables.tf with the boundary-derived inputs.
 	for _, name := range sortedKeys(needs.variables) {
 		if blk, ok := sb.variables[name]; ok {
-			body.AppendBlock(cloneBlock(blk))
-			body.AppendNewline()
+			varBody.AppendBlock(cloneBlock(blk))
+			varBody.AppendNewline()
 		}
 	}
 
@@ -409,4 +412,51 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// RootVariableNeeds computes, per module, the sorted declared root variables
+// whose original declarations the module's carved code carries — the root
+// inputs a control plane must supply alongside the boundary's external inputs.
+func RootVariableNeeds(srcDir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result) (map[string][]string, error) {
+	e := &Emitter{SrcDir: srcDir, Graph: graph, Place: place, Bound: bound}
+	sb, err := e.loadSourceBlocks()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, module := range place.ModuleNames() {
+		needs := e.computeNeeds(module, sb)
+		var names []string
+		for n := range needs.variables {
+			if _, ok := sb.variables[n]; ok {
+				names = append(names, n)
+			}
+		}
+		sort.Strings(names)
+		if len(names) > 0 {
+			out[module] = names
+		}
+	}
+	return out, nil
+}
+
+// SourceVariableBlocks parses srcDir's root *.tf files and returns the
+// requested variable declarations rendered as HCL, by name.
+func SourceVariableBlocks(srcDir string, names []string) (map[string]string, error) {
+	e := &Emitter{SrcDir: srcDir}
+	sb, err := e.loadSourceBlocks()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, name := range names {
+		blk, ok := sb.variables[name]
+		if !ok {
+			continue
+		}
+		f := hclwrite.NewEmptyFile()
+		f.Body().AppendBlock(cloneBlock(blk))
+		out[name] = string(hclwrite.Format(f.Bytes()))
+	}
+	return out, nil
 }

@@ -30,7 +30,10 @@ func TestBuildWriteLoad_Roundtrip(t *testing.T) {
 	outDir := filepath.Join(rootDir, "modules")
 
 	created := time.Date(2026, 8, 15, 14, 30, 0, 0, time.UTC)
-	m := BuildPlanned(a, rootDir, outDir, created, "demonolith test", BuildOpts{Bootstrap: false})
+	m, err := BuildPlanned(a, rootDir, outDir, created, "demonolith test", BuildOpts{Bootstrap: false})
+	if err != nil {
+		t.Fatalf("BuildPlanned: %v", err)
+	}
 	if m.IsRun() {
 		t.Fatal("a planned manifest must not be run")
 	}

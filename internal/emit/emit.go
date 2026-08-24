@@ -107,13 +107,14 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 	b := e.Bound.Boundaries[module]
 
 	// main.tf: moved blocks with rewritten references. The terraform{} block
-	// goes to root.tf instead.
+	// goes to root.tf instead; variable declarations go to variables.tf.
 	mainFile := hclwrite.NewEmptyFile()
 	body := mainFile.Body()
+	varFile := hclwrite.NewEmptyFile()
 
 	// Structural blocks (provider / original variable / locals) the module uses,
 	// duplicated in like required_providers.
-	e.emitStructural(module, body, sb)
+	e.emitStructural(module, body, varFile.Body(), sb)
 
 	blocks, err := e.movedBlocks(module)
 	if err != nil {
@@ -134,11 +135,10 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		body.AppendNewline()
 	}
 
-	// variables.tf — boundary-derived inputs. Skip external stand-ins for any
-	// variable whose original declaration was carved into main.tf above, to
-	// avoid a duplicate declaration.
+	// variables.tf — boundary-derived inputs, after the original declarations
+	// carved above. Skip external stand-ins for any variable whose original
+	// declaration the module carries, to avoid a duplicate declaration.
 	ownVars := e.neededVariableNames(module, sb)
-	varFile := hclwrite.NewEmptyFile()
 	for _, in := range sortedInputs(b) {
 		if in.External && ownVars[in.SourceVar] {
 			continue
@@ -207,6 +207,14 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		return EmittedModule{}, err
 	}
 	em.Files = append(em.Files, ".gitignore")
+
+	// README.md — how to run the carved root detached. Excluded from the
+	// emit checksum: documentation, not part of the compared contract.
+	readme := e.moduleReadme(b, ownVars)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
+		return EmittedModule{}, err
+	}
+	em.Files = append(em.Files, "README.md")
 
 	// Copy any local child-module source directories this module owns, so the
 	// carved root can resolve `source = "./..."`. In monorepo mode nothing is
@@ -280,4 +288,36 @@ func writeOutput(body *hclwrite.Body, o boundary.Output) {
 	blk := body.AppendNewBlock("output", []string{o.Name})
 	blk.Body().SetAttributeRaw("value", tokensForTraversal(o.Node, o.Attr))
 	body.AppendNewline()
+}
+
+// moduleReadme builds the carved root's README: the detached init/plan
+// commands, with only the var files and env sourcing this module needs. The
+// demono.* files it names are written by the migrate pipeline.
+func (e *Emitter) moduleReadme(b *boundary.ModuleBoundary, ownVars map[string]bool) string {
+	hasRoot := len(ownVars) > 0
+	hasGraph := false
+	if b != nil {
+		for _, in := range b.Inputs {
+			if in.External {
+				hasRoot = true
+			} else {
+				hasGraph = true
+			}
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("# How to run\n\n```\n")
+	if e.Backend != nil {
+		sb.WriteString("source " + EnvFileName + "\n")
+	}
+	sb.WriteString("tofu init\n")
+	cmd := "tofu plan"
+	if hasRoot {
+		cmd += " --var-file demono.root.tfvars"
+	}
+	if hasGraph {
+		cmd += " --var-file demono.graph.tfvars"
+	}
+	sb.WriteString(cmd + "\n```\n\nThe demono.* files are written by the `demonolith migrate` pipeline.\n")
+	return sb.String()
 }

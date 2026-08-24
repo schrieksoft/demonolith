@@ -99,9 +99,12 @@ type Module struct {
 	Dir string `yaml:"dir"`
 	// Blocks are the assigned addresses (resource, data.*, module.*).
 	Blocks []string `yaml:"blocks"`
-	// ExternalInputs are the module's external input names (former monolith
-	// root variables) — names only, never values.
+	// ExternalInputs are the module's external input names (variables the
+	// monolith never declared) — names only, never values.
 	ExternalInputs []string `yaml:"external_inputs,omitempty"`
+	// RootInputs are the declared monolith root variables whose declarations
+	// the module's carved code carries — names only, never values.
+	RootInputs []string `yaml:"root_inputs,omitempty"`
 }
 
 // StateMove relocates one managed address into a module's state.
@@ -150,8 +153,11 @@ type BuildOpts struct {
 // BuildPlanned assembles a planned manifest from an analysis: the full plan,
 // module dirs included (deterministically <outDir>/<name>), but no emit
 // checksum — run executes the plan and finalizes it.
-func BuildPlanned(a *pipeline.Analysis, rootDir, outDir string, created time.Time, tool string, opts BuildOpts) *Manifest {
-	m := FromAnalysis(a)
+func BuildPlanned(a *pipeline.Analysis, rootDir, outDir string, created time.Time, tool string, opts BuildOpts) (*Manifest, error) {
+	m, err := FromAnalysis(a, rootDir)
+	if err != nil {
+		return nil, err
+	}
 	m.Created = created.UTC().Format(time.RFC3339)
 	m.Tool = tool
 	m.Source.Root = rootDir
@@ -162,7 +168,7 @@ func BuildPlanned(a *pipeline.Analysis, rootDir, outDir string, created time.Tim
 		mod.Dir = relTo(rootDir, filepath.Join(outDir, name))
 		m.Modules[name] = mod
 	}
-	return m
+	return m, nil
 }
 
 // Finalize records the run's results on a planned manifest: the bootstrap dir
@@ -180,11 +186,15 @@ func (m *Manifest) Finalize(rootDir, bootstrapDir string) error {
 // FromAnalysis derives the manifest's semantic content (modules, moves, edges)
 // from an analysis, with no paths, checksum, or provenance. diff and prove
 // compare this against a committed manifest via SemanticEqual.
-func FromAnalysis(a *pipeline.Analysis) *Manifest {
+func FromAnalysis(a *pipeline.Analysis, rootDir string) (*Manifest, error) {
 	m := &Manifest{
 		Version: SchemaVersion,
 		Source:  Source{RemainderModule: a.Placement.Remainder},
 		Modules: map[string]Module{},
+	}
+	rootVars, err := emit.RootVariableNeeds(rootDir, a.Graph, a.Placement, a.Boundary)
+	if err != nil {
+		return nil, err
 	}
 
 	for _, name := range a.Placement.ModuleNames() {
@@ -201,7 +211,7 @@ func FromAnalysis(a *pipeline.Analysis) *Manifest {
 			}
 			sort.Strings(ext)
 		}
-		m.Modules[name] = Module{Blocks: blocks, ExternalInputs: ext}
+		m.Modules[name] = Module{Blocks: blocks, ExternalInputs: ext, RootInputs: rootVars[name]}
 	}
 
 	for _, addr := range a.Placement.Catchall {
@@ -250,7 +260,7 @@ func FromAnalysis(a *pipeline.Analysis) *Manifest {
 			Producer:       e.Producer.String(),
 		})
 	}
-	return m
+	return m, nil
 }
 
 // ModuleDirs resolves every module's emitted dir against rootDir. The
@@ -371,6 +381,11 @@ func checksumSkip(name string) bool {
 	if name == "demono.tfplan" || name == "demono.root.tfvars" || name == "demono.graph.tfvars" {
 		return true
 	}
+	// READMEs are documentation, not contract; the bootstrap's carries
+	// clone-local values (git URL, branch) that must not affect the checksum.
+	if name == "README.md" {
+		return true
+	}
 	// .env holds per-operator backend credentials: secret, machine-local, and
 	// deliberately outside the checksummed contract.
 	if name == emit.EnvFileName {
@@ -461,7 +476,7 @@ func SemanticEqual(a, b *Manifest) bool {
 	}
 	for name, am := range a.Modules {
 		bm, ok := b.Modules[name]
-		if !ok || !equalStrings(am.Blocks, bm.Blocks) || !equalStrings(am.ExternalInputs, bm.ExternalInputs) {
+		if !ok || !equalStrings(am.Blocks, bm.Blocks) || !equalStrings(am.ExternalInputs, bm.ExternalInputs) || !equalStrings(am.RootInputs, bm.RootInputs) {
 			return false
 		}
 	}

@@ -95,7 +95,7 @@ func runRefactorDiff(rootDir string, f refactorFlags) error {
 		return err
 	}
 	if committed.Output.BootstrapDir != "" {
-		bsDir, err := bootstrap.Emit(committed, rootDir, tmp)
+		bsDir, err := bootstrap.Emit(committed, rootDir, tmp, block)
 		if err != nil {
 			return err
 		}

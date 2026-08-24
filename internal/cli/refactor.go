@@ -138,7 +138,10 @@ func runRefactorMap(f refactorFlags) (*manifest.Manifest, error) {
 		return nil, err
 	}
 
-	m := manifest.BuildPlanned(a, rootDir, outDir, time.Now(), toolString(), opts)
+	m, err := manifest.BuildPlanned(a, rootDir, outDir, time.Now(), toolString(), opts)
+	if err != nil {
+		return nil, err
+	}
 	path := manifest.Path(rootDir)
 	if err := manifest.Write(m, path); err != nil {
 		return nil, err
@@ -268,7 +271,7 @@ func runRefactorRun(rootDir string, overwrite bool) error {
 
 	bsDir := ""
 	if m.Output.Bootstrap {
-		bsDir, err = bootstrap.Emit(m, rootDir, outDir)
+		bsDir, err = bootstrap.Emit(m, rootDir, outDir, block)
 		if err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
@@ -296,7 +299,10 @@ func runRefactorRun(rootDir string, overwrite bool) error {
 // comparison against the committed one. Backend derivation mirrors the
 // committed manifest's choice: compared only when the plan carries one.
 func freshSemantic(a *pipeline.Analysis, rootDir string, committed *manifest.Manifest) (*manifest.Manifest, error) {
-	fresh := manifest.FromAnalysis(a)
+	fresh, err := manifest.FromAnalysis(a, rootDir)
+	if err != nil {
+		return nil, err
+	}
 	if committed.Backend != nil {
 		block, err := emit.ParseBackend(rootDir)
 		if err != nil {

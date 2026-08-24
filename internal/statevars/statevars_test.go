@@ -259,12 +259,18 @@ func keysOf(m map[string]bool) []string {
 func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 	t.Helper()
 
+	// Variables are carved into variables.tf, the rest into main.tf; the
+	// expectations span both, so read them together.
 	read := func(module string) string {
 		b, err := os.ReadFile(filepath.Join(moduleDirs[module], "main.tf"))
 		if err != nil {
 			t.Fatalf("read %s/main.tf: %v", module, err)
 		}
-		return string(b)
+		v, err := os.ReadFile(filepath.Join(moduleDirs[module], "variables.tf"))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read %s/variables.tf: %v", module, err)
+		}
+		return string(b) + string(v)
 	}
 
 	// want[module] = substrings that MUST appear; notWant = MUST NOT appear.
@@ -322,12 +328,12 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 		src := read(module)
 		for _, w := range exp.want {
 			if !strings.Contains(src, w) {
-				t.Errorf("module %q main.tf missing %q:\n%s", module, w, src)
+				t.Errorf("module %q main.tf+variables.tf missing %q:\n%s", module, w, src)
 			}
 		}
 		for _, nw := range exp.notWant {
 			if strings.Contains(src, nw) {
-				t.Errorf("module %q main.tf should not contain %q:\n%s", module, nw, src)
+				t.Errorf("module %q main.tf+variables.tf should not contain %q:\n%s", module, nw, src)
 			}
 		}
 	}

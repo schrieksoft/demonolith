@@ -326,8 +326,12 @@ func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 	if err != nil || block == nil {
 		return err
 	}
+	dirs := m.ModuleDirs(rootDir)
+	if m.Output.BootstrapDir != "" {
+		dirs["snapcd-bootstrap"] = manifest.Resolve(rootDir, m.Output.BootstrapDir)
+	}
 	wrote := false
-	for _, dir := range m.ModuleDirs(rootDir) {
+	for _, dir := range dirs {
 		w, err := emit.WriteEnvFile(dir, block.CredentialEnv())
 		if err != nil {
 			return err
@@ -377,6 +381,29 @@ func materializeRootTfvars(rootDir string, m *manifest.Manifest, bound *boundary
 				}
 				rootVals[name][v] = val
 			}
+		}
+	}
+	// The bootstrap declares one variable per external input; its tfvars
+	// carries the same resolved values so it is apply-ready as written.
+	if m.Output.BootstrapDir != "" {
+		ext := map[string]bool{}
+		for _, mod := range m.Modules {
+			for _, n := range mod.ExternalInputs {
+				ext[n] = true
+			}
+			for _, n := range mod.RootInputs {
+				ext[n] = true
+			}
+		}
+		vals := map[string]string{}
+		for n := range ext {
+			if v, ok := varVals[n]; ok {
+				vals[n] = v
+			}
+		}
+		if len(vals) > 0 {
+			moduleDirs["snapcd-bootstrap"] = manifest.Resolve(rootDir, m.Output.BootstrapDir)
+			rootVals["snapcd-bootstrap"] = vals
 		}
 	}
 	if f.noTfvars {
