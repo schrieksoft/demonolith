@@ -353,3 +353,12 @@ func copyFile(src, dst string) error {
 	}
 	return os.WriteFile(dst, b, 0o600)
 }
+
+// PlanDir plans one root directory the way the proof plans a carved module —
+// against a staged copy of statePath (backend held aside), or against its real
+// backend when opts.UseBackend is set — and reports its change counts. The
+// transfer family's per-root check.
+func PlanDir(ctx context.Context, dir, statePath string, vars map[string]string, opts Options) (*ModuleProof, error) {
+	mp, _, err := planModule(ctx, dir, statePath, vars, opts)
+	return mp, err
+}

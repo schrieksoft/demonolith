@@ -66,7 +66,7 @@ func runRefactorValidate(ctx context.Context, rootDir string, f refactorFlags) e
 	verbose := !f.quiet && !f.silent
 	for _, name := range names {
 		if verbose {
-			outf("  %s: validating ... ", name)
+			outf("  %s: validating ... ", emphasis(name))
 		}
 		tf, err := tfexec.NewTerraform(dirs[name], execPath)
 		if err != nil {

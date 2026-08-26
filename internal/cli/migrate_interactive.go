@@ -184,7 +184,7 @@ func wizardBackend(rootDir string, m *manifest.Manifest, f *migrateFlags) error 
 	}
 	sort.Strings(mods)
 	for _, name := range mods {
-		outf("  %-16s %s\n", name, m.Backend.Modules[name])
+		outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), m.Backend.Modules[name])
 	}
 	block, err := emit.ParseBackend(rootDir)
 	if err != nil {

@@ -141,7 +141,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 					if strings.HasPrefix(addr.String(), "data.") {
 						// Data sources are never decorated: they follow their
 						// consumers. One in the catchall has no placed consumer.
-						outf("  %s: data source with no placed consumer; stays in %s (it will follow wherever a consumer is placed)\n", addr, f.remainder)
+						outf("  %s: data source with no placed consumer; stays in %s (it will follow wherever a consumer is placed)\n", addr, emphasis(f.remainder))
 						continue
 					}
 					s, err := promptLine(fmt.Sprintf("  %s (module name, Enter = keep in %s): ", addr, f.remainder))

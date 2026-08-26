@@ -109,7 +109,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	if f.interactive {
 		outln("State destinations:")
 		for _, name := range modules {
-			outf("  %-16s %s\n", name, destinationLabel(m, name))
+			outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), destinationLabel(m, name))
 		}
 		prompt := "Push each module's state to these destinations (empty destinations only, never forced)?"
 		if f.force {
@@ -148,7 +148,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		outln(heading("Pushing state to destinations") + " (empty destinations only, never forced):")
 	}
 	for _, name := range modules {
-		outf("  %s: pushing to %s ... ", name, destinationLabel(m, name))
+		outf("  %s: pushing to %s ... ", emphasis(name), destinationLabel(m, name))
 		var outcome manifest.PushOutcome
 		if m.Backend == nil {
 			outcome, err = seedLocal(m, rootDir, name, moduleStates[name], f)
@@ -209,7 +209,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 
 	outln("\n" + heading("Migration executed:"))
 	for _, p := range rep.Pushes {
-		outf("  %-16s %-8s %s\n", p.Module, p.Outcome, p.Location)
+		outf("  %s %-8s %s\n", emphasis(fmt.Sprintf("%-16s", p.Module)), p.Outcome, p.Location)
 	}
 	outln("\n" + heading("Receipt:"))
 	outf("  %s\n", displayPath(rootDir, rep.ReceiptPath))
@@ -221,7 +221,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 		sort.Strings(mods)
 		for _, name := range mods {
-			outf("  %-16s %s\n", name, displayPath(rootDir, graph.Files[name]))
+			outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), displayPath(rootDir, graph.Files[name]))
 		}
 	}
 	if len(graph.Unresolved) > 0 {
