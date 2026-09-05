@@ -13,6 +13,10 @@ go install github.com/schrieksoft/demonolith@latest
 
 Then take the guided tour: [sample-deployment-demonolith](https://github.com/snapcd-samples/sample-deployment-demonolith) is a deliberately knotted monolith — remote state, shared data sources, cross-cutting references — split, migrated, and verified end to end with a handful of runnable scripts. No cloud account needed.
 
+> 📺 **Watch it run:** [Monolith begone! How to split a Terraform state with demonolith](https://youtu.be/ewV55RndPf0) — the tool in action. For the full line-by-line walkthrough against the sample above, see [Splitting a Terraform Monolith, Line by Line](https://youtu.be/AbpQfjxH1BY).
+
+[![Monolith begone! How to split a Terraform state with demonolith](https://img.youtube.com/vi/ewV55RndPf0/maxresdefault.jpg)](https://youtu.be/ewV55RndPf0)
+
 ## Overview
 
 A Go CLI that splits a monolithic Terraform/OpenTofu root into independent per-module projects — code, state, and control-plane wiring — in two command families split at the code/state line, connected by a map:
