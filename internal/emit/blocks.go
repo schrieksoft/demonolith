@@ -9,7 +9,9 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 
+	"github.com/schrieksoft/demonolith/internal/boundary"
 	"github.com/schrieksoft/demonolith/internal/hclgraph"
+	"github.com/schrieksoft/demonolith/internal/placement"
 )
 
 // movedBlocks returns hclwrite blocks (clones) for every resource/data block
@@ -180,4 +182,107 @@ func tfFiles(dir string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// MovedBlocksHCL renders the source blocks placed in module as HCL, verbatim
+// clones with decorator comments stripped — the transfer family's code move.
+func MovedBlocksHCL(srcDir string, place *placement.Placement, module string) (string, error) {
+	e := &Emitter{SrcDir: srcDir, Place: place}
+	blocks, err := e.movedBlocks(module)
+	if err != nil {
+		return "", err
+	}
+	f := hclwrite.NewEmptyFile()
+	for _, blk := range blocks {
+		f.Body().AppendBlock(blk)
+		f.Body().AppendNewline()
+	}
+	return string(hclwrite.Format(f.Bytes())), nil
+}
+
+// AddrOfBlock exposes a block's canonical address for callers editing user
+// files (e.g. the transfer family removing moved blocks from a source root).
+func AddrOfBlock(blk *hclwrite.Block) (string, bool) {
+	addr, ok := blockAddr(blk)
+	if !ok {
+		return "", false
+	}
+	return addr.String(), true
+}
+
+// MovedBlocksWiredHCL renders the source blocks placed in module as HCL with
+// cross-module references rewritten to var.<input> and foreign depends_on
+// entries dropped — the transfer family's code move for a wired selection.
+func MovedBlocksWiredHCL(srcDir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result, module string) (string, error) {
+	e := &Emitter{SrcDir: srcDir, Graph: graph, Place: place, Bound: bound}
+	blocks, err := e.movedBlocks(module)
+	if err != nil {
+		return "", err
+	}
+	f := hclwrite.NewEmptyFile()
+	for _, blk := range blocks {
+		e.rewriteRefs(module, blk)
+		f.Body().AppendBlock(blk)
+		f.Body().AppendNewline()
+	}
+	return string(hclwrite.Format(f.Bytes())), nil
+}
+
+// WiringHCL renders the boundary-derived declarations one module needs: the
+// variables for its cross-module inputs and the outputs it must expose.
+// External (root-variable) inputs are excluded — a living root declares its
+// own variables, carried separately by the structural carve.
+func WiringHCL(bound *boundary.Result, module string) (varsHCL, outputsHCL string) {
+	b := bound.Boundaries[module]
+	if b == nil {
+		return "", ""
+	}
+	varFile := hclwrite.NewEmptyFile()
+	for _, in := range sortedInputs(b) {
+		if in.External {
+			continue
+		}
+		writeVariable(varFile.Body(), in)
+	}
+	outFile := hclwrite.NewEmptyFile()
+	for _, o := range sortedOutputs(b) {
+		writeOutput(outFile.Body(), o)
+	}
+	return string(hclwrite.Format(varFile.Bytes())), string(hclwrite.Format(outFile.Bytes()))
+}
+
+// RewriteRefsInPlace rewrites, in the module's own source files on disk, every
+// reference to a block placed outside module — the transfer family's source
+// side, where the remaining code must consume its former blocks as inputs.
+// Returns the files it changed.
+func RewriteRefsInPlace(dir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result, module string) ([]string, error) {
+	e := &Emitter{SrcDir: dir, Graph: graph, Place: place, Bound: bound}
+	xref := e.crossRefMap(module)
+	foreign := e.foreignProducer(module)
+	files, err := tfFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	var changed []string
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		f, diags := hclwrite.ParseConfig(src, path, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		for _, blk := range f.Body().Blocks() {
+			e.rewriteBody(blk.Body(), xref, foreign)
+		}
+		out := hclwrite.Format(f.Bytes())
+		if string(out) != string(src) {
+			if err := os.WriteFile(path, out, 0o644); err != nil {
+				return nil, err
+			}
+			changed = append(changed, path)
+		}
+	}
+	return changed, nil
 }

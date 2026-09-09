@@ -88,7 +88,7 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	}
 	printLiveReads(a.Placement)
 	outln("\n" + heading("Verifying modules in dependency order") + " (init + plan against the real backends):")
-	opts.OnPlanStart = func(module string) { outf("  %s: verifying ... ", module) }
+	opts.OnPlanStart = func(module string) { outf("  %s: verifying ... ", emphasis(module)) }
 	opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
 	pres, err := proof.Run(ctx, m.ModuleDirs(rootDir), nil, a.Boundary, opts)
 	if err != nil {

@@ -72,7 +72,7 @@ func printLiveReads(place *placement.Placement) {
 	}
 	outln(heading("Live reads") + " (data sources are planned fresh; their answers must hold still):")
 	for _, r := range rows {
-		outf("  %-16s %s\n", r[0], r[1])
+		outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", r[0])), r[1])
 	}
 }
 
@@ -126,7 +126,7 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 	}
 	printLiveReads(a.Placement)
 	outln("\n" + heading("Proving modules in dependency order") + " (plans against the local state copies):")
-	opts.OnPlanStart = func(module string) { outf("  %s: proving ... ", module) }
+	opts.OnPlanStart = func(module string) { outf("  %s: proving ... ", emphasis(module)) }
 	opts.OnPlanDone = func(_, verdict string) { outf("%s\n", colorVerdict(verdict)) }
 	pres, err := proof.Run(ctx, moduleDirs, moduleStates, a.Boundary, opts)
 	if err != nil {
@@ -183,7 +183,7 @@ func printProofReport(rootDir string, rep proveReport) {
 		}
 		sort.Strings(mods)
 		for _, m := range mods {
-			outf("  %-16s %s\n", m, displayPath(rootDir, rep.TfvarsFiles[m]))
+			outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", m)), displayPath(rootDir, rep.TfvarsFiles[m]))
 		}
 	}
 	if rep.OK {

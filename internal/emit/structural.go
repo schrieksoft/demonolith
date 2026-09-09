@@ -460,3 +460,59 @@ func SourceVariableBlocks(srcDir string, names []string) (map[string]string, err
 	}
 	return out, nil
 }
+
+// Structural is the rendered structural carve for one module: the variable
+// and locals declarations its blocks need, plus the provider names they use.
+type Structural struct {
+	// VarNames are the declared root variables needed, sorted.
+	VarNames []string
+	// VarHCL renders their original declarations, in VarNames order.
+	VarHCL string
+	// LocalNames are the locals needed, sorted; LocalsHCL renders them as one
+	// locals block ("" when none).
+	LocalNames []string
+	LocalsHCL  string
+	// ProviderNames are the provider local names the blocks use, sorted.
+	ProviderNames []string
+}
+
+// StructuralHCL computes the structural carve for module without emitting a
+// root — the transfer family's source for what must travel with moved blocks.
+func StructuralHCL(srcDir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result, module string) (*Structural, error) {
+	e := &Emitter{SrcDir: srcDir, Graph: graph, Place: place, Bound: bound}
+	sb, err := e.loadSourceBlocks()
+	if err != nil {
+		return nil, err
+	}
+	needs := e.computeNeeds(module, sb)
+	out := &Structural{}
+
+	varFile := hclwrite.NewEmptyFile()
+	for _, name := range sortedKeys(needs.variables) {
+		if blk, ok := sb.variables[name]; ok {
+			out.VarNames = append(out.VarNames, name)
+			varFile.Body().AppendBlock(cloneBlock(blk))
+			varFile.Body().AppendNewline()
+		}
+	}
+	out.VarHCL = string(hclwrite.Format(varFile.Bytes()))
+
+	localFile := hclwrite.NewEmptyFile()
+	var present []string
+	for _, name := range sortedKeys(needs.locals) {
+		if _, ok := sb.localExpr[name]; ok {
+			present = append(present, name)
+		}
+	}
+	if len(present) > 0 {
+		blk := localFile.Body().AppendNewBlock("locals", nil)
+		for _, name := range present {
+			blk.Body().SetAttributeRaw(name, sb.localExpr[name])
+		}
+		out.LocalNames = present
+		out.LocalsHCL = string(hclwrite.Format(localFile.Bytes()))
+	}
+
+	out.ProviderNames = sortedKeys(needs.providers)
+	return out, nil
+}

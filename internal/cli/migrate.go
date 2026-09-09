@@ -526,7 +526,7 @@ func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 		if rep.AlreadyCorrect[mv.Module] {
 			note = " " + dim("(pre-existing state carve was already correct)")
 		}
-		outf("  %s %-40s -> %s%s\n", success(fmt.Sprintf("%-8s", mv.Outcome)), mv.Address, mv.Module, note)
+		outf("  %s %-40s -> %s%s\n", success(fmt.Sprintf("%-8s", mv.Outcome)), mv.Address, emphasis(mv.Module), note)
 	}
 	outln("\n" + heading("Per-module state files written") + " (local copies, nothing pushed yet):")
 	mods := make([]string, 0, len(rep.ModuleStates))
@@ -535,7 +535,7 @@ func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 	}
 	sort.Strings(mods)
 	for _, m := range mods {
-		outf("  %-16s %s\n", m, displayPath(rootDir, rep.ModuleStates[m]))
+		outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", m)), displayPath(rootDir, rep.ModuleStates[m]))
 	}
 	outln("\n" + heading("Backup:"))
 	outf("  %s\n", displayPath(rootDir, rep.BackupPath))

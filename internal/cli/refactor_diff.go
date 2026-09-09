@@ -260,7 +260,7 @@ func printPlacement(m *manifest.Manifest) {
 	blocks := 0
 	for _, name := range names {
 		mod := m.Modules[name]
-		outf("  %-16s %s\n", name, mod.Dir)
+		outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), mod.Dir)
 		for _, b := range mod.Blocks {
 			outf("    %s\n", b)
 			blocks++

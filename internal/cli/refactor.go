@@ -150,12 +150,12 @@ func runRefactorMap(f refactorFlags) (*manifest.Manifest, error) {
 	reportAnalysis(a)
 	outln("\n" + heading("Planned module directories:"))
 	for _, name := range a.Placement.ModuleNames() {
-		outf("  %-16s %s\n", name, m.Modules[name].Dir)
+		outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), m.Modules[name].Dir)
 	}
 	if m.Backend != nil {
 		outf("\n%s\n", heading(fmt.Sprintf("State locations (%s backend, derived from %s):", m.Backend.Type, m.Backend.Monolith)))
 		for _, name := range a.Placement.ModuleNames() {
-			outf("  %-16s %s\n", name, m.Backend.Modules[name])
+			outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), m.Backend.Modules[name])
 		}
 	}
 	if opts.Bootstrap {
@@ -285,10 +285,10 @@ func runRefactorRun(rootDir string, overwrite bool) error {
 
 	outln(heading("Module directories written:"))
 	for _, em := range ems {
-		outf("  %-16s %s (%d files)\n", em.Module, displayPath(rootDir, em.Dir), len(em.Files))
+		outf("  %s %s (%d files)\n", emphasis(fmt.Sprintf("%-16s", em.Module)), displayPath(rootDir, em.Dir), len(em.Files))
 	}
 	if bsDir != "" {
-		outf("  %-16s %s (Snap CD bootstrap)\n", bootstrap.DirName, displayPath(rootDir, bsDir))
+		outf("  %s %s (Snap CD bootstrap)\n", emphasis(fmt.Sprintf("%-16s", bootstrap.DirName)), displayPath(rootDir, bsDir))
 	}
 	outln("\n" + heading("Receipt:"))
 	outf("  %s %s\n\n", displayPath(rootDir, path), dim("(finalized)"))
@@ -405,7 +405,7 @@ func dirHasFiles(dir string) bool {
 func reportAnalysis(a *pipeline.Analysis) {
 	outln(heading("Placement:"))
 	for _, m := range a.Placement.ModuleNames() {
-		outf("  %-16s %d resources/data\n", m, len(a.Placement.Modules[m]))
+		outf("  %s %d resources/data\n", emphasis(fmt.Sprintf("%-16s", m)), len(a.Placement.Modules[m]))
 	}
 	if len(a.Placement.Catchall) > 0 {
 		outf("\n%s\n", heading(fmt.Sprintf("Catchall (%s) holds %d unannotated block(s):", a.Placement.Remainder, len(a.Placement.Catchall))))
@@ -418,9 +418,9 @@ func reportAnalysis(a *pipeline.Analysis) {
 		outln("\n" + heading("A dependency graph arises with the following deploy order:"))
 		for _, m := range order {
 			if d := deps[m]; len(d) > 0 {
-				outf("  %-16s %s\n", m, dim("(depends on: "+strings.Join(d, ", ")+")"))
+				outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", m)), dim("(depends on: "+strings.Join(d, ", ")+")"))
 			} else {
-				outf("  %s\n", m)
+				outf("  %s\n", emphasis(m))
 			}
 		}
 	}
