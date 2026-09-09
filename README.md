@@ -3,7 +3,12 @@
 
 ## TL;DR
 
-Split a monolithic Terraform/OpenTofu root into independent per-module projects — code, state, and the wiring between them — with the result proven to change nothing.
+Split a monolithic Terraform/OpenTofu root into independent per-module projects - code, state, and the wiring between them - with the result proven to change nothing.
+
+Standalone companion to the [Snap CD](https://github.com/schrieksoft/snapcd) composition and orchestration system.
+
+
+## Get Going Quickly
 
 ```bash
 go install github.com/schrieksoft/demonolith@latest
