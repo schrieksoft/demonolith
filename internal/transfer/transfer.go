@@ -102,12 +102,17 @@ type Snapcd struct {
 }
 
 // Map is the reviewable transfer plan, written at the source root by the code
-// half. `transfer refactor run` finalizes it with the receiver file checksums.
+// half. `transfer refactor run` finalizes it with the receiver file checksums
+// and distributes a byte-identical copy into every touched root; the file's
+// sha256 is the transfer's identity across slices.
 type Map struct {
-	Version   int                 `yaml:"version"`
-	Created   string              `yaml:"created"`
-	Tool      string              `yaml:"tool"`
-	Remainder string              `yaml:"remainder"`
+	Version   int    `yaml:"version"`
+	Created   string `yaml:"created"`
+	Tool      string `yaml:"tool"`
+	Remainder string `yaml:"remainder"`
+	// SourceDir is the source root's directory basename — how a distributed
+	// copy tells a slice which role its directory holds.
+	SourceDir string              `yaml:"source_dir,omitempty"`
 	Receivers map[string]Receiver `yaml:"receivers"`
 	// CrossEdges and OrderingEdges are the wiring the transfer creates across
 	// the boundary; the migrate half threads values along them.
@@ -129,47 +134,19 @@ func (m *Map) IsRun() bool {
 	return len(m.Receivers) > 0
 }
 
-// Pins is the migrate half's map receipt: both sides' states pulled and
-// pinned, the moves applied to local copies.
-type Pins struct {
-	Version   int            `yaml:"version"`
-	Created   string         `yaml:"created"`
-	Tool      string         `yaml:"tool"`
-	Source     Pin            `yaml:"source"`
-	Receivers map[string]Pin `yaml:"receivers"`
-}
-
-// Receipt records one migrate-half step against a pins generation.
+// Receipt records one migrate-half step of one slice, tied to the transfer by
+// map hash and to the slice's state generation by pin.
 type Receipt struct {
 	Version int    `yaml:"version"`
 	Created string `yaml:"created"`
 	Tool    string `yaml:"tool"`
 	Step    string `yaml:"step"`
-	Source   Pin    `yaml:"source"`
+	MapHash string `yaml:"map_hash,omitempty"`
+	Role    string `yaml:"role,omitempty"`
+	Pin     Pin    `yaml:"pin"`
 	OK      bool   `yaml:"ok"`
 	// Roots records the per-root outcome ("zero changes", "pushed", ...).
 	Roots map[string]string `yaml:"roots"`
-}
-
-// WritePins / LoadPins round-trip the migrate-map receipt.
-func WritePins(p *Pins, rootDir string) error {
-	b, err := yaml.Marshal(p)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(rootDir, MigrateMapFile), b, 0o644)
-}
-
-func LoadPins(rootDir string) (*Pins, error) {
-	b, err := os.ReadFile(filepath.Join(rootDir, MigrateMapFile))
-	if err != nil {
-		return nil, fmt.Errorf("no %s found in %s; run `demonolith transfer migrate map` first", MigrateMapFile, rootDir)
-	}
-	var p Pins
-	if err := yaml.Unmarshal(b, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
 }
 
 // FileSHA256 hashes a file for the map's receiver-file checksum.
@@ -307,6 +284,21 @@ func BuildPlan(rootDir string) (*Plan, error) {
 	}
 	if len(plan.Receivers) == 0 {
 		return nil, fmt.Errorf("no blocks are decorated for transfer; add `# @demono:move <receiver>` above the blocks to move")
+	}
+	// Directory basenames are the slice identity in distributed map copies and
+	// artifact names; a collision would make a root's role ambiguous.
+	bases := map[string]string{filepath.Base(filepath.Clean(rootDir)): "the source root"}
+	names := make([]string, 0, len(plan.Receivers))
+	for n := range plan.Receivers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		base := filepath.Base(name)
+		if prev, ok := bases[base]; ok {
+			return nil, fmt.Errorf("receiver %q shares the directory name %q with %s; slice roots are told apart by directory basename, so rename one directory first", name, base, prev)
+		}
+		bases[base] = fmt.Sprintf("receiver %q", name)
 	}
 	return plan, nil
 }

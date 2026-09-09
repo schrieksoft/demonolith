@@ -356,9 +356,9 @@ func copyFile(src, dst string) error {
 
 // PlanDir plans one root directory the way the proof plans a carved module —
 // against a staged copy of statePath (backend held aside), or against its real
-// backend when opts.UseBackend is set — and reports its change counts. The
-// transfer family's per-root check.
-func PlanDir(ctx context.Context, dir, statePath string, vars map[string]string, opts Options) (*ModuleProof, error) {
-	mp, _, err := planModule(ctx, dir, statePath, vars, opts)
-	return mp, err
+// backend when opts.UseBackend is set — reporting its change counts and its
+// planned output values. The transfer family's per-slice check: the outputs
+// are what a producer slice hands its consumers as a values artifact.
+func PlanDir(ctx context.Context, dir, statePath string, vars map[string]string, opts Options) (*ModuleProof, map[string]string, error) {
+	return planModule(ctx, dir, statePath, vars, opts)
 }

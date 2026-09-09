@@ -105,19 +105,24 @@ func TestTransfer_EndToEnd(t *testing.T) {
 		t.Fatalf("receiver variables.tf: %v\n%s", err, recvVars)
 	}
 
-	// refactor diff gate
-	if err := run(t, "transfer", "refactor", "diff", "--root-dir", source); err != nil {
+	// refactor diff gate: per slice from each root, then the whole check
+	if err := run(t, "transfer", "refactor", "diff", "--root-dir", recv); err != nil {
+		t.Fatalf("transfer refactor diff (receiver slice): %v", err)
+	}
+	if err := run(t, "transfer", "refactor", "diff", "--all", "--root-dir", source); err != nil {
 		t.Fatalf("transfer refactor diff: %v", err)
 	}
 
 	// migrate map (pull, pin, apply moves to local copies), then prove
-	if err := run(t, "transfer", "migrate", "map", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "map", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate map: %v", err)
 	}
-	if _, err := transfer.LoadPins(source); err != nil {
-		t.Fatalf("load pins: %v", err)
+	for _, dir := range []string{source, recv} {
+		if _, err := transfer.LoadSlicePin(dir); err != nil {
+			t.Fatalf("load slice pin in %s: %v", dir, err)
+		}
 	}
-	if err := run(t, "transfer", "migrate", "prove", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "prove", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate prove: %v", err)
 	}
 	rec, err := transfer.LoadReceipt(source, transfer.ProveReceiptFile)
@@ -126,7 +131,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	}
 
 	// migrate run (the state move)
-	if err := run(t, "transfer", "migrate", "run", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "run", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate run: %v", err)
 	}
 	sourceRes := stateResources(t, source)
@@ -139,7 +144,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	}
 
 	// migrate verify
-	if err := run(t, "transfer", "migrate", "verify", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "verify", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate verify: %v", err)
 	}
 	vrec, err := transfer.LoadReceipt(source, transfer.VerifyReceiptFile)
@@ -148,7 +153,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	}
 
 	// migrate run again: pure no-op (idempotent retry)
-	if err := run(t, "transfer", "migrate", "run", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "run", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("second transfer migrate run: %v", err)
 	}
 	rrec, err := transfer.LoadReceipt(source, transfer.RunReceiptFile)
@@ -213,7 +218,7 @@ func TestTransfer_WiredEndToEnd(t *testing.T) {
 	}
 
 	// The migrate half proves with the producer value threaded, then moves.
-	if err := run(t, "transfer", "migrate", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "--all", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate: %v", err)
 	}
 	if got := stateResources(t, source); len(got) != 1 || got[0] != "random_pet.keep" {
@@ -245,10 +250,117 @@ func TestTransfer_BarePipelines(t *testing.T) {
 	if err := run(t, "transfer", "refactor", "-y", "--root-dir", source); err != nil {
 		t.Fatalf("bare transfer refactor: %v", err)
 	}
-	if err := run(t, "transfer", "migrate", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
-		t.Fatalf("bare transfer migrate: %v", err)
+	if err := run(t, "transfer", "migrate", "--all", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
+		t.Fatalf("bare transfer migrate --all: %v", err)
 	}
 	if got := stateResources(t, recv); len(got) != 3 {
 		t.Fatalf("receiver state after bare pipelines: %v", got)
+	}
+}
+
+// TestTransfer_SliceEndToEnd plays the external orchestrator by hand on the
+// wired fixture: every migrate step runs against one root with only that
+// root's checkout, and the fragment, outputs, and run-receipt artifacts are
+// copied between the slices' workdirs. Also exercises the two refusals that
+// keep a distributed run ordered: a consumer proving before its producer's
+// outputs arrive, and the source writing before the receivers' run receipts.
+func TestTransfer_SliceEndToEnd(t *testing.T) {
+	execPath := testsupport.RequireEngine(t)
+	base := testsupport.OutDir(t, "transfer-wired", "slices")
+	source := testsupport.CopyInto(t, filepath.Join(base, "source"), filepath.Join(testsupport.InDir("transfer-wired"), "source"))
+	recv := testsupport.CopyInto(t, filepath.Join(base, "shared"), filepath.Join(testsupport.InDir("transfer-wired"), "shared"))
+	snap := testsupport.CopyInto(t, filepath.Join(base, "snapcd"), filepath.Join(testsupport.InDir("transfer-wired"), "snapcd"))
+	copyState(t, filepath.Join(testsupport.InDir("transfer-wired"), "source"), source)
+	copyState(t, filepath.Join(testsupport.InDir("transfer-wired"), "shared"), recv)
+
+	if err := run(t, "transfer", "refactor", "-y", "--root-dir", source); err != nil {
+		t.Fatalf("transfer refactor: %v", err)
+	}
+
+	// The distributed map copies make every root a self-contained slice.
+	for _, dir := range []string{source, recv, snap} {
+		if _, err := os.Stat(filepath.Join(dir, transfer.MapFile)); err != nil {
+			t.Fatalf("no map copy in %s: %v", dir, err)
+		}
+		if err := run(t, "transfer", "refactor", "diff", "--root-dir", dir); err != nil {
+			t.Fatalf("slice diff in %s: %v", dir, err)
+		}
+	}
+
+	copyArtifact := func(src, dst string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("artifact %s: %v", src, err)
+		}
+		if err := os.WriteFile(dst, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srcWork := filepath.Join(source, transfer.WorkDirName)
+	recvWork := filepath.Join(recv, transfer.WorkDirName)
+
+	// map: source first (writes the fragment), then the receiver with it.
+	if err := run(t, "transfer", "migrate", "map", "--root-dir", source, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate map (source slice): %v", err)
+	}
+	if err := run(t, "transfer", "migrate", "map", "--root-dir", recv, "--exec-path", execPath); err == nil || !strings.Contains(err.Error(), "fragment") {
+		t.Fatalf("receiver map without the fragment must refuse, got: %v", err)
+	}
+	copyArtifact(transfer.FragmentStateFile(srcWork, "shared"), transfer.FragmentStateFile(recvWork, "shared"))
+	copyArtifact(transfer.FragmentMetaFile(srcWork, "shared"), transfer.FragmentMetaFile(recvWork, "shared"))
+	if err := run(t, "transfer", "migrate", "map", "--root-dir", recv, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate map (receiver slice): %v", err)
+	}
+
+	// prove: the source consumes the moved output, so the receiver goes first.
+	if err := run(t, "transfer", "migrate", "prove", "--root-dir", source, "--exec-path", execPath); err == nil || !strings.Contains(err.Error(), "outputs-shared.yaml") {
+		t.Fatalf("consumer prove without the producer outputs must refuse, got: %v", err)
+	}
+	if err := run(t, "transfer", "migrate", "prove", "--root-dir", recv, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate prove (receiver slice): %v", err)
+	}
+	copyArtifact(transfer.OutputsFile(recvWork, "shared"), transfer.OutputsFile(srcWork, "shared"))
+	if err := run(t, "transfer", "migrate", "prove", "--root-dir", source, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate prove (source slice): %v", err)
+	}
+
+	// run: the source is written last and demands the receiver's run receipt.
+	if err := run(t, "transfer", "migrate", "run", "--root-dir", source, "--exec-path", execPath); err == nil || !strings.Contains(err.Error(), "run receipt") {
+		t.Fatalf("source run without receiver receipts must refuse, got: %v", err)
+	}
+	if err := run(t, "transfer", "migrate", "run", "--root-dir", recv, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate run (receiver slice): %v", err)
+	}
+	copyArtifact(filepath.Join(recv, transfer.RunReceiptFile), transfer.RecvRunReceiptFile(srcWork, "shared"))
+	if err := run(t, "transfer", "migrate", "run", "--root-dir", source, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate run (source slice): %v", err)
+	}
+	if got := stateResources(t, source); len(got) != 1 || got[0] != "random_pet.keep" {
+		t.Fatalf("source state after slice runs: %v", got)
+	}
+	if got := stateResources(t, recv); len(got) != 2 {
+		t.Fatalf("receiver state after slice runs: %v", got)
+	}
+
+	// verify: producer first again, live values threaded onward.
+	if err := run(t, "transfer", "migrate", "verify", "--root-dir", recv, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate verify (receiver slice): %v", err)
+	}
+	copyArtifact(transfer.OutputsFile(recvWork, "shared"), transfer.OutputsFile(srcWork, "shared"))
+	if err := run(t, "transfer", "migrate", "verify", "--root-dir", source, "--exec-path", execPath); err != nil {
+		t.Fatalf("migrate verify (source slice): %v", err)
+	}
+
+	// A re-run of a written slice converges to a skip, not a second write.
+	if err := run(t, "transfer", "migrate", "run", "--root-dir", recv, "--exec-path", execPath); err != nil {
+		t.Fatalf("receiver run retry: %v", err)
+	}
+	rrec, err := transfer.LoadReceipt(recv, transfer.RunReceiptFile)
+	if err != nil || !strings.Contains(rrec.Roots["shared"], "skipped") {
+		t.Fatalf("receiver run retry should skip, got %+v err=%v", rrec, err)
 	}
 }
