@@ -206,7 +206,7 @@ func TestRefactorPlan_OutResolution(t *testing.T) {
 }
 
 // TestRefactorRun_OwnsTargetDirs: map plans over existing dirs; run is the
-// gate — any existing target content refuses without --overwrite, and with it
+// gate - any existing target content refuses without --overwrite, and with it
 // everything inside is deleted before rewriting.
 func TestRefactorRun_OwnsTargetDirs(t *testing.T) {
 	base := testsupport.OutDir(t, "statefix", "cli-owns-targets")
@@ -361,7 +361,7 @@ func TestMigrateRun_RequiresProof(t *testing.T) {
 		t.Errorf("run without a verdict must refuse pointing at prove, got: %v", err)
 	}
 
-	// A target holding state that does not match the carve fails that module —
+	// A target holding state that does not match the carve fails that module -
 	// and the partial run receipt records how far the run got.
 	unrelated := filepath.Join(srcDir, "modules", "b", "terraform.tfstate")
 	if err := os.WriteFile(unrelated, []byte(`{"version":4,"lineage":"00000000-dead-beef-0000-000000000000","serial":9,"resources":[{"mode":"managed","type":"random_pet","name":"foreign"}]}`), 0o600); err != nil {
@@ -453,7 +453,7 @@ func TestMigrateProve_Tfvars(t *testing.T) {
 		t.Fatalf("migrate map failed: %v", err)
 	}
 
-	// Prove writes root values only — graph values stay threaded in memory.
+	// Prove writes root values only - graph values stay threaded in memory.
 	if err := run(t, "migrate", "prove", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
 		t.Fatalf("prove failed: %v", err)
 	}
@@ -688,7 +688,7 @@ func hasAssignment(content, name, val string) bool {
 }
 
 // TestRefactorDiff_Monorepo: monorepo-mode relative module sources must
-// diff cleanly even though diff re-emits into a scratch dir — the paths
+// diff cleanly even though diff re-emits into a scratch dir - the paths
 // are computed against the real out dir, not the physical emit dir.
 func TestRefactorDiff_Monorepo(t *testing.T) {
 	base := testsupport.OutDir(t, "sample", "cli-diff-monorepo")

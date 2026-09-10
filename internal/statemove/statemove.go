@@ -2,7 +2,7 @@
 // state files. It operates only on local copies: the monolith state is pulled
 // once (or read from a provided local file), split with `state mv
 // -state/-state-out`, and the resulting per-module state files are written to
-// disk. Nothing is ever pushed to a real backend in v1 — the carved files are
+// disk. Nothing here pushes to a real backend - the carved files are
 // both the deliverable and the input the proof stage validates against.
 //
 // Every source state is backed up before mutation, and all moves in a run are
@@ -44,9 +44,8 @@ type Options struct {
 
 // Plan is the set of state moves derived from placement: for each module, the
 // resource addresses (as written) that must be moved into its state, in their
-// source and destination address forms. v1 keeps addresses identical across the
-// boundary (no de-nesting for flat roots); the fields are distinct so nested
-// re-addressing can be added without changing the interface.
+// source and destination address forms. The two are identical for flat roots;
+// the fields are distinct so re-addressing needs no interface change.
 type Plan struct {
 	// Moves maps a module name to the addresses moved into it.
 	Moves map[string][]Move
@@ -115,7 +114,7 @@ type Prepared struct {
 
 // Prepare obtains the monolith state as a local working file in workDir and
 // backs it up. If a prior run left a working state in workDir it is reused and
-// the existing backup preserved — the working copy is partially carved, so
+// the existing backup preserved - the working copy is partially carved, so
 // re-obtaining the source would make already-executed moves fail or duplicate.
 func Prepare(ctx context.Context, srcDir, workDir string, opts Options) (*Prepared, error) {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {

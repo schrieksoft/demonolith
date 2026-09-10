@@ -38,7 +38,7 @@ func migrateRunCmd() *cobra.Command {
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.BoolVar(&f.unproven, "unproven", false, "skip the prove-receipt precondition (explicitly run an unproven migration)")
-	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
+	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost - default refuses")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "confirm the per-module destinations before pushing")
 	return cmd
 }
@@ -53,11 +53,10 @@ type migrateRunReport struct {
 	FilledFromProof int
 }
 
-// runMigrateRun executes the migration: for every module, seed its state
-// destination with the carved file from migrate map. Preconditions: a
-// complete map receipt and a passing prove verdict no older than it (unless
-// --unproven). Targets must be empty; nothing is ever forced; the monolith's
-// own state is never written.
+// runMigrateRun seeds every module's state destination with its carved file.
+// Preconditions: a complete map receipt and a passing prove verdict no older
+// (unless --unproven). Targets must be empty; nothing is ever forced; the
+// monolith's own state is never written.
 func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -157,7 +156,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 		if err != nil {
 			outln(fail("FAILED"))
-			// Record how far the run got — but never demote a complete receipt
+			// Record how far the run got - but never demote a complete receipt
 			// of this generation to a partial one on a failed retry.
 			prev, perr := manifest.LatestReceiptFor(rootDir, m.EmitChecksum, manifest.ActionRun)
 			if perr == nil && (prev == nil || !prev.Complete) {
@@ -174,7 +173,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		case "skipped":
 			label = warn("skipped (target already holds this module's state)")
 		case "overwritten":
-			label = fail("OVERWRITTEN — replaced existing state that did not match")
+			label = fail("OVERWRITTEN - replaced existing state that did not match")
 		}
 		outln(label)
 		rep.Pushes = append(rep.Pushes, outcome)
@@ -198,7 +197,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 	}
 
 	// The graph tfvars are a post-migration artifact for detached use, not an
-	// input to the seeding — materialized last, reported right after.
+	// input to the seeding - materialized last, reported right after.
 	graph, filledFromProof, err := materializeGraphTfvars(rootDir, m, a.Boundary, f)
 	if err != nil {
 		return err
@@ -225,7 +224,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	if len(graph.Unresolved) > 0 {
-		outln("\nCross-module inputs not in the graph tfvars (child-module outputs are not stored in state); a control plane supplies these at runtime — pass them as -var when planning a module on its own:")
+		outln("\nCross-module inputs not in the graph tfvars (child-module outputs are not stored in state); a control plane supplies these at runtime - pass them as -var when planning a module on its own:")
 		for _, u := range graph.Unresolved {
 			outf("  %s\n", u)
 		}
@@ -244,8 +243,8 @@ func destinationLabel(m *manifest.Manifest, module string) string {
 }
 
 // seedLocal places the carved state as the root's local state file. An
-// existing state that matches the carve — same lineage, or identical content
-// from a re-carve of the same monolith — is an idempotent skip; anything else
+// existing state that matches the carve - same lineage, or identical content
+// from a re-carve of the same monolith - is an idempotent skip; anything else
 // is a refusal unless --force explicitly sacrifices the occupant.
 func seedLocal(m *manifest.Manifest, rootDir, module, carved string, f migrateFlags) (manifest.PushOutcome, error) {
 	dest := filepath.Join(m.ModuleDirs(rootDir)[module], "terraform.tfstate")
@@ -271,7 +270,7 @@ func seedLocal(m *manifest.Manifest, rootDir, module, carved string, f migrateFl
 			return out, nil
 		}
 		if !f.force {
-			return out, fmt.Errorf("destination %s already holds state that does not match this migration; refusing to overwrite. If it is left over from an earlier migration attempt, inspect it and remove it before re-running — or re-run with --force to replace it (the existing state is lost)", dest)
+			return out, fmt.Errorf("destination %s already holds state that does not match this migration; refusing to overwrite. If it is left over from an earlier migration attempt, inspect it and remove it before re-running - or re-run with --force to replace it (the existing state is lost)", dest)
 		}
 		overwriting = true
 	}
@@ -340,7 +339,7 @@ func seedBackend(ctx context.Context, m *manifest.Manifest, rootDir, module, car
 			return out, nil
 		}
 		if !f.force {
-			return out, fmt.Errorf("target %s already holds state that does not match this migration; refusing to push (not forced by default). If it is left over from an earlier migration attempt, inspect it (`state pull` in %s) and empty that remote state before re-running — or re-run with --force to force-push over it (the existing state is lost)", out.Location, displayPath(rootDir, dir))
+			return out, fmt.Errorf("target %s already holds state that does not match this migration; refusing to push (not forced by default). If it is left over from an earlier migration attempt, inspect it (`state pull` in %s) and empty that remote state before re-running - or re-run with --force to force-push over it (the existing state is lost)", out.Location, displayPath(rootDir, dir))
 		}
 		overwriting = true
 	}
@@ -397,10 +396,9 @@ func sameLineage(pathA, pathB string) (bool, error) {
 }
 
 // sameContent reports whether an occupied target holds the same migration
-// payload as the carved file: deep-equal after dropping the identity fields a
-// re-carve regenerates (lineage, serial) and the engine version stamp. This
-// is what makes a re-run after a re-carve an idempotent skip instead of a
-// refusal against your own earlier push.
+// payload: deep-equal after dropping the fields a re-carve regenerates
+// (lineage, serial, engine version). Makes a re-run after a re-carve an
+// idempotent skip.
 func sameContent(current []byte, carvedPath string) (bool, error) {
 	carved, err := os.ReadFile(carvedPath)
 	if err != nil {

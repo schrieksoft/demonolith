@@ -40,13 +40,13 @@ root; the directory must already exist. Two halves, same grammar as the split:
 
 Every command acts on the root --root-dir names (default: the current
 directory). The code move is authored at the source root; the state move is
-per slice — each migrate step touches exactly one root's state, exchanging
+per slice - each migrate step touches exactly one root's state, exchanging
 fragments, output values, and receipts as files in that root's .demono-transfer.
 With --all (migrate and refactor diff, from the source root's sibling layout)
 demonolith orchestrates every slice itself.
 
 From committing the code move until the state move completes, source and
-receivers plan dirty — freeze their pipelines and keep that window short.`,
+receivers plan dirty - freeze their pipelines and keep that window short.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
@@ -279,7 +279,7 @@ func loadTransferAll(rootDir string) (*transferAll, error) {
 	return &transferAll{src: src, paths: paths, order: order}, nil
 }
 
-// sliceFor builds a receiver's slice view from the source's map — --all needs
+// sliceFor builds a receiver's slice view from the source's map - --all needs
 // no distributed copies to act, only to gate (refactor diff checks them).
 func (a *transferAll) sliceFor(module string) *transferSlice {
 	if module == a.src.m.Remainder {
@@ -307,7 +307,7 @@ func sliceThreadVars(s *transferSlice) (map[string]string, error) {
 		pbase := transfer.BaseForModule(s.m, e.Producer)
 		oa, err := transfer.LoadOutputs(s.work, pbase)
 		if err != nil {
-			return nil, fmt.Errorf("input %q needs outputs-%s.yaml in %s — `demonolith transfer migrate prove` at %s writes it; bring it here", e.Input, pbase, transfer.WorkDirName, pbase)
+			return nil, fmt.Errorf("input %q needs outputs-%s.yaml in %s - `demonolith transfer migrate prove` at %s writes it; bring it here", e.Input, pbase, transfer.WorkDirName, pbase)
 		}
 		if oa.MapHash != s.hash {
 			return nil, fmt.Errorf("outputs-%s.yaml belongs to a different transfer (map hash mismatch); refresh it from %s", pbase, pbase)
@@ -492,8 +492,8 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 		return transfer.ResolveSnapcdRoot(rootDir, m.Snapcd.Dir, true)
 	}
 
-	// Idempotent: if the code already moved and the map is finalized, report —
-	// re-distributing the map copies, in case the crash fell between the two.
+	// Idempotent retry: code already moved and map finalized means only the
+	// map copies may still need distributing.
 	if m.IsRun() {
 		if err := transfer.CodeMoved(rootDir, m, paths); err == nil {
 			dsts := make([]string, 0, len(paths)+1)
@@ -677,7 +677,7 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 	}
 	outf("  %s: %d blocks %s\n", emphasis("source"), len(moved), success("removed"))
 	outf("  %s\n\n", dim("map copy distributed to every touched root"))
-	outf("Commit every touched root, then `demonolith transfer migrate --engine {terraform|tofu}` per slice (or --all from the source).\n%s\n", warn("All roots plan dirty until the state move completes — freeze their pipelines and keep the window short."))
+	outf("Commit every touched root, then `demonolith transfer migrate --engine {terraform|tofu}` per slice (or --all from the source).\n%s\n", warn("All roots plan dirty until the state move completes - freeze their pipelines and keep the window short."))
 	return nil
 }
 
@@ -858,7 +858,7 @@ func migrateMapSlice(ctx context.Context, execPath string, s *transferSlice, sho
 		base := s.role.Base
 		fm, err := transfer.LoadFragmentMeta(work, base)
 		if err != nil {
-			return verdictf("no state fragment for this receiver in %s — `demonolith transfer migrate map` at the source (%s) writes fragment-%s.tfstate and fragment-%s.yaml; bring both into this root's %s", transfer.WorkDirName, s.m.SourceDir, base, base, transfer.WorkDirName)
+			return verdictf("no state fragment for this receiver in %s - `demonolith transfer migrate map` at the source (%s) writes fragment-%s.tfstate and fragment-%s.yaml; bring both into this root's %s", transfer.WorkDirName, s.m.SourceDir, base, base, transfer.WorkDirName)
 		}
 		if fm.MapHash != s.hash {
 			return verdictf("the fragment in %s belongs to a different transfer (map hash mismatch); refresh both fragment files from the source", transfer.WorkDirName)
@@ -1037,14 +1037,14 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 	if err != nil || !prove.OK || prove.MapHash != s.hash || prove.Pin != pin.Pin {
 		return verdictf("no clean proof for this pin generation; run `demonolith transfer migrate prove` here first")
 	}
-	// The source is stripped last: it demands every receiver's run receipt —
+	// The source is stripped last: it demands every receiver's run receipt -
 	// the claim that the moved addresses already live in their new homes.
 	if s.role.Kind == "source" {
 		for _, name := range s.m.ReceiverNames() {
 			base := filepath.Base(name)
 			rr, err := transfer.LoadReceipt(s.work, "run-"+base+".yaml")
 			if err != nil {
-				return verdictf("missing run receipt for receiver %s — the source's state is written last: run `demonolith transfer migrate run` at %s, then bring its %s into this root's %s as run-%s.yaml", base, base, transfer.RunReceiptFile, transfer.WorkDirName, base)
+				return verdictf("missing run receipt for receiver %s - the source's state is written last: run `demonolith transfer migrate run` at %s, then bring its %s into this root's %s as run-%s.yaml", base, base, transfer.RunReceiptFile, transfer.WorkDirName, base)
 			}
 			if rr.MapHash != s.hash || !rr.OK {
 				return verdictf("the run receipt for receiver %s does not show a completed write for this transfer; re-run `demonolith transfer migrate run` there and refresh it", base)

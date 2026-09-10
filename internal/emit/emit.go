@@ -8,7 +8,7 @@
 //   - a root.tf holding the terraform{} block: required_providers propagated
 //     from the root, plus the derived backend when one is configured.
 //
-// v1 emits detached roots: no snapcd_* control-plane wiring is generated.
+// The emitted roots are detached: snapcd_* wiring is the bootstrap package's job.
 package emit
 
 import (
@@ -28,7 +28,7 @@ import (
 
 // RootGitignore is the .gitignore written into every emitted root: the local
 // artifacts an init, plan, or migration leaves behind. The engine lock file is
-// deliberately absent — it belongs in version control.
+// deliberately absent - it belongs in version control.
 const RootGitignore = `.terraform/
 *.tfstate
 *.tfstate.*
@@ -53,16 +53,15 @@ type Emitter struct {
 	Graph  *hclgraph.Graph
 	Place  *placement.Placement
 	Bound  *boundary.Result
-	// Monorepo keeps local child-module calls pointing at their original
-	// in-repo directories (source rewritten to the new relative path) instead
-	// of copying the directories into each carved root. Default false: carved
-	// roots are fully standalone and shippable to separate repos.
+	// Monorepo relinks local child-module calls to their original in-repo
+	// directories instead of copying them. Default false: carved roots are
+	// standalone and shippable to separate repos.
 	Monorepo bool
 	// Backend, when set, writes the derived backend into each module's root.tf
 	// (the monolith's block with per-module state locations).
 	Backend *BackendBlock
 	// PathBase, when set, replaces OutDir as the directory relative
-	// module-source paths are computed against in monorepo mode — verify
+	// module-source paths are computed against in monorepo mode - verify
 	// emits into a scratch dir but must produce the source paths the real
 	// roots carry.
 	PathBase string
@@ -135,7 +134,7 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		body.AppendNewline()
 	}
 
-	// variables.tf — boundary-derived inputs, after the original declarations
+	// variables.tf - boundary-derived inputs, after the original declarations
 	// carved above. Skip external stand-ins for any variable whose original
 	// declaration the module carries, to avoid a duplicate declaration.
 	ownVars := e.neededVariableNames(module, sb)
@@ -177,7 +176,7 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 		em.Files = append(em.Files, name)
 	}
 
-	// root.tf — the terraform{} block, following the common root convention:
+	// root.tf - the terraform{} block, following the common root convention:
 	// required_providers propagated from the source, plus the module's derived
 	// backend when one is configured.
 	if reqProviders != nil || e.Backend != nil {
@@ -208,7 +207,7 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 	}
 	em.Files = append(em.Files, ".gitignore")
 
-	// README.md — how to run the carved root detached. Excluded from the
+	// README.md - how to run the carved root detached. Excluded from the
 	// emit checksum: documentation, not part of the compared contract.
 	readme := e.moduleReadme(b, ownVars)
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
@@ -268,9 +267,8 @@ func sortedOutputs(b *boundary.ModuleBoundary) []boundary.Output {
 	return out
 }
 
-// writeVariable emits `variable "<name>" { type = string }`. v1 types every
-// generated input as string, matching Snap CD's stringified passing semantics;
-// coercion refinements are a later concern.
+// writeVariable emits `variable "<name>" { type = string }`. Every generated
+// input is typed string, matching Snap CD's stringified passing.
 func writeVariable(body *hclwrite.Body, in boundary.Input) {
 	blk := body.AppendNewBlock("variable", []string{in.Name})
 	// type must be the bare keyword `string`, not a quoted string.

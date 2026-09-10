@@ -1,10 +1,7 @@
-// Package placement resolves decorators into a total assignment of graph nodes
-// to modules. Managed resources and module calls are placed by decorator, with
-// unannotated ones falling into the catchall (remainder) module. Data sources
-// are never decorated: a data source is a stateless read and follows its
-// consumers automatically — copied into every module that references it,
-// directly or through locals or other data sources. The result is a total
-// assignment with nothing left unplaced.
+// Package placement resolves decorators into a total assignment of graph
+// nodes to modules: resources and module calls by decorator, unannotated ones
+// into the catchall remainder, and data sources (never decorated) copied into
+// every module that consumes them, directly or through locals.
 package placement
 
 import (
@@ -30,8 +27,8 @@ type Placement struct {
 	// into (len >= 2), derived from where its consumers landed.
 	Duplicated map[string][]string
 	// Catchall is the list of node addresses that landed in the remainder
-	// module by default — unannotated resources/modules, and data sources with
-	// no placed consumer — reported each run.
+	// module by default - unannotated resources/modules, and data sources with
+	// no placed consumer - reported each run.
 	Catchall []hclgraph.Address
 }
 
@@ -41,12 +38,9 @@ type Options struct {
 	Remainder string
 }
 
-// Resolve builds the desired placement from the graph and the per-block
-// decorators (already validated for arity by the decorator package).
-//
-// var/local/output/module-call nodes are structural, not placed directly: a
-// variable/local is materialized wherever its consumers live, an output is
-// generated at a module boundary. So only resource and data nodes are assigned.
+// Resolve builds the placement from the graph and the validated decorators.
+// Only resource and data nodes are assigned; var/local/output nodes are
+// structural and materialize wherever their consumers live.
 func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options) (*Placement, error) {
 	remainder := opts.Remainder
 	if remainder == "" {
@@ -101,7 +95,7 @@ func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options)
 		}
 	}
 
-	// Pass 2: data sources follow their consumers — copied into every module
+	// Pass 2: data sources follow their consumers - copied into every module
 	// that references them, directly or through locals or other data sources.
 	needs := newNeedsIndex(g, p.Owner)
 	for _, node := range g.SortedNodes() {
@@ -133,11 +127,9 @@ func Resolve(g *hclgraph.Graph, decos []decorator.BlockDecorators, opts Options)
 	return p, nil
 }
 
-// needsIndex answers, for a data source, the set of modules whose placed
-// blocks consume it. Consumption is transitive through structural nodes: a
-// local that wraps a data result is materialized wherever its consumers live,
-// so the data source must exist there too; likewise a data source whose
-// argument reads another data source drags that one along.
+// needsIndex answers, per data source, the modules whose placed blocks
+// consume it - transitively through locals, and through data sources reading
+// other data sources.
 type needsIndex struct {
 	// consumers maps a producer address to the nodes whose value refs mention
 	// it (DependsOnOnly refs excluded: ordering needs no copy).

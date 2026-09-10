@@ -1,9 +1,7 @@
-// Package manifest defines the demonolith-refactor manifest: the durable,
-// versioned contract between `refactor` (which computes what must move and how
-// modules wire together) and `migrate`/`prove` (which replay that plan without
-// re-deriving it). The schema is a public API: PR reviewers read it, CI parses
-// it, and a control plane may ingest it, so changes within a major version must
-// be additive only.
+// Package manifest defines the demonolith-refactor manifest: the versioned
+// contract between `refactor` (computes the plan) and `migrate`/`prove`
+// (replay it). The schema is a public API; changes within a major version
+// must be additive only.
 package manifest
 
 import (
@@ -83,10 +81,9 @@ type Output struct {
 	BootstrapDir string `yaml:"bootstrap_dir,omitempty"`
 }
 
-// Backend records the state-location derivation: the monolith's backend type,
-// its primary location, and the location derived for each module. Informational
-// and reviewable — the emitted root.tf files are the executable form. Absent
-// when the monolith has no backend block or derivation was disabled.
+// Backend records the state-location derivation, informational and reviewable
+// - the emitted root.tf files are the executable form. Absent without a
+// backend or with derivation disabled.
 type Backend struct {
 	Type     string            `yaml:"type"`
 	Monolith string            `yaml:"monolith"`
@@ -100,10 +97,10 @@ type Module struct {
 	// Blocks are the assigned addresses (resource, data.*, module.*).
 	Blocks []string `yaml:"blocks"`
 	// ExternalInputs are the module's external input names (variables the
-	// monolith never declared) — names only, never values.
+	// monolith never declared) - names only, never values.
 	ExternalInputs []string `yaml:"external_inputs,omitempty"`
 	// RootInputs are the declared monolith root variables whose declarations
-	// the module's carved code carries — names only, never values.
+	// the module's carved code carries - names only, never values.
 	RootInputs []string `yaml:"root_inputs,omitempty"`
 }
 
@@ -152,7 +149,7 @@ type BuildOpts struct {
 
 // BuildPlanned assembles a planned manifest from an analysis: the full plan,
 // module dirs included (deterministically <outDir>/<name>), but no emit
-// checksum — run executes the plan and finalizes it.
+// checksum - run executes the plan and finalizes it.
 func BuildPlanned(a *pipeline.Analysis, rootDir, outDir string, created time.Time, tool string, opts BuildOpts) (*Manifest, error) {
 	m, err := FromAnalysis(a, rootDir)
 	if err != nil {

@@ -55,8 +55,8 @@ func migrateCmd() *cobra.Command {
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
-	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost — default refuses")
-	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials — then the pipeline")
+	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost - default refuses")
+	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials - then the pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
 
 	cmd.AddCommand(migrateMapCmd(), migrateProveCmd(), migrateRunCmd(), migrateVerifyCmd())
@@ -107,7 +107,7 @@ func loadRunManifest(rootDir string) (*manifest.Manifest, error) {
 }
 
 // analyzeMatching re-analyzes the source and requires it to still match the
-// manifest — the boundary the proof threads over must describe the same plan.
+// manifest - the boundary the proof threads over must describe the same plan.
 func analyzeMatching(rootDir string, m *manifest.Manifest) (*pipeline.Analysis, error) {
 	a, err := pipeline.Analyze(rootDir, pipeline.Options{Remainder: m.Source.RemainderModule})
 	if err != nil {
@@ -149,7 +149,7 @@ func runMigrateMap(ctx context.Context, f migrateFlags) error {
 		if !stdinIsTTY() {
 			return fmt.Errorf("--interactive requires a terminal")
 		}
-		outln("Interactive migrate map — Enter keeps the value in brackets.")
+		outln("Interactive migrate map - Enter keeps the value in brackets.")
 		rootIn, err := promptString("Monolith root", f.rootDir)
 		if err != nil {
 			return err
@@ -205,10 +205,9 @@ func runMigrateMap(ctx context.Context, f migrateFlags) error {
 	return verdict
 }
 
-// migrateCarve performs the local carve and writes the map receipt. The
-// monolith's state is always pulled fresh and the whole split re-executed —
-// a leftover carve cannot be known correct without consulting the backend.
-// Modules whose fresh carve matches the previous one are noted in the report.
+// migrateCarve pulls the monolith state fresh and re-executes the whole split
+// - a leftover carve cannot be known correct without consulting the backend.
+// Fresh carves matching the previous one are noted in the report.
 func migrateCarve(ctx context.Context, rootDir string, m *manifest.Manifest, execPath string, f migrateFlags) (*migrateMapReport, error) {
 	rep := &migrateMapReport{Manifest: manifest.FileName}
 
@@ -313,11 +312,9 @@ func mapReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, 
 	return receipt, states, backup, nil
 }
 
-// materializeBackendEnv writes each module's gitignored .env from the
-// monolith root's init-time resolved backend config — credentials as the
-// engines' official environment variables, sourced by run/verify around each
-// module's init. A migration-time concern: the credentials exist because the
-// root was init'd, so the migrate family owns them, not refactor.
+// materializeBackendEnv writes each module's gitignored .env from the root's
+// init-time resolved backend config; the migrate family owns credentials,
+// refactor deals with code only.
 func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 	if m.Backend == nil {
 		return nil
@@ -345,11 +342,9 @@ func materializeBackendEnv(rootDir string, m *manifest.Manifest) error {
 	return nil
 }
 
-// materializeRootTfvars writes each module's demono.root.tfvars: the root
-// variable values the module declares, resolved in the engine's own
-// precedence (TF_VAR_* environment, root tfvars files, --var-file, --var;
-// declared defaults travel in the carved code and need no entry). --no-tfvars
-// skips the file and returns the values for in-memory threading only.
+// materializeRootTfvars writes each module's demono.root.tfvars, resolved in
+// the engine's own precedence; declared defaults travel in the carved code.
+// --no-tfvars returns the values for in-memory threading only.
 func materializeRootTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Result, f migrateFlags) (*statevars.Result, error) {
 	varVals, err := collectVarValues(rootDir, f.varFiles, f.vars, nil)
 	if err != nil {
@@ -412,13 +407,10 @@ func materializeRootTfvars(rootDir string, m *manifest.Manifest, bound *boundary
 	return statevars.WriteRoot(moduleDirs, rootVals)
 }
 
-// materializeGraphTfvars writes each module's demono.graph.tfvars: its
-// cross-module input values resolved from the applied monolith state, with
-// inputs state cannot resolve (child-module outputs) filled from the values
-// the proof threaded out of producer plans. What remains unresolved (an
-// --unproven run with no proof values) is listed in the result rather than
-// failing. --no-tfvars skips the file. Returns how many values came from the
-// proof.
+// materializeGraphTfvars writes each module's demono.graph.tfvars from the
+// applied monolith state, filling state-unresolvable inputs from the proof's
+// threaded values; what remains unresolved is listed, not fatal. Returns how
+// many values came from the proof.
 func materializeGraphTfvars(rootDir string, m *manifest.Manifest, bound *boundary.Result, f migrateFlags) (*statevars.Result, int, error) {
 	_, _, backup, err := mapReceiptStates(rootDir, m)
 	if err != nil {
@@ -517,7 +509,7 @@ func relForReceipt(rootDir, p string) string {
 
 func printMigratePlanReport(rootDir string, rep migrateMapReport) {
 	if rep.Skipped {
-		outf("%s %s\n", heading("Splitting the state:"), warn("skipped — "+rep.SkipReason))
+		outf("%s %s\n", heading("Splitting the state:"), warn("skipped - "+rep.SkipReason))
 		return
 	}
 	outln(heading("Splitting the state") + " (moves from " + rep.Manifest + "):")

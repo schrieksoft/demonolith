@@ -161,7 +161,7 @@ func TestEmit_DecoratorsStripped(t *testing.T) {
 func TestEmit_OutputExposesReferencedAttr(t *testing.T) {
 	out := carveFixture(t)
 	netOut := readFile(t, filepath.Join(out, "networking", "outputs.tf"))
-	// The consumer used .result, so the output must expose .result — not the
+	// The consumer used .result, so the output must expose .result - not the
 	// whole resource object (which would type-mismatch the string input).
 	if !strings.Contains(netOut, "random_uuid.private_subnet_id.result") {
 		t.Errorf("networking output should expose .result:\n%s", netOut)

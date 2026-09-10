@@ -1,7 +1,7 @@
-// Package cli defines the demonolith command tree: two families split at the
-// code/state line, connected by the manifest. refactor map/run/verify carve
-// the code; migrate map/prove/run/verify carve, prove, execute, and judge the
-// state migration. The bare family commands run their steps in order.
+// Package cli defines the demonolith command tree: the split's refactor
+// (map/run/validate/diff) and migrate (map/prove/run/verify) families,
+// connected by the manifest, plus the transfer family for moves between
+// pre-existing roots. The bare family commands run their steps in order.
 package cli
 
 import (
@@ -32,10 +32,8 @@ func toolString() string {
 }
 
 // Exit codes, uniform across commands: 0 success, 1 operational error, 2 a
-// negative verdict — the run worked but the answer is "no" (the split on disk
-// differs from the source, a module plans changes, a stale or inapplicable
-// manifest). Pipelines can therefore
-// distinguish "the split is wrong" from "the job broke".
+// negative verdict - the run worked but the answer is "no" (the split on disk
+// differs from the source, a module plans changes, a stale manifest).
 const (
 	ExitOK      = 0
 	ExitError   = 1
@@ -114,10 +112,9 @@ func resolveRoot(rootDir string) string {
 	return filepath.Clean(rootDir)
 }
 
-// resolveOut resolves the --out flag: default under the root, a relative path
-// resolved against the root (not the process cwd), and always inside the root —
-// the manifest records the output dir root-relative, so an outside dir would
-// force an absolute path into it and break every other checkout.
+// resolveOut resolves --out: relative to the root, and always inside it -
+// the manifest records the dir root-relative, so an outside dir would force
+// an absolute path into it and break other checkouts.
 func resolveOut(rootDir, out string) (string, error) {
 	if out == "" {
 		return filepath.Join(rootDir, "roots"), nil

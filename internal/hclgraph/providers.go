@@ -1,10 +1,8 @@
 package hclgraph
 
-// Provider is a parsed provider block: its local name, optional alias, and the
-// addresses it references in its config body (var/local/resource/data/module).
-// Providers are not graph nodes (their placement is usage-derived, not
-// decorator-driven), but their references still cross module boundaries and must
-// be wired, so they are collected separately here.
+// Provider is a parsed provider block: local name, optional alias, and the
+// addresses its config body references. Providers are not graph nodes
+// (placement is usage-derived), but their references still need wiring.
 type Provider struct {
 	Name  string // provider local name, e.g. "tls"
 	Alias string // alias label, or "" for the default provider

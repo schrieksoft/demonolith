@@ -1,7 +1,7 @@
 // Package hclgraph parses a Terraform/OpenTofu root into a resource-level
 // reference graph using hclsyntax. Nodes are the top-level configurable objects
 // (managed resources, data sources, variables, locals, outputs, module calls)
-// and edges are references discovered by traversing expressions — not by regex,
+// and edges are references discovered by traversing expressions - not by regex,
 // so references hidden inside templatefile/jsonencode/dynamic blocks are caught.
 package hclgraph
 
@@ -45,7 +45,7 @@ func (k Kind) String() string {
 }
 
 // Address is the canonical, dedup-safe identity of a graph node. It is the
-// address as written in configuration (no count/for_each instance key — a
+// address as written in configuration (no count/for_each instance key - a
 // decorator attaches to the whole block, not an instance).
 type Address struct {
 	Kind Kind
@@ -101,9 +101,8 @@ func (a Address) refPrefix() []string {
 }
 
 // ParseRefRoot inspects the leading segments of a traversal and returns the
-// Address it refers to (Type/Name populated, no instance key). ok is false for
-// traversals that do not name a trackable node (e.g. count.index, path.module,
-// terraform.workspace, each.key).
+// Address it refers to; ok is false for traversals that name no trackable node
+// (count.index, path.module, each.key, ...).
 func ParseRefRoot(segments []string) (Address, bool) {
 	if len(segments) == 0 {
 		return Address{}, false

@@ -1,10 +1,7 @@
-// Package cycle implements the contraction cycle gate. After placement,
-// boundary computation, and data-source duplication, each module is contracted
-// to a single node and the boundary-crossing edges are lifted to module-level
-// edges. A cycle among modules means the split is impossible: module A needs an
-// output of module B while B needs an output of A — illegal in Terraform and
-// unresolvable in Snap CD's graph. The gate refuses and reports the named cycle
-// path together with the specific crossing references that form it.
+// Package cycle is the contraction cycle gate: each module contracts to one
+// node, boundary edges lift to module edges, and a cycle - module A needs an
+// output of B while B needs one of A - is refused with the named cycle path
+// and the crossing references that form it.
 package cycle
 
 import (

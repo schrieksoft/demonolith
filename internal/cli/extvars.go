@@ -16,10 +16,8 @@ import (
 	"github.com/schrieksoft/demonolith/internal/boundary"
 )
 
-// collectExternalInputs resolves the modules' external (former root var.*)
-// inputs the way the monolith resolved them. Only names the boundary actually
-// declares as external are collected; values stay in memory. Returns the
-// values and the sorted names that were resolved.
+// collectExternalInputs resolves the boundary's external inputs the way the
+// monolith resolved them; values stay in memory.
 func collectExternalInputs(rootDir string, bound *boundary.Result, varFiles, varFlags []string) (map[string]string, []string, error) {
 	needed := map[string]bool{}
 	for _, b := range bound.Boundaries {
@@ -42,18 +40,15 @@ func collectExternalInputs(rootDir string, bound *boundary.Result, varFiles, var
 }
 
 // resolvedVar is a variable value plus where the engine's precedence found
-// it — the provenance the interactive walkthrough displays.
+// it - the provenance the interactive walkthrough displays.
 type resolvedVar struct {
 	Value  string
 	Source string
 }
 
-// collectVarProvenance gathers variable values in the engine's own
-// (ascending) precedence — TF_VAR_* environment first, then the root's
-// terraform.tfvars and *.auto.tfvars (plus their .json forms) in load order,
-// then explicit --var-file files in the order given, then --var flags — and
-// records, per name, which source won. A nil needed set collects every name
-// found; otherwise only the named variables are kept.
+// collectVarProvenance gathers variable values in the engine's ascending
+// precedence (TF_VAR_* env, terraform.tfvars/*.auto.tfvars, --var-file,
+// --var), recording which source won. A nil needed set collects every name.
 func collectVarProvenance(rootDir string, varFiles, varFlags []string, needed map[string]bool) (map[string]resolvedVar, error) {
 	keep := func(name string) bool { return needed == nil || needed[name] }
 	vals := map[string]resolvedVar{}
@@ -126,8 +121,8 @@ func collectVarValues(rootDir string, varFiles, varFlags []string, needed map[st
 }
 
 // moduleVarDecls parses a carved root's *.tf files and returns the variables
-// it declares — the duplicated root declarations plus the generated boundary
-// inputs — mapped to whether each carries a default value.
+// it declares - the duplicated root declarations plus the generated boundary
+// inputs - mapped to whether each carries a default value.
 func moduleVarDecls(dir string) (map[string]bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 
 // The slice is the unit of the migrate half: every step anchors on one root
 // and touches only that root's state, exchanging what must cross the boundary
-// as artifact files in the slice's workdir. An orchestrator — demonolith's own
-// `--all`, or anything external — transports the artifacts between slices.
+// as artifact files in the slice's workdir. An orchestrator - demonolith's own
+// `--all`, or anything external - transports the artifacts between slices.
 
 // Role identifies which part a root plays in the transfer its map describes.
 type Role struct {
@@ -22,7 +22,7 @@ type Role struct {
 	Kind string
 	// Key is the map's receiver key (the decorator target) for receivers.
 	Key string
-	// Base is the root's directory basename — the token artifact filenames use.
+	// Base is the root's directory basename - the token artifact filenames use.
 	Base string
 }
 
@@ -111,7 +111,7 @@ func MapCopiesIdentical(srcDir string, dirs map[string]string) error {
 			return fmt.Errorf("%s carries no %s; re-run `demonolith transfer refactor run` to distribute the map", n, MapFile)
 		}
 		if !bytes.Equal(want, got) {
-			return fmt.Errorf("the %s in %s differs from the source's; the copies must be byte-identical — re-run `demonolith transfer refactor run`", MapFile, n)
+			return fmt.Errorf("the %s in %s differs from the source's; the copies must be byte-identical - re-run `demonolith transfer refactor run`", MapFile, n)
 		}
 	}
 	return nil
@@ -120,10 +120,10 @@ func MapCopiesIdentical(srcDir string, dirs map[string]string) error {
 // Workdir artifact names, per slice. The fragment pair travels source →
 // receiver, outputs travel producer → consumers, and run receipts travel
 // receiver → source.
-func SliceStateFile(workDir string) string    { return filepath.Join(workDir, "state.tfstate") }
-func SlicePostFile(workDir string) string     { return filepath.Join(workDir, "state-post.tfstate") }
-func SliceRunFile(workDir string) string      { return filepath.Join(workDir, "state-run.tfstate") }
-func SlicePushFile(workDir string) string     { return filepath.Join(workDir, "state-push.tfstate") }
+func SliceStateFile(workDir string) string { return filepath.Join(workDir, "state.tfstate") }
+func SlicePostFile(workDir string) string  { return filepath.Join(workDir, "state-post.tfstate") }
+func SliceRunFile(workDir string) string   { return filepath.Join(workDir, "state-run.tfstate") }
+func SlicePushFile(workDir string) string  { return filepath.Join(workDir, "state-push.tfstate") }
 func FragmentStateFile(workDir, base string) string {
 	return filepath.Join(workDir, "fragment-"+base+".tfstate")
 }
@@ -168,7 +168,7 @@ func LoadFragmentMeta(workDir, base string) (*FragmentMeta, error) {
 }
 
 // OutputsArtifact carries one producer slice's planned output values into its
-// consumers' proofs — the file form of the threading Snap CD does at runtime.
+// consumers' proofs - the file form of the threading Snap CD does at runtime.
 type OutputsArtifact struct {
 	Version int               `yaml:"version"`
 	Created string            `yaml:"created"`

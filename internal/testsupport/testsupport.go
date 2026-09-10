@@ -1,7 +1,6 @@
-// Package testsupport provides helpers for tests that need a real, applied
-// Terraform state to carve and validate. It is intentionally not build-tagged
-// so it can be imported by any _test package; callers guard on binary
-// availability via RequireEngine.
+// Package testsupport helps tests that need a real, applied Terraform state.
+// Not build-tagged, so any _test package can import it; callers guard via
+// RequireEngine.
 package testsupport
 
 import (
@@ -38,10 +37,8 @@ func RequireEngine(t *testing.T) string {
 		t.Skip("no terraform/tofu binary found; set DEMO_TF_EXEC to run state tests")
 	}
 	if os.Getenv("TF_PLUGIN_CACHE_DIR") == "" {
-		// One cache per test package (cwd is the package dir): packages run in
-		// parallel and the engines' plugin cache is not concurrency-safe, but
-		// within a package tests are serial — so each package warms its own
-		// cache once and reuses it across runs.
+		// One cache per test package: packages run in parallel and the plugin
+		// cache is not concurrency-safe; within a package tests are serial.
 		wd, _ := os.Getwd()
 		cache := filepath.Join(os.TempDir(), "demonolith-test-plugin-cache", filepath.Base(wd))
 		if err := os.MkdirAll(cache, 0o755); err == nil {
@@ -51,10 +48,8 @@ func RequireEngine(t *testing.T) string {
 	return p
 }
 
-// OutDir returns testdata/<fixture>/out/<slug>, wiped and freshly created. Every
-// test writes its artifacts here instead of a temp dir, so outputs are
-// inspectable after a run and each test owns a non-conflicting subfolder. The
-// path is resolved relative to the calling package's testdata (../../testdata).
+// OutDir returns testdata/<fixture>/out/<slug>, wiped and freshly created, so
+// outputs stay inspectable after a run and each test owns its own subfolder.
 func OutDir(t *testing.T, fixture, slug string) string {
 	t.Helper()
 	rel := filepath.Join("..", "..", "testdata", fixture, "out", slug)
@@ -73,10 +68,8 @@ func OutDir(t *testing.T, fixture, slug string) string {
 	return dir
 }
 
-// CopyInto copies a fixture's *.tf files into dst (created if needed) and
-// returns dst, recursing into subdirectories so local child-module source dirs
-// (e.g. modules/idgen) travel with the root. Terraform working-dir artifacts
-// (.terraform, lock files, state) are skipped so apply starts clean.
+// CopyInto copies a fixture's *.tf files (and subdirectories, so child-module
+// sources travel) into dst, skipping engine artifacts so apply starts clean.
 func CopyInto(t *testing.T, dst, src string) string {
 	t.Helper()
 	if err := os.MkdirAll(dst, 0o755); err != nil {

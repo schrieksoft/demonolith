@@ -38,17 +38,15 @@ func (g *Graph) walkBody(body *hclsyntax.Body, c *refCollector) {
 	}
 }
 
-// walkExpr extracts references from a single expression. We use hclsyntax.Walk
-// to visit every sub-expression node and pull traversals from each, rather than
-// relying on Expression.Variables(). Variables() is known to miss traversals
-// that appear as the target of an index expression (e.g. foo.x[count.index].y),
-// because it only returns "absolute" traversals. Walking the AST and collecting
-// from every ScopeTraversalExpr and RelativeTraversalExpr closes that gap.
+// walkExpr extracts references from a single expression via hclsyntax.Walk,
+// visiting every sub-expression node. Expression.Variables() is not enough: it
+// misses traversals that appear as the target of an index expression (e.g.
+// foo.x[count.index].y), because it only returns "absolute" traversals.
 func (g *Graph) walkExpr(expr hclsyntax.Expression, c *refCollector) {
 	if expr == nil {
 		return
 	}
-	// Our walkFn.Enter/Exit never emit diagnostics, so Walk cannot return any;
+	// walkFn.Enter/Exit never emit diagnostics, so Walk cannot return any;
 	// the return is ignored deliberately.
 	_ = hclsyntax.Walk(expr, walkFn(func(node hclsyntax.Node) {
 		switch e := node.(type) {
@@ -72,10 +70,9 @@ func (g *Graph) recordTraversal(tr hcl.Traversal, c *refCollector) {
 	if !ok {
 		return
 	}
-	// Only record edges to nodes that actually exist in this root. This filters
-	// meta-refs the heuristic let through and references to provider/builtin
-	// symbols. var/local/module targets are trusted even if the definition is
-	// in another file already collected; resources/data must exist.
+	// Only record edges to nodes that exist in this root: filters meta-refs
+	// and provider/builtin symbols. var/local/module targets are trusted;
+	// resources/data must exist.
 	switch addr.Kind {
 	case KindResource, KindData:
 		if _, exists := g.Nodes[addr.String()]; !exists {
@@ -91,11 +88,8 @@ func (g *Graph) recordTraversal(tr hcl.Traversal, c *refCollector) {
 	key := addr.String()
 	c.seen[key] = addr
 
-	// Capture the attribute path following the node prefix, for resource/data/
-	// module producers, so an emitted output can expose the right attribute
-	// (e.g. module.idgen.id -> "id"). Every distinct path is recorded: a
-	// consumer may use several attributes of one producer, and each needs its
-	// own output.
+	// Record every distinct attribute path after the node prefix, so emitted
+	// outputs expose the right attribute(s).
 	if addr.Kind == KindResource || addr.Kind == KindData || addr.Kind == KindModule {
 		prefixLen := len(addr.refPrefix())
 		attr := ""
@@ -117,7 +111,7 @@ func (g *Graph) recordTraversal(tr hcl.Traversal, c *refCollector) {
 
 // traversalSegments flattens a traversal into its leading string segments,
 // stopping at the first non-name step (index into a variable etc. still yields
-// the name prefix, which is what we need to identify the target node).
+// the name prefix, enough to identify the target node).
 func traversalSegments(tr hcl.Traversal) []string {
 	var segs []string
 	for _, step := range tr {
@@ -134,8 +128,8 @@ func traversalSegments(tr hcl.Traversal) []string {
 	return segs
 }
 
-// walkFn adapts a func to the hclsyntax.Walker interface. Enter is where we
-// inspect; Exit is a no-op.
+// walkFn adapts a func to the hclsyntax.Walker interface. Enter inspects the
+// node; Exit is a no-op.
 type walkFn func(hclsyntax.Node)
 
 func (f walkFn) Enter(node hclsyntax.Node) hcl.Diagnostics { f(node); return nil }

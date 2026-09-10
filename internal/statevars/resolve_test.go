@@ -81,7 +81,7 @@ func TestGenerate_ResolvesFromState(t *testing.T) {
 }
 
 // TestGenerate_MissingStateValueIsUnresolved confirms an input whose producer
-// is absent from state is reported as unresolved rather than failing — the
+// is absent from state is reported as unresolved rather than failing - the
 // proof threads such values from producer plans.
 func TestGenerate_MissingStateValueIsUnresolved(t *testing.T) {
 	base := testsupport.OutDir(t, "_unit", "missing-state-value")

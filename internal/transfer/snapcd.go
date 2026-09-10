@@ -32,11 +32,9 @@ func ResolveSnapcdRoot(rootDir, flag string, explicit bool) (string, error) {
 	return abs, nil
 }
 
-// MatchSnapcdModules parses the Snap CD root and maps each involved root
-// (the source and every receiver, identified by directory basename) to the
-// name of its `resource "snapcd_module"` block, matched on the trailing
-// literal of the block's source_subdirectory. Every involved root must match
-// exactly one module.
+// MatchSnapcdModules maps each involved root (by directory basename) to its
+// `snapcd_module` resource, matched on the trailing literal of
+// source_subdirectory; every root must match exactly one.
 func MatchSnapcdModules(snapcdDir, rootDir string, receiverPaths map[string]string) (map[string]string, error) {
 	type mod struct{ name, subdir string }
 	var mods []mod
@@ -99,7 +97,7 @@ func MatchSnapcdModules(snapcdDir, rootDir string, receiverPaths map[string]stri
 }
 
 // trailingLiteral extracts the last quoted-literal run of an expression's
-// tokens — the part of `"${var.prefix}roots/app"` or `"roots/app"` that names
+// tokens - the part of `"${var.prefix}roots/app"` or `"roots/app"` that names
 // the directory.
 func trailingLiteral(toks hclwrite.Tokens) string {
 	var b strings.Builder
@@ -119,10 +117,9 @@ func trailingLiteral(toks hclwrite.Tokens) string {
 	return s
 }
 
-// SnapcdFileHCL builds the wiring file for the Snap CD root: one
-// snapcd_module_input_from_output per cross edge and one
-// snapcd_depends_on_module per ordering edge, referencing the matched
-// snapcd_module resources. Empty when the transfer creates no edges.
+// SnapcdFileHCL renders the Snap CD wiring: one snapcd_module_input_from_output
+// per cross edge, one snapcd_depends_on_module per ordering edge. Empty when
+// the transfer creates no edges.
 func SnapcdFileHCL(m *Map) string {
 	if m.Snapcd == nil || (len(m.CrossEdges) == 0 && len(m.OrderingEdges) == 0) {
 		return ""

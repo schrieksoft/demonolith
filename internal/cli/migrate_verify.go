@@ -32,11 +32,10 @@ func migrateVerifyCmd() *cobra.Command {
 	return cmd
 }
 
-// runMigrateVerify is the post-run judgment: the threaded proof executed
-// against each root's real backend — no staged state copies, a full init.
-// It judges the migration's fidelity, never the world: plans do not refresh,
-// so drift is invisible here by design.
-// Requires the migration to have been run (a complete run receipt).
+// runMigrateVerify runs the threaded proof against each root's real backend
+// (full init, no staged copies). It judges the migration's fidelity, never
+// the world: no refresh, so drift is invisible by design. Requires a complete
+// run receipt.
 func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	if ctx == nil {
 		ctx = context.Background()

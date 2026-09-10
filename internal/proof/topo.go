@@ -7,7 +7,7 @@ import (
 	"github.com/schrieksoft/demonolith/internal/boundary"
 )
 
-// ModuleDeps returns, per module, the sorted modules it depends on — value
+// ModuleDeps returns, per module, the sorted modules it depends on - value
 // wiring and ordering edges combined, self-edges dropped.
 func ModuleDeps(modules []string, res *boundary.Result) map[string][]string {
 	deps := moduleDepSets(modules, res)
@@ -46,10 +46,8 @@ func moduleDepSets(modules []string, res *boundary.Result) map[string]map[string
 	return deps
 }
 
-// TopoOrder returns modules ordered so every producer precedes its consumers,
-// using the boundary cross edges (and ordering edges) as producer->consumer
-// dependencies. A cycle is impossible after the cycle gate has run, but the
-// sort still guards against one defensively.
+// TopoOrder orders modules so every producer precedes its consumers, using
+// the cross and ordering edges; a cycle (impossible post-gate) still errors.
 func TopoOrder(modules []string, res *boundary.Result) ([]string, error) {
 	deps := moduleDepSets(modules, res)
 

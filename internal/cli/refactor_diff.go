@@ -228,7 +228,7 @@ func reportRefactorDiff(rep diffReport, m *manifest.Manifest, f refactorFlags) e
 		printPlacement(m)
 	}
 	if rep.Differs {
-		outln(fail("Out of sync") + " — the output on disk does not match what the source produces:")
+		outln(fail("Out of sync") + " - the output on disk does not match what the source produces:")
 		for _, r := range rep.Reasons {
 			outf("  - %s\n", r)
 		}
@@ -247,8 +247,8 @@ func reportRefactorDiff(rep diffReport, m *manifest.Manifest, f refactorFlags) e
 	return nil
 }
 
-// printPlacement lists what the committed manifest claims — every block and
-// the root it was carved into — so an in-sync verdict shows what was actually
+// printPlacement lists what the committed manifest claims - every block and
+// the root it was carved into - so an in-sync verdict shows what was actually
 // confirmed.
 func printPlacement(m *manifest.Manifest) {
 	outln("Map under comparison:")

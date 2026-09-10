@@ -7,9 +7,8 @@ import (
 )
 
 // stringify renders a plan output value the way Snap CD passes it downstream:
-// scalars become their bare string form; composite values (list/map/object)
-// become compact JSON. Matching this coercion matters — if the proof stringifies
-// differently from the real deploy, validation could pass while deploy differs.
+// scalars bare, composites compact JSON. Stringifying differently from the
+// real deploy could pass validation while the deploy differs.
 func stringify(v interface{}) string {
 	switch t := v.(type) {
 	case nil:

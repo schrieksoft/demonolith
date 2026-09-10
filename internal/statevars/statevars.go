@@ -1,17 +1,8 @@
-// Package statevars materializes per-module input values into two files per
-// carved root: `demono.root.tfvars` (the root variable values the module
-// declares, resolved as the monolith resolved them; written at prove) and
-// `demono.graph.tfvars` (the cross-module boundary inputs resolved from
-// the applied monolith state; written at run). Together they make a carved
-// root self-contained and provable standalone: planning it against its carved
-// state with these vars yields zero-diff, exactly as it did inside the
-// monolith.
-//
-// This is the file-materialized counterpart to the proof oracle's in-memory
-// threading. The oracle threads a producer's *planned* output; statevars reads
-// the producer's *applied* state directly — the value already committed to
-// infrastructure — which is what makes the split provable before Snap CD is
-// wired in.
+// Package statevars materializes per-module input values: demono.root.tfvars
+// (root variable values, written at prove) and demono.graph.tfvars
+// (cross-module inputs resolved from the applied monolith state, written at
+// run) make a carved root provable standalone. The proof threads planned
+// outputs in memory; statevars reads applied state.
 package statevars
 
 import (
@@ -40,7 +31,7 @@ const (
 	GraphTfvarsName = "demono.graph.tfvars"
 )
 
-// State is the parsed subset of a Terraform state file we resolve values from.
+// State is the parsed subset of a Terraform state file values are resolved from.
 type State struct {
 	// values maps a resource address ("type.name" or "data.type.name") to its
 	// first instance's flat attribute map.
@@ -93,17 +84,14 @@ func LoadState(path string) (*State, error) {
 		if r.Module != "" {
 			addr = r.Module + "." + addr
 		}
-		// v1 addresses have no instance key; use the first (only) instance.
+		// Addresses carry no instance key; use the first (only) instance.
 		st.values[addr] = r.Instances[0].Attributes
 	}
 	return st, nil
 }
 
-// resolveProducer resolves a cross-module producer's value from state.
-// Resource/data producers are read directly. A module-call producer's output
-// (module.<name>.<output>) is resolved by parsing the child module's `output`
-// block to find which child resource attribute it exposes, then reading that
-// attribute from the module-scoped resource in state.
+// resolveProducer resolves a cross-module producer's value from state;
+// a module-call output goes through moduleOutputTarget.
 func (s *State) resolveProducer(addr hclgraph.Address, attr, sourceDir string) (any, bool) {
 	if addr.Kind != hclgraph.KindModule {
 		return s.lookup(addr, attr)
@@ -192,11 +180,9 @@ func (u Unresolved) String() string {
 	return fmt.Sprintf("%s: %s (%s.%s)", u.Consumer, u.Input, u.Producer, u.Attr)
 }
 
-// ResolveCross resolves every cross-module input from state. An input whose
-// producer attribute cannot be resolved offline — a computed value, or a
-// module call whose source is not on disk — is listed in unresolved and left
-// out of the values: migrate run fills those from the proof's threaded
-// producer outputs, and a control plane supplies them at runtime.
+// ResolveCross resolves every cross-module input from state. Inputs state
+// cannot resolve offline are listed in unresolved: migrate run fills them
+// from the proof's threaded outputs, a control plane at runtime.
 func ResolveCross(st *State, bound *boundary.Result, opts Options) (map[string]map[string]string, []Unresolved) {
 	vals := map[string]map[string]string{}
 	var unresolved []Unresolved
@@ -228,7 +214,7 @@ func ResolveCross(st *State, bound *boundary.Result, opts Options) (map[string]m
 }
 
 // Collect merges root and cross-module values per module without writing any
-// file — the in-memory counterpart of Write for --no-tfvars runs.
+// file - the in-memory counterpart of Write for --no-tfvars runs.
 func Collect(rootVals, crossVals map[string]map[string]string) *Result {
 	res := &Result{Files: map[string]string{}, Values: map[string]map[string]string{}}
 	for _, vals := range []map[string]map[string]string{rootVals, crossVals} {
@@ -244,7 +230,7 @@ func Collect(rootVals, crossVals map[string]map[string]string) *Result {
 	return res
 }
 
-// WriteRoot materializes each module's demono.root.tfvars — the root
+// WriteRoot materializes each module's demono.root.tfvars - the root
 // variable values it declares, resolved as the monolith resolved them.
 // Modules with no values get no file.
 func WriteRoot(moduleDirs map[string]string, vals map[string]map[string]string) (*Result, error) {
@@ -252,7 +238,7 @@ func WriteRoot(moduleDirs map[string]string, vals map[string]map[string]string) 
 		"# Root variable values, resolved as the monolith resolved them.\n")
 }
 
-// WriteGraph materializes each module's demono.graph.tfvars — its
+// WriteGraph materializes each module's demono.graph.tfvars - its
 // cross-module input values resolved from the applied monolith state.
 // Modules with no values get no file.
 func WriteGraph(moduleDirs map[string]string, vals map[string]map[string]string) (*Result, error) {
@@ -289,7 +275,7 @@ func writeTfvars(moduleDirs map[string]string, vals map[string]map[string]string
 
 // encodeAssignments renders name = "value" lines in sorted order. Every
 // generated variable is typed string (see emit.writeVariable), so values are
-// written as string literals — matching Snap CD's stringified passing.
+// written as string literals - matching Snap CD's stringified passing.
 func encodeAssignments(vals map[string]string) []byte {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()

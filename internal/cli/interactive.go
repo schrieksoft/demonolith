@@ -58,12 +58,9 @@ func promptYesNo(label string, def bool) (bool, error) {
 	return false, fmt.Errorf("unrecognized answer %q", s)
 }
 
-// runRefactorMapInteractive is the guided plan loop: the run's parameters
-// (root, output dir, remainder name, monorepo, bootstrap), then analysis
-// summary, catchall triage, decorator write-back, re-analyze, and a confirmed
-// manifest write. Every accepted assignment becomes an @demono:move decorator
-// in the source, so the session leaves a state a plain non-interactive run
-// reproduces.
+// runRefactorMapInteractive is the guided plan loop; every accepted
+// assignment is written back as an @demono:move decorator, so the session
+// leaves a state a plain non-interactive run reproduces.
 func runRefactorMapInteractive(f refactorFlags) error {
 	_, err := refactorMapInteractive(f)
 	return err
@@ -75,7 +72,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 	if !stdinIsTTY() {
 		return f, fmt.Errorf("--interactive requires a terminal")
 	}
-	outln("Interactive refactor map — Enter keeps the value in brackets.")
+	outln("Interactive refactor map - Enter keeps the value in brackets.")
 
 	rootIn, err := promptString("Monolith root", f.rootDir)
 	if err != nil {
@@ -194,7 +191,7 @@ func refactorMapInteractive(f refactorFlags) (refactorFlags, error) {
 			continue
 		}
 
-		outf("\nNext step: write the map (%s) for %d module(s) — the reviewable plan that `refactor run` executes.\n", manifest.FileName, len(a.Placement.ModuleNames()))
+		outf("\nNext step: write the map (%s) for %d module(s) - the reviewable plan that `refactor run` executes.\n", manifest.FileName, len(a.Placement.ModuleNames()))
 		writeOK, err := promptYesNo("\nWrite it? (\"n\" aborts; decorators already written stay in the source)", true)
 		if err != nil {
 			return f, err

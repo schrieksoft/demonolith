@@ -1,11 +1,9 @@
-// Command demonolith refactors a monolithic Terraform/OpenTofu root into
-// independent per-module roots, in two halves connected by a manifest:
-// `refactor` carves the code and writes the plan (gated by `diff`), and
-// `migrate` executes the state moves against local copies (gated by `prove`,
-// the graph-threaded zero-diff proof).
+// Command demonolith restructures Terraform/OpenTofu roots without changing
+// infrastructure: `refactor`/`migrate` split a monolith into per-module roots,
+// and `transfer` moves blocks between pre-existing roots - each a code half
+// and a state half connected by a reviewable plan, gated by zero-diff proofs.
 //
-// Exit codes: 0 success, 1 operational error, 2 a negative verdict (the committed output differs,
-// a failed proof, a stale manifest).
+// Exit codes: 0 success, 1 operational error, 2 negative verdict.
 package main
 
 import (

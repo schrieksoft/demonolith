@@ -1,16 +1,8 @@
-// Package proof is the graph-aware validation oracle. Because
-// snapcd_module_input_from_output is runtime metadata Terraform never sees, a
-// carved module planned in isolation would have its upstream-sourced inputs
-// unset. Demonolith plays Snap CD's role locally: it walks modules in
-// dependency (topo) order, threads each producer's extracted output values into
-// its consumers' inputs, and plans each module against a copy of its carved
-// state. In the refactoring case the infrastructure already exists, so every
-// output value is known at plan time and no apply is needed.
-//
-// The proof is the bundle of per-module plans that each show zero changes —
-// no create, no destroy, no in-place update — against carved state with
-// correctly threaded inputs: evidence that the split changes nothing
-// operationally and the wiring is correct.
+// Package proof is the graph-aware validation oracle: it plays Snap CD's role
+// locally, walking modules in dependency order, threading each producer's
+// planned output values into its consumers' inputs, and planning each module
+// against a copy of its carved state. Zero changes everywhere - no create,
+// destroy, or in-place update - proves the split operationally inert.
 package proof
 
 import (
@@ -39,16 +31,13 @@ type Options struct {
 	// materialized (--no-tfvars), keyed by module then variable name. Threaded
 	// and external values still win over the seed.
 	RootInputs map[string]map[string]string
-	// OnPlanStart / OnPlanDone, when set, receive per-module notifications:
-	// start before a module plans, done with its short verdict after. Done is
-	// always called, "plan FAILED" included, so a caller printing start
+	// OnPlanStart / OnPlanDone receive per-module notifications. Done is
+	// always called ("plan FAILED" included), so a caller printing start
 	// without a newline can complete the line either way.
 	OnPlanStart func(module string)
 	OnPlanDone  func(module, verdict string)
-	// UseBackend plans each root against its configured real backend instead of
-	// a staged local state copy: a full init (backend included) and no state
-	// staging. This is migrate verify's mode — judgment over the pushed state
-	// in its real destination.
+	// UseBackend plans each root against its configured real backend (full
+	// init, no state staging) - migrate verify's mode.
 	UseBackend bool
 	// BackendConfig passes -backend-config values through to init when
 	// UseBackend is set (out-of-band backend settings never stored in HCL).
@@ -72,7 +61,7 @@ type Result struct {
 	Order   []string
 	Modules map[string]*ModuleProof
 	// Threaded records, per consumer module, the cross-module input values
-	// the proof threaded from producer plans — the values a materialized
+	// the proof threaded from producer plans - the values a materialized
 	// graph tfvars cannot recover from state alone.
 	Threaded map[string]map[string]string
 	// OK is true iff every module planned to zero changes of any kind.
@@ -133,8 +122,8 @@ func Run(ctx context.Context, moduleDirs, moduleStates map[string]string, bound 
 		if b != nil {
 			for name, in := range b.Inputs {
 				if in.External {
-					// Only pass a value when we actually have one; passing an
-					// empty -var would override the variable's in-module default.
+					// Only pass a value that exists: an empty -var
+					// overrides the variable's in-module default.
 					if v, ok := opts.ExternalInputs[name]; ok {
 						vars[name] = v
 					}
@@ -202,9 +191,8 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 			return nil, nil, fmt.Errorf("init: %w", err)
 		}
 	} else {
-		// The derived backend lives in root.tf's terraform{} block; strip it
-		// for the duration (required_providers must stay for init): the proof
-		// judges code against carved state, not backend wiring, and the
+		// Strip the backend from root.tf for the duration (required_providers
+		// must stay): the proof judges code against carved state, and the
 		// engine refuses to plan a declared-but-uninitialized backend.
 		rootTF := filepath.Join(dir, "root.tf")
 		if orig, rerr := os.ReadFile(rootTF); rerr == nil {
@@ -243,11 +231,9 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 				_ = os.Rename(hold, initRecord)
 			}()
 		}
-		// Stage the carved state at the module's default local state location
-		// and leave any backend block unconfigured, so the staged copy rules.
-		// The staged copy is removed afterwards, and any pre-existing local
-		// state (e.g. one migrate run already seeded) is preserved and put
-		// back: the proof reads state, it does not seed or disturb roots.
+		// Stage the carved state at the default local location so it rules;
+		// remove it afterwards and put back any pre-existing local state -
+		// the proof reads state, it does not seed roots.
 		if statePath != "" {
 			localState := filepath.Join(dir, "terraform.tfstate")
 			preserved := ""
@@ -273,11 +259,9 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 	}
 
 	planPath := filepath.Join(dir, "demono.tfplan")
-	// Never refresh: managed-resource drift is out of scope. The proofs judge
-	// the migration's fidelity to the pulled state; reality is the
-	// prerequisite monolith plan's job, and the control plane's after
-	// adoption. Data sources are the exception — plan reads them live
-	// regardless of refresh, so their answers must hold still too.
+	// Never refresh: drift is out of scope - the proofs judge fidelity to the
+	// pulled state, not the world. Data sources are the exception: plan reads
+	// them live regardless, so their answers must hold still too.
 	planOpts := []tfexec.PlanOption{
 		tfexec.Out(planPath),
 		tfexec.Refresh(false),
@@ -354,11 +338,10 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, b, 0o600)
 }
 
-// PlanDir plans one root directory the way the proof plans a carved module —
-// against a staged copy of statePath (backend held aside), or against its real
-// backend when opts.UseBackend is set — reporting its change counts and its
-// planned output values. The transfer family's per-slice check: the outputs
-// are what a producer slice hands its consumers as a values artifact.
+// PlanDir plans one root the way the proof plans a carved module - against a
+// staged copy of statePath, or its real backend with opts.UseBackend -
+// returning change counts and planned outputs. The transfer family's
+// per-slice check.
 func PlanDir(ctx context.Context, dir, statePath string, vars map[string]string, opts Options) (*ModuleProof, map[string]string, error) {
 	return planModule(ctx, dir, statePath, vars, opts)
 }

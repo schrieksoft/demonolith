@@ -21,11 +21,9 @@ type Node struct {
 	File string
 	// Refs are the addresses referenced anywhere inside this block's body.
 	Refs []Address
-	// RefAttrs records, for a referenced resource/data/module producer, every
-	// distinct attribute path this node uses (e.g. "result" for
-	// random_uuid.x.result), in first-seen order. Keyed by producer
-	// Address.String(). Used to expose the right attribute(s) in generated
-	// outputs. An empty entry means the whole object was referenced.
+	// RefAttrs records, per referenced producer, every distinct attribute path
+	// this node uses, keyed by producer Address.String(); an empty entry means
+	// the whole object. Generated outputs expose exactly these attributes.
 	RefAttrs map[string][]string
 	// DependsOnOnly are producers referenced solely from this node's
 	// depends_on (ordering-only, never for value). Across a module boundary
@@ -64,8 +62,8 @@ func (g *Graph) SortedNodes() []*Node {
 }
 
 // ParseDir parses every *.tf file in dir into a Graph. It does not recurse into
-// subdirectories (a Terraform root is flat). hclsyntax is used so we can walk
-// expression ASTs directly for reference extraction.
+// subdirectories (a Terraform root is flat). hclsyntax exposes the expression
+// ASTs the reference extraction walks.
 func ParseDir(dir string) (*Graph, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

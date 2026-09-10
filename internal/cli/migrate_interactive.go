@@ -11,15 +11,12 @@ import (
 	"github.com/schrieksoft/demonolith/internal/manifest"
 )
 
-// migrateInputsWizard is the guided front half of the bare `migrate -i`: it
-// walks every input the migration consumes — engine, state source, variable
-// values with their provenance, backend config and credentials, ambient
-// provider environment — pre-filling answers from any flags already given.
-// Every accepted choice resolves back into flags on f, so the pipeline that
-// follows behaves exactly like the equivalent non-interactive run (which the
-// wizard prints before handing over).
+// migrateInputsWizard walks every input the migration consumes, pre-filled
+// from flags; every accepted choice resolves back into flags on f, so the
+// pipeline behaves exactly like the equivalent non-interactive run (printed
+// before handing over).
 func migrateInputsWizard(f *migrateFlags) (string, *manifest.Manifest, error) {
-	outln("Interactive migration — Enter keeps the value in brackets.")
+	outln("Interactive migration - Enter keeps the value in brackets.")
 
 	rootIn, err := promptString("Monolith root", f.rootDir)
 	if err != nil {
@@ -66,14 +63,9 @@ func migrateInputsWizard(f *migrateFlags) (string, *manifest.Manifest, error) {
 	return rootDir, m, nil
 }
 
-// wizardVariables checks every variable value the migration consumes — the
-// root variables the carved modules declare (cross-module inputs excluded;
-// those are threaded from producer plans) plus the boundary's external
-// inputs — against the engine's precedence (TF_VAR_* env, the root's tfvars
-// files, --var-file, --var). Only gaps are shown: required variables with no
-// value anywhere, attributed to the modules declaring them. The loop accepts
-// name=value (a --var) and @path (a --var-file) until the gaps are filled or
-// the user explicitly continues.
+// wizardVariables shows only the gaps: required variables with no value in
+// the engine's precedence, attributed to their modules. Accepts name=value
+// (--var) and @path (--var-file) until filled or explicitly skipped.
 func wizardVariables(rootDir string, m *manifest.Manifest, bound *boundary.Result, f *migrateFlags) error {
 	needed := map[string]bool{}
 	declaredBy := map[string]map[string]bool{}
@@ -146,7 +138,7 @@ func wizardVariables(rootDir string, m *manifest.Manifest, bound *boundary.Resul
 		}
 		switch {
 		case in == "":
-			ok, err := promptYesNo(fmt.Sprintf("%d required value(s) still missing — the proof will fail without them; continue anyway?", len(gaps)), false)
+			ok, err := promptYesNo(fmt.Sprintf("%d required value(s) still missing - the proof will fail without them; continue anyway?", len(gaps)), false)
 			if err != nil {
 				return err
 			}
@@ -174,7 +166,7 @@ func wizardVariables(rootDir string, m *manifest.Manifest, bound *boundary.Resul
 // accepting extra -backend-config values for init.
 func wizardBackend(rootDir string, m *manifest.Manifest, f *migrateFlags) error {
 	if m.Backend == nil {
-		outln("\nBackend: none declared — each module gets a local terraform.tfstate.")
+		outln("\nBackend: none declared - each module gets a local terraform.tfstate.")
 		return nil
 	}
 	outf("\n%s, derived per module:\n", heading(fmt.Sprintf("Backend (%s)", m.Backend.Type)))
@@ -224,15 +216,15 @@ func wizardBackend(rootDir string, m *manifest.Manifest, f *migrateFlags) error 
 	}
 }
 
-// wizardAmbient states the ambient-credentials contract — provider
-// credentials cannot be reliably detected and are never captured — and asks
+// wizardAmbient states the ambient-credentials contract - provider
+// credentials cannot be reliably detected and are never captured - and asks
 // for one confirmation that this is the session the monolith works in.
 func wizardAmbient(rootDir string) error {
 	providers, err := emit.RequiredProviderNames(rootDir)
 	if err != nil {
 		return err
 	}
-	outf("\nProvider credentials (for %s) are inherited from this shell — demonolith cannot reliably detect them and never captures them.\n", strings.Join(providers, ", "))
+	outf("\nProvider credentials (for %s) are inherited from this shell - demonolith cannot reliably detect them and never captures them.\n", strings.Join(providers, ", "))
 	ok, err := promptYesNo("\nIs this the shell session in which the monolith inits and plans cleanly?", true)
 	if err != nil {
 		return err

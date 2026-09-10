@@ -17,7 +17,7 @@ import (
 )
 
 // structural blocks (provider, locals, variable) are not placed by the
-// decorator pass — they are duplicated into every module that uses them, the
+// decorator pass - they are duplicated into every module that uses them, the
 // same way required_providers is propagated. This file computes, per module,
 // which of those blocks are needed and emits them (with cross-module references
 // inside locals rewritten to var.<input>).
@@ -171,7 +171,7 @@ func providerOf(resourceType string) string {
 }
 
 // sourceBlocks lazily parses every source file once and indexes the structural
-// blocks we may need to clone.
+// blocks available for cloning.
 type sourceBlocks struct {
 	providers map[string]*hclwrite.Block // name -> provider block
 	locals    map[string]*hclwrite.Block // local name -> the locals{} block it lives in
@@ -415,7 +415,7 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // RootVariableNeeds computes, per module, the sorted declared root variables
-// whose original declarations the module's carved code carries — the root
+// whose original declarations the module's carved code carries - the root
 // inputs a control plane must supply alongside the boundary's external inputs.
 func RootVariableNeeds(srcDir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result) (map[string][]string, error) {
 	e := &Emitter{SrcDir: srcDir, Graph: graph, Place: place, Bound: bound}
@@ -477,7 +477,7 @@ type Structural struct {
 }
 
 // StructuralHCL computes the structural carve for module without emitting a
-// root — the transfer family's source for what must travel with moved blocks.
+// root - the transfer family's source for what must travel with moved blocks.
 func StructuralHCL(srcDir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result, module string) (*Structural, error) {
 	e := &Emitter{SrcDir: srcDir, Graph: graph, Place: place, Bound: bound}
 	sb, err := e.loadSourceBlocks()

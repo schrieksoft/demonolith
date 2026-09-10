@@ -36,7 +36,7 @@ func migrateProveCmd() *cobra.Command {
 }
 
 // proveReport collects the proof result for reporting. External input values
-// are deliberately absent — names only.
+// are deliberately absent - names only.
 type proveReport struct {
 	Manifest       string
 	Mode           string
@@ -48,7 +48,7 @@ type proveReport struct {
 	VerdictPath    string
 }
 
-// printLiveReads lists, per module, the data sources its plan will read live —
+// printLiveReads lists, per module, the data sources its plan will read live -
 // the one channel -refresh=false cannot freeze, and the only ambient
 // credential need beyond provider configuration.
 func printLiveReads(place *placement.Placement) {

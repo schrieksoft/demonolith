@@ -1,14 +1,13 @@
 // Package bootstrap emits the Snap CD bootstrap module: a Terraform root of
-// snapcd_* resources that instructs Snap CD to deploy the carved modules — one
+// snapcd_* resources that instructs Snap CD to deploy the carved modules - one
 // snapcd_module per carved root, the manifest's cross edges realized as
 // snapcd_module_input_from_output wirings, its ordering edges as
 // snapcd_depends_on_module, and external inputs passed through as
 // snapcd_module_input_from_literal bound to the bootstrap's own variables.
 //
-// It generates from the manifest alone: everything a control plane needs is in
-// the public contract, which is the point. The one exception is the README,
-// which carries clone-local git values as apply-time hints and is excluded
-// from the emit checksum for that reason.
+// It generates from the manifest alone - everything a control plane needs is
+// in the public contract. The README is the one exception: clone-local git
+// hints, excluded from the emit checksum.
 package bootstrap
 
 import (
@@ -268,7 +267,7 @@ data "snapcd_runner" "this" {
 	}
 
 	// Cross edges: producer output threaded into consumer input, deduplicated
-	// per (consumer, input) — several consumer blocks can share one wiring.
+	// per (consumer, input) - several consumer blocks can share one wiring.
 	seen := map[string]bool{}
 	for _, e := range m.CrossEdges {
 		key := e.ConsumerModule + "\x00" + e.Input
@@ -305,8 +304,8 @@ data "snapcd_runner" "this" {
 	}
 
 	// Root-variable inputs: every value a module's carved code takes from the
-	// monolith's root — declared variables it carries and undeclared external
-	// inputs alike — passed through from the bootstrap's own variables.
+	// monolith's root - declared variables it carries and undeclared external
+	// inputs alike - passed through from the bootstrap's own variables.
 	for _, name := range names {
 		inputs := append(append([]string{}, m.Modules[name].RootInputs...), m.Modules[name].ExternalInputs...)
 		sort.Strings(inputs)

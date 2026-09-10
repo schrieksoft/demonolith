@@ -27,17 +27,11 @@ func (e *Emitter) crossRefMap(module string) map[string]map[string]string {
 	return m
 }
 
-// rewriteRefs rewrites, in place, every cross-module reference inside a block's
-// attributes to `var.<input>`. It walks each attribute's token stream, detects
-// traversals whose leading segments name a cross-module producer, and replaces
-// those tokens (including any trailing attribute access like `.result`, and any
-// index like `[0]`) with a var reference.
-//
-// depends_on entries that point at a producer outside this module are dropped —
-// whether the producer carries a value edge (the dependency is now expressed
-// through the input variable) or an ordering-only edge (carried by an
-// OrderingEdge). Either way, referencing a block that no longer exists in this
-// root would break the root.
+// rewriteRefs rewrites, in place, every cross-module reference in a block's
+// attributes to `var.<input>`, trailing attribute and index steps included.
+// Foreign depends_on entries are dropped: the dependency is carried by the
+// input variable or an OrderingEdge, and the referenced block no longer
+// exists in this root.
 func (e *Emitter) rewriteRefs(module string, blk *hclwrite.Block) {
 	xref := e.crossRefMap(module)
 	e.rewriteBody(blk.Body(), xref, e.foreignProducer(module))
@@ -93,13 +87,9 @@ func (e *Emitter) rewriteDependsOn(body *hclwrite.Body, attr *hclwrite.Attribute
 }
 
 // rewriteTokens scans a token slice for traversals matching a cross-module
-// producer and replaces each with `var.<input>`. It returns the new tokens and
-// whether anything changed.
-//
-// A traversal is a run of TokenIdent separated by TokenDot. We greedily match
-// the longest known producer prefix (2 segs for resource, 3 for data), then
-// consume any trailing `.attr` and `[...]` steps that belong to the same
-// reference, replacing the whole run.
+// producer and replaces each with `var.<input>`, greedily matching the longest
+// producer prefix (2 segments for resource, 3 for data) and consuming trailing
+// `.attr`/`[...]` steps.
 func rewriteTokens(toks hclwrite.Tokens, xref map[string]map[string]string) (hclwrite.Tokens, bool) {
 	var out hclwrite.Tokens
 	changed := false
@@ -246,7 +236,7 @@ func filterDependsOn(toks hclwrite.Tokens, foreign func(hclgraph.Address) bool) 
 		}
 	}
 	if start < 0 || end < 0 {
-		return toks, true // not a list we understand; leave as-is
+		return toks, true // not a recognizable list; leave as-is
 	}
 
 	// Split inner tokens on top-level commas into element token runs.

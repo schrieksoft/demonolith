@@ -10,19 +10,11 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
-// moduleOutputTarget resolves a module call's output to the child resource and
-// attribute it exposes, so a value can be read from the module-scoped state.
-//
-// It reads the module block's local `source`, parses the child root's
-// `output "<outputName>"` block, and extracts the leading `<type>.<name>.<attr>`
-// traversal from its value expression. Returns (childResourceAddr, childAttr).
-// e.g. child `output "id" { value = random_pet.id.id }` yields
-// ("random_pet.id", "id").
-//
-// Only the common case — an output whose value is a single resource traversal —
-// is resolved from state; anything more complex (a function of several values)
-// can't be read from state and is reported as unresolved so the caller errors
-// loudly rather than emitting a wrong value.
+// moduleOutputTarget resolves a module call's output to the child resource
+// and attribute it exposes (child `output "id" { value = random_pet.id.id }`
+// yields ("random_pet.id", "id")), so the value can be read from module-scoped
+// state. Anything but a single resource traversal is reported unresolved
+// rather than guessed.
 func moduleOutputTarget(sourceDir, moduleName, outputName string) (childRes, childAttr string, ok bool) {
 	if sourceDir == "" {
 		return "", "", false
@@ -42,7 +34,7 @@ func moduleOutputTarget(sourceDir, moduleName, outputName string) (childRes, chi
 		return "", "", false
 	}
 	// Child resource is <type>.<name>; anything after is the attribute path.
-	// (Data sources / module chains inside a child are out of scope for v1.)
+	// (Data sources and module chains inside a child are not resolvable here.)
 	if segs[0] == "data" || segs[0] == "module" || segs[0] == "var" || segs[0] == "local" {
 		return "", "", false
 	}

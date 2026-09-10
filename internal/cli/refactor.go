@@ -67,7 +67,7 @@ func refactorMapCmd() *cobra.Command {
 	var f refactorFlags
 	cmd := &cobra.Command{
 		Use:   "map",
-		Short: "Analyze the monolith and write the map of the split — the reviewable plan; no module directories are written yet",
+		Short: "Analyze the monolith and write the map of the split - the reviewable plan; no module directories are written yet",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if f.interactive {
@@ -253,7 +253,7 @@ func runRefactorRun(rootDir string, overwrite bool) error {
 	}
 	if len(existing) > 0 {
 		if !overwrite {
-			return fmt.Errorf("target module directories already exist: %s — refactor run owns them entirely: delete them, or pass --overwrite to delete and rewrite them (everything inside is lost, engine artifacts and any local state included)", strings.Join(existing, ", "))
+			return fmt.Errorf("target module directories already exist: %s - refactor run owns them entirely: delete them, or pass --overwrite to delete and rewrite them (everything inside is lost, engine artifacts and any local state included)", strings.Join(existing, ", "))
 		}
 		fmt.Fprintf(os.Stderr, "%s\n\n", warn(fmt.Sprintf("WARNING: --overwrite: deleting existing module directories and everything in them: %s", strings.Join(existing, ", "))))
 		for _, d := range targets {

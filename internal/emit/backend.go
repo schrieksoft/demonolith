@@ -16,7 +16,7 @@ import (
 
 // BackendBlock is the monolith's parsed backend configuration: the type label
 // and the raw attribute expressions of the block body. Only attributes present
-// in HCL are carried — resolved config (which can hold credentials supplied
+// in HCL are carried - resolved config (which can hold credentials supplied
 // out-of-band at init) is never read into it.
 type BackendBlock struct {
 	Type string
@@ -33,7 +33,7 @@ type BackendBlock struct {
 const EnvFileName = "demono.env"
 
 // locationAttrs names, per backend type, the attributes that distinguish one
-// state location from another — every built-in backend type of the
+// state location from another - every built-in backend type of the
 // open-source lineage. A dotted name ("workspaces.name") addresses an
 // attribute inside a nested block.
 var locationAttrs = map[string][]string{
@@ -124,7 +124,7 @@ func DeriveLocation(value, module string) string {
 
 // DerivedLocations validates the block and returns each module's derived
 // primary location (the first location attribute). Every location attribute
-// must be present in HCL as a plain string literal — a location supplied only
+// must be present in HCL as a plain string literal - a location supplied only
 // via -backend-config cannot be derived and is a refusal, not a guess.
 func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byModule map[string]string, err error) {
 	if b.Type == "cloud" {
@@ -132,12 +132,12 @@ func (b *BackendBlock) DerivedLocations(modules []string) (monolith string, byMo
 	}
 	attrs, ok := locationAttrs[b.Type]
 	if !ok {
-		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: %s — pass --no-backend to write the modules without backend blocks", b.Type, supportedTypesList())
+		return "", nil, fmt.Errorf("backend type %q is not supported for state-location derivation; supported: %s - pass --no-backend to write the modules without backend blocks", b.Type, supportedTypesList())
 	}
 	if b.Type == "remote" {
 		if _, named := b.locationValue("workspaces.name"); !named {
 			if _, prefixed := b.locationValue("workspaces.prefix"); prefixed {
-				return "", nil, fmt.Errorf("remote backend in workspaces.prefix mode maps CLI workspaces onto many remote workspaces; only workspaces.name mode is derivable — pass --no-backend to write the modules without backend blocks")
+				return "", nil, fmt.Errorf("remote backend in workspaces.prefix mode maps CLI workspaces onto many remote workspaces; only workspaces.name mode is derivable - pass --no-backend to write the modules without backend blocks")
 			}
 		}
 	}
@@ -178,7 +178,7 @@ func (b *BackendBlock) BackendHCL(module string) (*hclwrite.Block, error) {
 	}
 	// Non-secret settings that were supplied out-of-band (lock methods, TLS
 	// toggles, regions...) must survive into the carved roots too. Everything
-	// credential-shaped is excluded here — it goes to demono.env instead.
+	// credential-shaped is excluded here - it goes to demono.env instead.
 	creds := envMapping[b.Type]
 	extras := make([]string, 0, len(b.resolved))
 	for name := range b.resolved {
@@ -219,7 +219,7 @@ func (b *BackendBlock) BackendHCL(module string) (*hclwrite.Block, error) {
 }
 
 // StripBackend removes backend blocks from every terraform{} block in src,
-// returning the stripped bytes and whether anything was removed — the offline
+// returning the stripped bytes and whether anything was removed - the offline
 // proof's way of un-declaring the backend while keeping required_providers.
 // Unparseable input is returned unchanged.
 func StripBackend(src []byte) ([]byte, bool) {
@@ -257,7 +257,7 @@ func literalAttr(blk *hclwrite.Block, name string) (string, bool) {
 
 // envMapping names, per backend type, the official engine environment variable
 // for each credential-bearing config attribute. Secrets are persisted only as
-// gitignored per-module demono.env files in these variables — never into HCL.
+// gitignored per-module demono.env files in these variables - never into HCL.
 var envMapping = map[string]map[string]string{
 	"http": {
 		"username": "TF_HTTP_USERNAME",
@@ -312,7 +312,7 @@ var envMapping = map[string]map[string]string{
 }
 
 // resolvedBackendConfig reads the root's initialized backend configuration
-// from .terraform/terraform.tfstate — the values init resolved, including
+// from .terraform/terraform.tfstate - the values init resolved, including
 // -backend-config flags the HCL never saw. Scalars only; absent init or a
 // type mismatch yields nil.
 func resolvedBackendConfig(srcDir, backendType string) map[string]string {
@@ -343,7 +343,7 @@ func resolvedBackendConfig(srcDir, backendType string) map[string]string {
 				out[k] = fmt.Sprintf("%g", t)
 			}
 		case map[string]any:
-			// One level of nesting, flattened to dotted keys — the remote
+			// One level of nesting, flattened to dotted keys - the remote
 			// backend's workspaces block.
 			for k2, v2 := range t {
 				if s, ok := v2.(string); ok && s != "" {
@@ -378,7 +378,7 @@ func (b *BackendBlock) locationValue(name string) (string, bool) {
 }
 
 // CredentialEnv maps the resolved credential attributes that are absent from
-// HCL to their engine environment variables — the content of a module's demono.env.
+// HCL to their engine environment variables - the content of a module's demono.env.
 func (b *BackendBlock) CredentialEnv() map[string]string {
 	out := map[string]string{}
 	for attr, envVar := range envMapping[b.Type] {

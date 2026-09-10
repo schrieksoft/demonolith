@@ -30,7 +30,7 @@ import (
 //
 // Unlike proof.Run (which threads producer plan outputs in memory), this test
 // plans each module STANDALONE: only its carved state and its
-// demono.graph.tfvars, loaded explicitly via -var-file — no -var flags. That
+// demono.graph.tfvars, loaded explicitly via -var-file - no -var flags. That
 // proves the tfvars file alone carries every cross-module value correctly,
 // which is what a human planning a detached root would do.
 func TestE2E_SplitProvenFromTfvars(t *testing.T) {
@@ -132,7 +132,7 @@ func TestE2E_SplitProvenFromTfvars(t *testing.T) {
 	}
 }
 
-// planStandalone inits and plans the module root with NO -var flags — the
+// planStandalone inits and plans the module root with NO -var flags - the
 // only value source is demono.graph.tfvars, loaded explicitly via -var-file
 // (the file is deliberately not auto-loaded). Returns create/destroy counts.
 func planStandalone(t *testing.T, ctx context.Context, execPath, dir string) (add, destroy int) {
@@ -293,7 +293,7 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 		},
 		// data owns tls_private_key.signer + data.tls_public_key.pub (the data
 		// source follows its consumer fp_tag), so it carves the default tls
-		// provider — whose config references var.name_prefix and
+		// provider - whose config references var.name_prefix and
 		// local.proxy_host, so those get pulled in too. Uses common_length; not
 		// the app-only tagged.
 		"data": {
@@ -301,7 +301,7 @@ func assertStructuralCarving(t *testing.T, moduleDirs map[string]string) {
 			notWant: []string{"tagged"},
 		},
 		// app uses THREE tls providers: default (var.name_prefix + local.proxy_host)
-		// and two aliased ones referencing cross-module producers — by_resource
+		// and two aliased ones referencing cross-module producers - by_resource
 		// (net_name) and by_module (module.idgen). Plus name_prefix, common_length,
 		// tagged, and locals rewritten to var.* for R/M producers.
 		"app": {

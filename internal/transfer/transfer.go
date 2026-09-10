@@ -2,11 +2,9 @@
 // root is decorated (`@demono:move <receiver>`), receivers are living roots
 // bound by label to local working trees, and both sides' states are written.
 //
-// The first iteration supports self-contained selections only: any value or
-// ordering edge across the transfer boundary is refused at map time, so the
-// code move is purely subtractive on the source and purely additive on each
-// receiver. Structural needs (variables, locals) travel with the blocks;
-// wiring across the boundary is future work.
+// Structural needs (variables, locals) travel with the blocks, and references
+// across the transfer boundary are wired: the source consumes moved values as
+// inputs, receivers expose outputs, and the edges are recorded in the map.
 package transfer
 
 import (
@@ -43,8 +41,6 @@ const (
 
 // WorkDirName holds the pulled state copies and backups under the source root.
 const WorkDirName = ".demono-transfer"
-
-
 
 // Pin identifies one root's state at map time. Lineage is the durable
 // identity; serial pins the exact generation the plan was computed against.
@@ -90,7 +86,7 @@ type OrderingEdge struct {
 
 // Snapcd records the Snap CD root a transfer updates: where it is (relative to
 // the source root's parent), which snapcd_module resource represents each
-// involved root, and — after refactor run — the wiring file's checksum.
+// involved root, and - after refactor run - the wiring file's checksum.
 type Snapcd struct {
 	Dir string `yaml:"dir"`
 	// Modules maps a root ("source" or a receiver target) to the name of its
@@ -110,7 +106,7 @@ type Map struct {
 	Created   string `yaml:"created"`
 	Tool      string `yaml:"tool"`
 	Remainder string `yaml:"remainder"`
-	// SourceDir is the source root's directory basename — how a distributed
+	// SourceDir is the source root's directory basename - how a distributed
 	// copy tells a slice which role its directory holds.
 	SourceDir string              `yaml:"source_dir,omitempty"`
 	Receivers map[string]Receiver `yaml:"receivers"`
@@ -170,7 +166,7 @@ func WriteMap(m *Map, rootDir string) error {
 func LoadMap(rootDir string) (*Map, error) {
 	b, err := os.ReadFile(filepath.Join(rootDir, MapFile))
 	if err != nil {
-		return nil, fmt.Errorf("no %s found in %s; run `demonolith transfer map` first", MapFile, rootDir)
+		return nil, fmt.Errorf("no %s found in %s; run `demonolith transfer refactor map` first", MapFile, rootDir)
 	}
 	var m Map
 	if err := yaml.Unmarshal(b, &m); err != nil {
@@ -212,7 +208,7 @@ func (m *Map) ReceiverNames() []string {
 // Analysis validation ------------------------------------------------------
 
 // Plan derives the transfer's content from the source analysis, refusing
-// anything the first iteration cannot carry.
+// anything a transfer cannot carry.
 type Plan struct {
 	Analysis  *pipeline.Analysis
 	Remainder string
@@ -352,7 +348,7 @@ func (plan *Plan) Edges() (cross []CrossEdge, ordering []OrderingEdge) {
 	return cross, ordering
 }
 
-// BoundaryFromMap reconstructs the boundary the migrate half threads over —
+// BoundaryFromMap reconstructs the boundary the migrate half threads over -
 // after the code move the source carries no decorators, so the map is the
 // record. Module names are receiver targets plus the remainder.
 func BoundaryFromMap(m *Map) *boundary.Result {
@@ -380,7 +376,7 @@ func BoundaryFromMap(m *Map) *boundary.Result {
 
 // ResolveReceiverPath resolves a decorator target against the source root. A
 // transfer target is a relative directory (./x or ../x) pointing at an
-// existing root — never a bare name (that is the split's decorator shape) and
+// existing root - never a bare name (that is the split's decorator shape) and
 // never an absolute path (clone-specific).
 func ResolveReceiverPath(rootDir, target string) (string, error) {
 	if filepath.IsAbs(target) {
@@ -395,7 +391,7 @@ func ResolveReceiverPath(rootDir, target string) (string, error) {
 	}
 	fi, err := os.Stat(abs)
 	if err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("receiver %q: no directory at %s — a transfer target must already exist", target, abs)
+		return "", fmt.Errorf("receiver %q: no directory at %s - a transfer target must already exist", target, abs)
 	}
 	return abs, nil
 }
@@ -426,7 +422,7 @@ func Slug(target string) string {
 	return fmt.Sprintf("%s-%x", strings.Trim(safe, "_"), sum[:4])
 }
 
-// MatchesMap reports whether the plan's selection equals the map's — the
+// MatchesMap reports whether the plan's selection equals the map's - the
 // staleness gate every later step runs before touching anything.
 func (plan *Plan) MatchesMap(m *Map) error {
 	if len(plan.Receivers) != len(m.Receivers) {
@@ -470,8 +466,8 @@ func equalStrings(a, b []string) bool {
 // Receiver-side validation -------------------------------------------------
 
 // ValidateReceiverDir refuses a receiver working tree the code move cannot
-// land in: a declaration collision
-// with what must travel along — carried declarations and boundary wiring.
+// land in: a declaration collision with what must travel along - carried
+// declarations and boundary wiring.
 func ValidateReceiverDir(dir string, st *emit.Structural, inputs, outputs []string) error {
 	vars, locals, outs, err := declaredNames(dir)
 	if err != nil {
@@ -500,7 +496,7 @@ func ValidateReceiverDir(dir string, st *emit.Structural, inputs, outputs []stri
 	}
 	if len(clash) > 0 {
 		sort.Strings(clash)
-		return fmt.Errorf("receiver %s already declares: %s — the moved blocks carry declarations of the same names, and merging them is a human decision; rename on one side first", dir, strings.Join(clash, ", "))
+		return fmt.Errorf("receiver %s already declares: %s - the moved blocks carry declarations of the same names, and merging them is a human decision; rename on one side first", dir, strings.Join(clash, ", "))
 	}
 	return nil
 }
@@ -525,7 +521,7 @@ func ValidateSourceWiring(rootDir string, inputs, outputs []string) error {
 	}
 	if len(clash) > 0 {
 		sort.Strings(clash)
-		return fmt.Errorf("the source root already declares: %s — the transfer's wiring needs those names; rename the existing declarations first", strings.Join(clash, ", "))
+		return fmt.Errorf("the source root already declares: %s - the transfer's wiring needs those names; rename the existing declarations first", strings.Join(clash, ", "))
 	}
 	return nil
 }
@@ -571,10 +567,9 @@ func declaredNames(dir string) (vars, locals, outs map[string]bool, err error) {
 
 // Code move ----------------------------------------------------------------
 
-// ReceiverFiles builds what the code move appends into one receiver, keyed by
-// the conventional filename: variable declarations (carried and wiring) into
-// variables.tf, locals and the moved blocks (cross refs rewritten to
-// var.<input>) into main.tf, outputs into outputs.tf.
+// ReceiverFiles builds what the code move appends into one receiver: variables
+// (carried and wiring) into variables.tf, locals and moved blocks (cross refs
+// rewritten to var.<input>) into main.tf, outputs into outputs.tf.
 func ReceiverFiles(rootDir string, plan *Plan, name string) (map[string]string, error) {
 	a := plan.Analysis
 	moved, err := emit.MovedBlocksWiredHCL(rootDir, a.Graph, a.Placement, a.Boundary, name)
@@ -600,10 +595,8 @@ func ReceiverFiles(rootDir string, plan *Plan, name string) (map[string]string, 
 	return out, nil
 }
 
-// SourceFiles builds what the code move appends into the source root itself:
-// the variables for what it now consumes from the receivers (variables.tf) and
-// the outputs for what the receivers consume from it (outputs.tf). Empty when
-// the source needs neither.
+// SourceFiles builds what the code move appends into the source root: the
+// variables it now consumes and the outputs receivers consume from it.
 func SourceFiles(plan *Plan) map[string]string {
 	varsHCL, outsHCL := emit.WiringHCL(plan.Analysis.Boundary, plan.Remainder)
 	out := map[string]string{}
@@ -714,7 +707,7 @@ func CodeMoved(rootDir string, m *Map, paths map[string]string) error {
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
-		return fmt.Errorf("the code move has not happened (run `demonolith transfer code`):\n  %s", strings.Join(problems, "\n  "))
+		return fmt.Errorf("the code move has not happened (run `demonolith transfer refactor run`):\n  %s", strings.Join(problems, "\n  "))
 	}
 	return nil
 }

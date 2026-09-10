@@ -185,7 +185,7 @@ func tfFiles(dir string) ([]string, error) {
 }
 
 // MovedBlocksHCL renders the source blocks placed in module as HCL, verbatim
-// clones with decorator comments stripped — the transfer family's code move.
+// clones with decorator comments stripped - the transfer family's code move.
 func MovedBlocksHCL(srcDir string, place *placement.Placement, module string) (string, error) {
 	e := &Emitter{SrcDir: srcDir, Place: place}
 	blocks, err := e.movedBlocks(module)
@@ -212,7 +212,7 @@ func AddrOfBlock(blk *hclwrite.Block) (string, bool) {
 
 // MovedBlocksWiredHCL renders the source blocks placed in module as HCL with
 // cross-module references rewritten to var.<input> and foreign depends_on
-// entries dropped — the transfer family's code move for a wired selection.
+// entries dropped - the transfer family's code move for a wired selection.
 func MovedBlocksWiredHCL(srcDir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result, module string) (string, error) {
 	e := &Emitter{SrcDir: srcDir, Graph: graph, Place: place, Bound: bound}
 	blocks, err := e.movedBlocks(module)
@@ -230,7 +230,7 @@ func MovedBlocksWiredHCL(srcDir string, graph *hclgraph.Graph, place *placement.
 
 // WiringHCL renders the boundary-derived declarations one module needs: the
 // variables for its cross-module inputs and the outputs it must expose.
-// External (root-variable) inputs are excluded — a living root declares its
+// External (root-variable) inputs are excluded - a living root declares its
 // own variables, carried separately by the structural carve.
 func WiringHCL(bound *boundary.Result, module string) (varsHCL, outputsHCL string) {
 	b := bound.Boundaries[module]
@@ -252,7 +252,7 @@ func WiringHCL(bound *boundary.Result, module string) (varsHCL, outputsHCL strin
 }
 
 // RewriteRefsInPlace rewrites, in the module's own source files on disk, every
-// reference to a block placed outside module — the transfer family's source
+// reference to a block placed outside module - the transfer family's source
 // side, where the remaining code must consume its former blocks as inputs.
 // Returns the files it changed.
 func RewriteRefsInPlace(dir string, graph *hclgraph.Graph, place *placement.Placement, bound *boundary.Result, module string) ([]string, error) {

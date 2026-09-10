@@ -8,11 +8,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Sidecar filenames — fixed, like the manifest's: one canonical file per
-// step, overwritten per execution, with the datetime (`created`) and the
-// generation tie (`manifest_checksum`) inside the document so an external
-// system can tell what ran, when, and for which plan. History lives in
-// version control.
+// Sidecar filenames: one canonical file per step, overwritten per execution;
+// `created` and `manifest_checksum` inside the document tie it to a time and
+// a plan generation. History lives in version control.
 const (
 	MapReceiptFile   = "demonolith-migrate-map.yaml"
 	RunReceiptFile   = "demonolith-migrate-run.yaml"
@@ -140,10 +138,9 @@ type ModuleVerdict struct {
 	Update int `yaml:"update" json:"update"`
 }
 
-// Verdict is a proof sidecar: the result as an artifact rather than terminal
-// scrollback. Mode "prove" judges migrate map's carved artifacts; mode
-// "final" judges the pushed states against the real backends. External input
-// values never appear here, only names.
+// Verdict is a proof sidecar. Mode "prove" judges migrate map's carved
+// artifacts; "final" judges the pushed states against the real backends.
+// External input values never appear here, only names.
 type Verdict struct {
 	Version  int    `yaml:"version"`
 	Created  string `yaml:"created"`

@@ -38,9 +38,8 @@ type validateReport struct {
 }
 
 // runRefactorValidate runs `init -backend=false` + `validate` on each written
-// module directory (bootstrap included): engine-grade validity — providers
-// installed, references resolved, types checked — without touching any state
-// backend. Only the provider registry is contacted.
+// directory (bootstrap included): engine-grade validity without touching any
+// state backend; only the provider registry is contacted.
 func runRefactorValidate(ctx context.Context, rootDir string, f refactorFlags) error {
 	if ctx == nil {
 		ctx = context.Background()

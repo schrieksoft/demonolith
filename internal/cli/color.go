@@ -7,7 +7,7 @@ import (
 )
 
 // Semantic color roles, mapped onto the terminal's OWN 16-color palette so
-// they follow the user's theme on any background — never RGB values, never
+// they follow the user's theme on any background - never RGB values, never
 // background colors:
 //
 //	heading   section titles                       bold
@@ -22,7 +22,7 @@ import (
 // The house rule: any line that introduces an indented list is a heading;
 // outcome words (moved, pushed, skipped, zero changes, FAILED) use the status
 // roles; ordinary informational sentences stay plain. emphasis marks exactly
-// one thing per line — the name of the object the line is about (a module,
+// one thing per line - the name of the object the line is about (a module,
 // root, or receiver), whether as the left column of a listing or the name:
 // prefix of a progress line. Paths, addresses and other detail stay plain or
 // dim; a padded name is padded first, colored second (ANSI bytes count

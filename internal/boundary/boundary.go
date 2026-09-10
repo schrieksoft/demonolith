@@ -1,19 +1,9 @@
 // Package boundary computes, per module, the inputs and outputs implied by
-// references that cross a module boundary after placement.
-//
-// An edge is consumer -> producer (the consumer block references the producer).
-// After placement:
-//   - both endpoints in the same module: internal, relocates unchanged.
-//   - endpoints in different modules: the producer module must expose an
-//     `output` and the consumer module must declare a `variable`; a boundary
-//     CrossEdge records the (producer output -> consumer input) wiring.
-//   - a reference to a `var` becomes an external/root input on the consumer
-//     module (it was a monolith root variable; each module that uses it gets its
-//     own input).
-//   - a reference to a `local` is resolved by pulling the local's own upstream
-//     references into the consuming module (v1: treated like the resources it
-//     depends on; a cross-module local surfaces as boundary edges to those
-//     upstream producers).
+// references that cross a module boundary after placement: the producer module
+// exposes an output, the consumer declares a variable, and a CrossEdge records
+// the wiring. A reference to a root `var` becomes an external input; a `local`
+// is resolved by wiring its own upstream references as if made by its
+// consumers.
 package boundary
 
 import (
@@ -24,10 +14,8 @@ import (
 	"github.com/schrieksoft/demonolith/internal/placement"
 )
 
-// CrossEdge is a single boundary-crossing reference that requires wiring: the
-// Producer module exposes OutputName, threaded into the Consumer module's
-// InputName. For v1 the output/input names are derived from the producer
-// address, but they are independent by construction.
+// CrossEdge is one boundary-crossing reference: the Producer module exposes
+// OutputName, threaded into the Consumer module's InputName.
 type CrossEdge struct {
 	ProducerModule string
 	ConsumerModule string
@@ -76,9 +64,7 @@ type Output struct {
 }
 
 // OrderingEdge is a whole-module ordering dependency induced by a cross-module
-// depends_on. It requires no variable/output — only that the producer module is
-// applied before the consumer module. In detached v1 this is reported so the
-// operator can enforce ordering (Snap CD's graph would carry it natively).
+// depends_on: no variable or output, only apply order.
 type OrderingEdge struct {
 	ConsumerModule string
 	ProducerModule string
@@ -136,10 +122,9 @@ func Compute(g *hclgraph.Graph, p *placement.Placement) (*Result, error) {
 					}
 				}
 			case hclgraph.KindVariable:
-				// A variable the root declares travels with the module as its
-				// own original `variable` block (carved by emit), so it needs no
-				// boundary input. Only an undeclared var would be a true external
-				// input.
+				// A declared root variable travels as its own carved
+				// `variable` block; only an undeclared var is an
+				// external input.
 				if g.Node(ref) != nil {
 					break
 				}
@@ -177,10 +162,8 @@ func Compute(g *hclgraph.Graph, p *placement.Placement) (*Result, error) {
 	return res, nil
 }
 
-// wireProviders determines, per module, which providers it uses (by resource
-// type + `provider = name.alias` meta-arg) and wires any cross-module producer
-// referenced in each used provider's config — creating the CrossEdge/variable
-// even when the provider is the only thing referencing that producer.
+// wireProviders wires cross-module producers referenced from each module's
+// used providers' config bodies - even when the provider is the sole consumer.
 func (res *Result) wireProviders(g *hclgraph.Graph, p *placement.Placement) error {
 	providers := indexProviders(g.Providers())
 
@@ -295,10 +278,8 @@ func (res *Result) wireProducer(p *placement.Placement, consumer, producer hclgr
 	return nil
 }
 
-// edgeName derives the output/input name for a producer reference. A producer
-// referenced through a single attribute everywhere keeps the plain
-// address-derived name; one referenced through several attributes gets one
-// name per attribute, so each carries its own value.
+// edgeName derives the output/input name: address-derived, with one name per
+// attribute when a producer is referenced through several.
 func (res *Result) edgeName(producer hclgraph.Address, attr string) string {
 	base := outputName(producer)
 	if attr == "" || !res.multiAttr[producer.String()] {
@@ -331,8 +312,8 @@ func attrsOf(refAttrs map[string][]string, ref hclgraph.Address) []string {
 }
 
 // multiAttrProducers finds producers referenced through more than one distinct
-// non-empty attribute path anywhere in the root — including from provider
-// config bodies — so their edges can be attr-scoped consistently everywhere.
+// non-empty attribute path anywhere in the root - including from provider
+// config bodies - so their edges can be attr-scoped consistently everywhere.
 func multiAttrProducers(g *hclgraph.Graph) map[string]bool {
 	byProducer := map[string]map[string]bool{}
 	record := func(refAttrs map[string][]string) {
