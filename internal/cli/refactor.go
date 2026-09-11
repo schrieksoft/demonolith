@@ -118,6 +118,9 @@ func runRefactorMap(f refactorFlags) (*manifest.Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.LegacyMove {
+		outf("%s\n\n", warn("`@demono:move` is deprecated: use `# @demono:split <module>` (removed at the latest in v1.0.0)."))
+	}
 
 	opts := manifest.BuildOpts{Monorepo: f.monorepo, Bootstrap: !f.noBootstrap}
 	if !f.noBackend {

@@ -701,3 +701,25 @@ func TestRefactorDiff_Monorepo(t *testing.T) {
 		t.Errorf("monorepo diff should pass: %v", err)
 	}
 }
+
+// TestSplitCommandAndAliases: `split refactor map` is the named form; the bare
+// `refactor` still runs as a deprecated alias.
+func TestSplitCommandAndAliases(t *testing.T) {
+	dir := t.TempDir()
+	main := "# @demono:split networking\nresource \"random_uuid\" \"a\" {}\n\nresource \"random_uuid\" \"b\" {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, "split", "refactor", "map", "--root-dir", dir); err != nil {
+		t.Fatalf("split refactor map: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "demonolith-refactor-map.yaml")); err != nil {
+		t.Fatalf("manifest not written: %v", err)
+	}
+	if err := run(t, "refactor", "map", "--root-dir", dir); err != nil {
+		t.Fatalf("bare refactor map (deprecated alias): %v", err)
+	}
+	if err := run(t, "refactor", "diff", "--root-dir", dir); err == nil {
+		t.Fatal("diff on a planned-only manifest must refuse under the alias too")
+	}
+}

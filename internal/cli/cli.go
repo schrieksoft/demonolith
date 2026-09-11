@@ -67,7 +67,7 @@ func Root() *cobra.Command {
 	var noColor bool
 	root := &cobra.Command{
 		Use:           "demonolith",
-		Short:         "Split a monolithic Terraform root into standalone per-module directories",
+		Short:         "Restructure Terraform/OpenTofu roots: split a monolith into per-module roots, or transfer blocks between existing roots",
 		Version:       fmt.Sprintf("%s (%s)", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -78,10 +78,37 @@ func Root() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (the NO_COLOR environment variable works too)")
-	root.AddCommand(refactorCmd())
-	root.AddCommand(migrateCmd())
-	root.AddCommand(transferCmd())
+	root.AddCommand(splitCmd())
+	legacyRefactor := refactorCmd()
+	deprecateTree(legacyRefactor, "use `demonolith split refactor ...` (removed at the latest in v1.0.0)")
+	legacyMigrate := migrateCmd()
+	deprecateTree(legacyMigrate, "use `demonolith split migrate ...` (removed at the latest in v1.0.0)")
+	root.AddCommand(legacyRefactor, legacyMigrate, transferCmd())
 	return root
+}
+
+// splitCmd names the split: the refactor and migrate families under one
+// top-level command, beside transfer.
+func splitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "split",
+		Short: "Split a monolithic root into per-module roots: refactor (the code split), then migrate (the state migration)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(refactorCmd(), migrateCmd())
+	return cmd
+}
+
+// deprecateTree marks a command and all its descendants deprecated; cobra
+// prints the notice on execution and hides them from help.
+func deprecateTree(c *cobra.Command, msg string) {
+	c.Deprecated = msg
+	for _, sub := range c.Commands() {
+		deprecateTree(sub, msg)
+	}
 }
 
 // engineExecPath resolves the binary for --engine/--exec-path. --engine has no

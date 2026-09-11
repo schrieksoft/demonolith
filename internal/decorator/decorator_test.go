@@ -3,6 +3,7 @@ package decorator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +71,41 @@ func TestScan_OrphanDecorator_IsError(t *testing.T) {
 	src := []byte("# @demono:move a\n\nresource \"random_pet\" \"x\" {}\n")
 	if _, err := Scan("orphan.tf", src); err == nil {
 		t.Fatal("expected error: decorator not attached to a block")
+	}
+}
+
+func TestScan_SplitAndTransferVerbs(t *testing.T) {
+	src := []byte(`
+# @demono:split networking
+resource "random_uuid" "a" {}
+
+# @demono:transfer
+resource "random_uuid" "b" {}
+`)
+	bds, err := Scan("main.tf", src)
+	if err != nil {
+		t.Fatalf("split/transfer verbs must parse: %v", err)
+	}
+	byAddr := map[string]Decorator{}
+	for _, bd := range bds {
+		if len(bd.Decorators) > 0 {
+			byAddr[bd.Addr] = bd.Decorators[0]
+		}
+	}
+	if d := byAddr["random_uuid.a"]; d.Verb != VerbSplit || len(d.Targets) != 1 || d.Targets[0] != "networking" {
+		t.Fatalf("split decorator: %+v", d)
+	}
+	if d := byAddr["random_uuid.b"]; d.Verb != VerbTransfer || len(d.Targets) != 0 {
+		t.Fatalf("transfer decorator: %+v", d)
+	}
+
+	if _, err := Scan("main.tf", []byte("# @demono:transfer ../x\nresource \"random_uuid\" \"c\" {}\n")); err == nil || !strings.Contains(err.Error(), "--transfer-target") {
+		t.Fatalf("transfer with a target must refuse naming the flag, got: %v", err)
+	}
+	if _, err := Scan("main.tf", []byte("# @demono:split\nresource \"random_uuid\" \"d\" {}\n")); err == nil || !strings.Contains(err.Error(), "requires a target") {
+		t.Fatalf("split without a target must refuse, got: %v", err)
+	}
+	if _, err := Scan("main.tf", []byte("# @demono:relocate x\nresource \"random_uuid\" \"e\" {}\n")); err == nil || !strings.Contains(err.Error(), "unknown decorator verb") {
+		t.Fatalf("unknown verb must refuse, got: %v", err)
 	}
 }

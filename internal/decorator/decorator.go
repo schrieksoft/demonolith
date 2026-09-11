@@ -3,8 +3,13 @@
 // A decorator is a comment directly above (or below) a resource/module/data
 // block, e.g.:
 //
-//	# @demono:move networking
+//	# @demono:split networking
 //	resource "random_uuid" "vpc_id" { ... }
+//
+// The split places blocks with `@demono:split <module>`; the transfer marks
+// them with a bare `@demono:transfer` (the receiver is a command parameter).
+// `@demono:move` is the deprecated older form of both, removed at the latest
+// in v1.0.0.
 //
 // Decorators are namespaced (@demono:), strict, and fail-loud: any comment that
 // looks like a decorator but does not parse is a hard error, because comments
@@ -30,14 +35,17 @@ const namespace = "@demono:"
 // reported rather than silently ignored; the strict pattern then validates.
 var (
 	looksLikeRe = regexp.MustCompile(`@demono\b`)
-	strictRe    = regexp.MustCompile(`^@demono:(\w+)\s+(.+?)\s*$`)
+	strictRe    = regexp.MustCompile(`^@demono:(\w+)(?:\s+(.+?))?\s*$`)
 )
 
-// Verb is a decorator action; the only one is "move".
+// Verb is a decorator action: "split" and "transfer" name the operation the
+// block belongs to; "move" is the deprecated older form of both.
 type Verb string
 
 const (
-	VerbMove Verb = "move"
+	VerbMove     Verb = "move"
+	VerbSplit    Verb = "split"
+	VerbTransfer Verb = "transfer"
 )
 
 // Decorator is one parsed placement directive attached to a block address.
@@ -171,18 +179,24 @@ func scanComments(filename string, lines []string) (map[int]Decorator, error) {
 		if m == nil {
 			return nil, &Error{Range: rng, Msg: fmt.Sprintf("malformed decorator %q: expected `@demono:<verb> <target>`", strings.TrimSpace(text))}
 		}
-		verb := m[1]
-		if Verb(verb) != VerbMove {
-			return nil, &Error{Range: rng, Msg: fmt.Sprintf("unknown decorator verb %q (only `move` is supported)", verb)}
-		}
+		verb := Verb(m[1])
 		targets := strings.Fields(m[2])
-		if len(targets) == 0 {
-			return nil, &Error{Range: rng, Msg: "decorator `move` requires at least one target module"}
+		switch verb {
+		case VerbSplit, VerbMove:
+			if len(targets) == 0 {
+				return nil, &Error{Range: rng, Msg: fmt.Sprintf("decorator `%s` requires a target module", verb)}
+			}
+		case VerbTransfer:
+			if len(targets) > 0 {
+				return nil, &Error{Range: rng, Msg: "decorator `transfer` takes no target; the receiver is given once, as `transfer refactor --transfer-target`"}
+			}
+		default:
+			return nil, &Error{Range: rng, Msg: fmt.Sprintf("unknown decorator verb %q (supported: split, transfer; move is the deprecated older form)", verb)}
 		}
 		if _, dup := out[lineNo]; dup {
 			return nil, &Error{Range: rng, Msg: "multiple decorators on one line"}
 		}
-		out[lineNo] = Decorator{Verb: VerbMove, Targets: targets, Range: rng}
+		out[lineNo] = Decorator{Verb: verb, Targets: targets, Range: rng}
 	}
 	return out, nil
 }
@@ -191,20 +205,18 @@ func scanComments(filename string, lines []string) (map[int]Decorator, error) {
 // (stateful singleton); data takes none - a data source is a stateless read
 // that follows its consumers automatically.
 func validateArity(blockType string, bd BlockDecorators, rng hcl.Range) error {
+	if len(bd.Decorators) == 0 {
+		return nil // no decorator -> catchall, handled downstream
+	}
+	if blockType == "data" {
+		return &Error{Range: rng, Msg: fmt.Sprintf("data %v carries a placement decorator; data sources are placed automatically wherever they are referenced - remove the decorator", bd.Labels)}
+	}
 	total := 0
 	for _, d := range bd.Decorators {
 		total += len(d.Targets)
 	}
-	if total == 0 {
-		return nil // no decorator -> catchall, handled downstream
-	}
-	if blockType == "data" {
-		return &Error{Range: rng, Msg: fmt.Sprintf("data %v carries a move decorator; data sources are placed automatically wherever they are referenced - remove the decorator", bd.Labels)}
-	}
-	if blockType == "resource" || blockType == "module" {
-		if len(bd.Decorators) > 1 || total > 1 {
-			return &Error{Range: rng, Msg: fmt.Sprintf("%s %v has %d move targets; managed/module blocks take exactly one (a stateful singleton cannot live in two roots)", blockType, bd.Labels, total)}
-		}
+	if len(bd.Decorators) > 1 || total > 1 {
+		return &Error{Range: rng, Msg: fmt.Sprintf("%s %v has %d placement decorators/targets; a block takes exactly one (a stateful singleton cannot live in two roots)", blockType, bd.Labels, max(len(bd.Decorators), total))}
 	}
 	return nil
 }

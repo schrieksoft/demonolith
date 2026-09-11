@@ -16,25 +16,29 @@ import (
 )
 
 type transferFlags struct {
-	rootDir    string
-	engine     string
-	execPath   string
-	snapcdRoot string
-	snapcdSet  bool
-	yes        bool
-	all        bool
+	rootDir        string
+	engine         string
+	execPath       string
+	snapcdRoot     string
+	snapcdSet      bool
+	yes            bool
+	all            bool
+	transferTarget string
 }
 
 func transferCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "transfer",
 		Short: "Move decorated blocks into pre-existing roots: refactor (the code move), then migrate (the state move) (experimental)",
-		Long: `Move decorated blocks (# @demono:move ../some-root) from the source root into
-pre-existing receiver roots. Both sides keep living: the source's state and every
-receiver's state are rewritten.
+		Long: `Move marked blocks from the source root into pre-existing receiver roots.
+Both sides keep living: the source's state and every receiver's state are
+rewritten.
 
-Each decorator names its destination as a directory relative to the source
-root; the directory must already exist. Two halves, same grammar as the split:
+Mark the blocks to move with a bare "# @demono:transfer" and name the receiver
+once, as "transfer refactor --transfer-target <dir>" - a directory relative to
+the source root that must already exist. ("# @demono:move <dir>" is the
+deprecated older form, removed at the latest in v1.0.0.) Two halves, same
+grammar as the split:
   transfer refactor   map → run → diff       the code move (commit and review this)
   transfer migrate    map → prove → run → verify   the state move (post-merge, once)
 
@@ -42,8 +46,8 @@ Every command acts on the root --root-dir names (default: the current
 directory). The code move is authored at the source root; the state move is
 per slice - each migrate step touches exactly one root's state, exchanging
 fragments, output values, and receipts as files in that root's .demono-transfer.
-With --all (migrate and refactor diff, from the source root's sibling layout)
-demonolith orchestrates every slice itself.
+With --both (migrate and refactor diff, from the source root's sibling layout)
+demonolith runs both roots' parts itself.
 
 From committing the code move until the state move completes, source and
 receivers plan dirty - freeze their pipelines and keep that window short.`,
@@ -65,7 +69,9 @@ func transferCommonFlags(cmd *cobra.Command, f *transferFlags, withEngine, withA
 		flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	}
 	if withAll {
-		flags.BoolVar(&f.all, "all", false, "act on every slice of the transfer, from the source root's sibling layout")
+		flags.BoolVar(&f.all, "both", false, "act on both roots of the transfer, from the source root's sibling layout")
+		flags.BoolVar(&f.all, "all", false, "")
+		_ = flags.MarkDeprecated("all", "use --both")
 	}
 	cmd.PreRun = func(cmd *cobra.Command, args []string) {
 		f.snapcdSet = cmd.Flags().Changed("snapcd-root")
@@ -101,6 +107,7 @@ func transferRefactorCmd() *cobra.Command {
 	}
 	transferCommonFlags(cmd, &f, false, false)
 	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "approve the code move automatically instead of pausing after the map")
+	cmd.Flags().StringVar(&f.transferTarget, "transfer-target", "", "the receiver: the root the marked blocks move into, as a directory relative to the source root (e.g. ../network)")
 
 	var mf transferFlags
 	mapCmd := &cobra.Command{
@@ -110,6 +117,7 @@ func transferRefactorCmd() *cobra.Command {
 		RunE:  func(cmd *cobra.Command, args []string) error { return runTransferRefactorMap(cmd.Context(), mf) },
 	}
 	transferCommonFlags(mapCmd, &mf, false, false)
+	mapCmd.Flags().StringVar(&mf.transferTarget, "transfer-target", "", "the receiver: the root the marked blocks move into, as a directory relative to the source root (e.g. ../network)")
 
 	var rf transferFlags
 	runCmd := &cobra.Command{
@@ -123,7 +131,7 @@ func transferRefactorCmd() *cobra.Command {
 	var df transferFlags
 	diffCmd := &cobra.Command{
 		Use:   "diff",
-		Short: "Gate: this root's code matches its map copy (--all: every touched root, from the source)",
+		Short: "Gate: this root's code matches its map copy (--both: every touched root, from the source)",
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, args []string) error { return runTransferRefactorDiff(cmd.Context(), df) },
 	}
@@ -139,13 +147,13 @@ func transferMigrateCmd() *cobra.Command {
 	var f transferFlags
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "The state move, one slice at a time: map → prove → run → verify (bare: this root; --all: every root)",
+		Short: "The state move, one root at a time: map → prove → run → verify (bare: this root; --both: source and receiver)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			pausePrompt := "Proceed with the state move? This root's state is rewritten."
 			if f.all {
-				pausePrompt = "Proceed with the state move? Every slice's state is rewritten."
+				pausePrompt = "Proceed with the state move? Both roots' states are rewritten."
 			}
 			outf("%s\n\n", banner("── transfer migrate map ──"))
 			if err := runTransferMigrateMap(ctx, f); err != nil {
@@ -216,6 +224,9 @@ func loadRunTransferMap(rootDir string) (*transfer.Map, error) {
 	}
 	if !m.IsRun() {
 		return nil, fmt.Errorf("the transfer map has not been run yet; run `demonolith transfer refactor` first")
+	}
+	if len(m.Receivers) > 1 {
+		return nil, fmt.Errorf("this map has %d receivers; a transfer has one receiver - re-run the refactor as one transfer per receiver", len(m.Receivers))
 	}
 	return m, nil
 }
@@ -359,9 +370,15 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 	if err != nil {
 		return err
 	}
-	plan, err := transfer.BuildPlan(rootDir)
+	if f.transferTarget == "" {
+		return verdictf("--transfer-target is required: the receiver, a directory relative to the source root (e.g. ../network)")
+	}
+	plan, err := transfer.BuildPlan(rootDir, f.transferTarget)
 	if err != nil {
 		return verdictf("%v", err)
+	}
+	if plan.LegacyMove {
+		outf("%s\n\n", warn("`@demono:move` is deprecated: mark blocks with a bare `# @demono:transfer` and pass --transfer-target (removed at the latest in v1.0.0)."))
 	}
 
 	names := make([]string, 0, len(plan.Receivers))
@@ -513,7 +530,11 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 		}
 	}
 
-	plan, err := transfer.BuildPlan(rootDir)
+	target := ""
+	if names := m.ReceiverNames(); len(names) == 1 {
+		target = names[0]
+	}
+	plan, err := transfer.BuildPlan(rootDir, target)
 	if err != nil {
 		return verdictf("%v", err)
 	}
@@ -677,7 +698,7 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 	}
 	outf("  %s: %d blocks %s\n", emphasis("source"), len(moved), success("removed"))
 	outf("  %s\n\n", dim("map copy distributed to every touched root"))
-	outf("Commit every touched root, then `demonolith transfer migrate --engine {terraform|tofu}` per slice (or --all from the source).\n%s\n", warn("All roots plan dirty until the state move completes - freeze their pipelines and keep the window short."))
+	outf("Commit every touched root, then `demonolith transfer migrate --engine {terraform|tofu}` one root at a time (or --both from the source).\n%s\n", warn("Source and receiver plan dirty until the state move completes - freeze their pipelines and keep the window short."))
 	return nil
 }
 

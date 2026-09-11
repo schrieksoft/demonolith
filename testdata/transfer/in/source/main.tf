@@ -20,12 +20,12 @@ resource "random_pet" "keep" {
   length = var.pet_length
 }
 
-# @demono:move ../shared
+# @demono:transfer
 resource "random_pet" "move_me" {
   length = local.pet_len
 }
 
-# @demono:move ../shared
+# @demono:transfer
 resource "random_integer" "move_too" {
   min = 1
   max = 10

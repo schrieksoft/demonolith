@@ -1,6 +1,7 @@
-// Package transfer moves selected blocks between pre-existing roots: the source
-// root is decorated (`@demono:move <receiver>`), receivers are living roots
-// bound by label to local working trees, and both sides' states are written.
+// Package transfer moves selected blocks between pre-existing roots: the
+// source root's blocks are decorated (`@demono:transfer`, receiver given per
+// command; the deprecated `@demono:move <receiver>` still works), receivers
+// are living roots, and both sides' states are written.
 //
 // Structural needs (variables, locals) travel with the blocks, and references
 // across the transfer boundary are wired: the source consumes moved values as
@@ -212,6 +213,8 @@ func (m *Map) ReceiverNames() []string {
 type Plan struct {
 	Analysis  *pipeline.Analysis
 	Remainder string
+	// LegacyMove reports deprecated `@demono:move` decorators in the source.
+	LegacyMove bool
 	// Receivers keyed by label: block/move addresses and structural carve.
 	Receivers map[string]*PlanReceiver
 }
@@ -225,9 +228,11 @@ type PlanReceiver struct {
 	Outputs []string
 }
 
-// BuildPlan analyzes the source and validates the selection is self-contained.
-func BuildPlan(rootDir string) (*Plan, error) {
-	a, err := pipeline.Analyze(rootDir, pipeline.Options{})
+// BuildPlan analyzes the source. transferTarget is the receiver bare
+// `@demono:transfer` decorators place into; empty keeps the deprecated
+// `@demono:move <receiver>` decorators as the only source of targets.
+func BuildPlan(rootDir, transferTarget string) (*Plan, error) {
+	a, err := pipeline.Analyze(rootDir, pipeline.Options{Op: pipeline.OpTransfer, TransferTarget: transferTarget})
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +247,7 @@ func BuildPlan(rootDir string) (*Plan, error) {
 		return nil, fmt.Errorf("data sources are consumed on both sides of the transfer: %s\nGive each a single side (move its consumers together), or duplicate it by hand first", strings.Join(addrs, ", "))
 	}
 
-	plan := &Plan{Analysis: a, Remainder: p.Remainder, Receivers: map[string]*PlanReceiver{}}
+	plan := &Plan{Analysis: a, Remainder: p.Remainder, LegacyMove: a.LegacyMove, Receivers: map[string]*PlanReceiver{}}
 	for _, module := range p.ModuleNames() {
 		if module == p.Remainder {
 			continue
@@ -279,7 +284,15 @@ func BuildPlan(rootDir string) (*Plan, error) {
 		plan.Receivers[module] = pr
 	}
 	if len(plan.Receivers) == 0 {
-		return nil, fmt.Errorf("no blocks are decorated for transfer; add `# @demono:move <receiver>` above the blocks to move")
+		return nil, fmt.Errorf("no blocks are decorated for transfer; add `# @demono:transfer` above the blocks to move and pass the receiver as --transfer-target")
+	}
+	if len(plan.Receivers) > 1 {
+		names := make([]string, 0, len(plan.Receivers))
+		for n := range plan.Receivers {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("a transfer has one receiver; blocks name %s - run one transfer per receiver", strings.Join(names, " and "))
 	}
 	// Directory basenames are the slice identity in distributed map copies and
 	// artifact names; a collision would make a root's role ambiguous.
@@ -636,7 +649,7 @@ func RewriteSourceRefs(rootDir string, plan *Plan) ([]string, error) {
 	return emit.RewriteRefsInPlace(rootDir, a.Graph, a.Placement, a.Boundary, plan.Remainder)
 }
 
-var moveDecoratorRe = regexp.MustCompile(`^\s*(#|//)\s*@demono:move\s+(\S+)\s*$`)
+var moveDecoratorRe = regexp.MustCompile(`^\s*(#|//)\s*@demono:(?:move|transfer)(?:\s+(\S+))?\s*$`)
 
 // RemoveFromSource deletes the moved blocks (and their move decorators for the
 // given receivers) from the source's files, in place.
@@ -671,7 +684,7 @@ func RemoveFromSource(rootDir string, moved map[string]bool, receivers map[strin
 		// The block removal can orphan its decorator comment; drop those lines.
 		var kept []string
 		for _, line := range strings.Split(string(hclwrite.Format(f.Bytes())), "\n") {
-			if mm := moveDecoratorRe.FindStringSubmatch(line); mm != nil && receivers[mm[2]] {
+			if mm := moveDecoratorRe.FindStringSubmatch(line); mm != nil && (mm[2] == "" || receivers[mm[2]]) {
 				continue
 			}
 			kept = append(kept, line)

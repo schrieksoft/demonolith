@@ -27,65 +27,71 @@ demonolith does two kinds of restructuring - **split** a monolithic root into ne
 
 ## Two modes
 
-- **Split** - the bare `refactor` and `migrate` commands: carve one monolithic root into new per-module roots that demonolith generates and owns outright.
-- **Transfer** - the `transfer refactor` an `transfer migrate` commands (experimental): move selected blocks between roots that already exist, are hand-maintained, and keep living after the move.
+- **Split** - the `split refactor` and `split migrate` commands: carve one monolithic root into new per-module roots that demonolith generates and owns outright.
+- **Transfer** - the `transfer refactor` and `transfer migrate` commands (experimental): move selected blocks between roots that already exist, are hand-maintained, and keep living after the move.
+
+The older names - the bare `refactor`/`migrate` commands and the `# @demono:move` decorator - keep working with a deprecation notice, and are removed at the latest in v1.0.0.
 
 ## Mode 1: split
 
 ```
-demonolith refactor            # map → run → validate → diff   (the code split)
-  refactor map                 #   analyze → write the map (the review artifact)
-  refactor run                 #   execute the map: write the new module directories (they must not exist yet)
-  refactor validate            #   gate: ask the engine whether it accepts what was written
-  refactor diff                #   gate: the map and module directories on disk still match the source
+demonolith split refactor      # map → run → validate → diff   (the code split)
+  split refactor map           #   analyze → write the map (the review artifact)
+  split refactor run           #   execute the map: write the new module directories (they must not exist yet)
+  split refactor validate      #   gate: ask the engine whether it accepts what was written
+  split refactor diff          #   gate: the map and module directories on disk still match the source
 
-demonolith migrate             # map → prove → run → verify (the state migration)
-  migrate map                  #   pull read-only, back up, split into local state copies
-  migrate prove                #   gate: prove the split changes nothing (plans over the local copies)
-  migrate run                  #   push each module's state to its new backend (guarded, never forced)
-  migrate verify               #   gate: judge the result against the real migrated backends
+demonolith split migrate       # map → prove → run → verify (the state migration)
+  split migrate map            #   pull read-only, back up, split into local state copies
+  split migrate prove          #   gate: prove the split changes nothing (plans over the local copies)
+  split migrate run            #   push each module's state to its new backend (guarded, never forced)
+  split migrate verify         #   gate: judge the result against the real migrated backends
 ```
 
 Mark each stateful block with the module it belongs to; anything unmarked lands in the catchall remainder (`--remainder-module`, default `legacy`). `data` blocks are never decorated - a data source follows its consumers into every module that reads it:
 
 ```hcl
-# @demono:move networking
+# @demono:split networking
 resource "random_uuid" "vpc_id" {}
 ```
 
 Then, from inside the monolith root (every command also takes `--root-dir <dir>`):
 
 ```bash
-demonolith refactor                      # the code split: new roots land in roots/ (--out to change)
-demonolith migrate --engine tofu         # the state migration, end to end
+demonolith split refactor                   # the code split: new roots land in roots/ (--out to change)
+demonolith split migrate --engine tofu      # the state migration, end to end
 ```
 
 `refactor map` writes the map (`demonolith-refactor-map.yaml`) - placement, state moves, wiring, and each module's derived state location, reviewable like any other diff - and `refactor run` executes it verbatim, refusing if the source changed since. 
 
-Backends are derived from the monolith's own backend block (state locations postfixed per module); backend credentials land in gitignored per-module `demono.env` files, never in HCL, and each module's resolved variable values in per-module tfvars files. `refactor map -i` triages unmarked blocks interactively and writes the answers back as decorators; `migrate -i` walks every input the migration consumes before anything runs.
+Backends are derived from the monolith's own backend block (state locations postfixed per module); backend credentials land in gitignored per-module `demono.env` files, never in HCL, and each module's resolved variable values in per-module tfvars files. `split refactor map -i` triages unmarked blocks interactively and writes the answers back as decorators; `split migrate -i` walks every input the migration consumes before anything runs.
 
 **The Snap CD bootstrap** (`<out>/snapcd`, `--no-bootstrap` to skip) is an apply-ready root wiring every module into Snap CD: one `snapcd_module` per module, the cross-module references as `snapcd_module_input_from_output`, every input bound to a variable. Applying it against a Snap CD server is the adoption step.
 
 ## Mode 2: transfer (experimental)
 
 ```
-demonolith transfer            # move blocks between pre-existing roots (experimental)
+demonolith transfer            # move blocks into one pre-existing root (experimental)
   transfer refactor            # map → run → diff   (the code move; run at the source root)
-  transfer migrate             # map → prove → run → verify   (the state move; one root at a time, or --all)
+  transfer migrate             # map → prove → run → verify   (the state move; one root at a time, or --both)
 ```
 
-Here the decorator names its destination as a directory relative to the source root - an existing root, in the same repo or a neighboring checkout:
+A transfer has exactly one receiver. Mark the blocks bare, and name the receiver once - a directory relative to the source root, an existing root in the same repo or a neighboring checkout:
 
 ```hcl
-# @demono:move ../network
+# @demono:transfer
 resource "random_uuid" "vpc_id" {}
+```
+
+```bash
+demonolith transfer refactor --transfer-target ../network
 ```
 
 `transfer refactor` moves the code: blocks are appended into the destination's own `main.tf`/`variables.tf`/`outputs.tf` (created only when missing; a name the destination already declares is refused), references between the roots are updated on both sides - the source consumes the moved value as a variable, the destination exposes it as an output.
 
 A Snap CD root wiring the involved roots (`--snapcd-root`, default: a sibling named `snapcd`) gets the matching `snapcd_module_input_from_output` / `snapcd_depends_on_module`. A copy of the transfer map is written into every touched root, so `transfer refactor diff` run in any one of them checks that root against its own copy - in a multi-repo setup, each repo's own merge gate.
 
-`transfer migrate` moves the state, one root at a time: each step needs only that root's checkout and credentials, so roots on different machines each run their own side. What has to pass between roots travels as files in each root's `.demono-transfer/` - the moved resources' state, output values, and per-root receipts - and the source's state is only stripped once every destination has confirmed its write. When all roots share one filesystem, `--all` from the source root runs every root's part in order.
+`transfer migrate` moves the state, one root at a time: each step needs only that root's checkout and credentials, so roots on different machines each run their own side. What has to pass between roots travels as files in each root's `.demono-transfer/` - the moved resources' state, output values, and per-root receipts - and the source's state is only stripped once the destination has confirmed its write. When both roots share one filesystem, `--both` from the source root runs both parts in order.
 
 Between the code move landing and the state move completing, source and destinations show pending changes: pause their pipelines until `transfer migrate verify` comes back clean, and keep that gap short. Not supported: a data source consumed on both sides, `count`/`for_each` instance moves, and transfers between different backend types.
 
