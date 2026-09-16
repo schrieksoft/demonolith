@@ -378,7 +378,7 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 		return verdictf("%v", err)
 	}
 	if plan.LegacyMove {
-		outf("%s\n\n", warn("`@demono:move` is deprecated: mark blocks with a bare `# @demono:transfer` and pass --transfer-target (removed at the latest in v1.0.0)."))
+		deprecationf("`@demono:move` is deprecated (will be removed at latest in v1.0.0), mark blocks with a bare `# @demono:transfer` and pass --transfer-target instead.")
 	}
 
 	names := make([]string, 0, len(plan.Receivers))
@@ -696,9 +696,10 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 	if err := transfer.DistributeMap(rootDir, dsts); err != nil {
 		return err
 	}
-	outf("  %s: %d blocks %s\n", emphasis("source"), len(moved), success("removed"))
+	outf("  %s: %d blocks %s\n\n", emphasis("source"), len(moved), success("removed"))
 	outf("  %s\n\n", dim("map copy distributed to every touched root"))
-	outf("Commit every touched root, then `demonolith transfer migrate --engine {terraform|tofu}` one root at a time (or --both from the source).\n%s\n", warn("Source and receiver plan dirty until the state move completes - freeze their pipelines and keep the window short."))
+	outf("Commit every touched root, then `demonolith transfer migrate --engine {terraform|tofu}` one root at a time (or --both from the source).\n\n")
+	outf("%s\n", warn("Source and receiver plan dirty until the state move completes - freeze their pipelines and keep the window short."))
 	return nil
 }
 
