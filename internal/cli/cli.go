@@ -67,7 +67,7 @@ func Root() *cobra.Command {
 	var noColor bool
 	root := &cobra.Command{
 		Use:           "demonolith",
-		Short:         "Split a monolithic Terraform root into standalone per-module directories",
+		Short:         "Restructure Terraform/OpenTofu roots: split a monolith into per-module roots, or transfer blocks between existing roots",
 		Version:       fmt.Sprintf("%s (%s)", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -78,10 +78,58 @@ func Root() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (the NO_COLOR environment variable works too)")
-	root.AddCommand(refactorCmd())
-	root.AddCommand(migrateCmd())
-	root.AddCommand(transferCmd())
+	root.AddCommand(splitCmd())
+	legacyRefactor := refactorCmd()
+	deprecateTree(legacyRefactor)
+	legacyMigrate := migrateCmd()
+	deprecateTree(legacyMigrate)
+	root.AddCommand(legacyRefactor, legacyMigrate, transferCmd())
 	return root
+}
+
+// splitCmd names the split: the refactor and migrate families under one
+// top-level command, beside transfer.
+func splitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "split",
+		Short: "Split a monolithic root into per-module roots: refactor (the code split), then migrate (the state migration)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(refactorCmd(), migrateCmd())
+	return cmd
+}
+
+// deprecationf prints a deprecation notice: the warn role, on stderr, so
+// pipeable report output stays clean.
+func deprecationf(format string, a ...any) {
+	leadIn(os.Stderr)
+	fmt.Fprintf(os.Stderr, "%s\n\n", warn(fmt.Sprintf(format, a...)))
+}
+
+// deprecateTree hides a command and all its descendants from help and prints
+// a deprecation notice, naming the `split`-prefixed form, when any of them runs.
+func deprecateTree(c *cobra.Command) {
+	c.Hidden = true
+	prev, prevE := c.PreRun, c.PreRunE
+	c.PreRun = nil
+	c.PreRunE = func(cmd *cobra.Command, args []string) error {
+		path := cmd.CommandPath()
+		replacement := strings.Replace(path, "demonolith ", "demonolith split ", 1)
+		deprecationf("`%s` is deprecated (will be removed at latest in v1.0.0), use `%s` instead.", path, replacement)
+		if prev != nil {
+			prev(cmd, args)
+		}
+		if prevE != nil {
+			return prevE(cmd, args)
+		}
+		return nil
+	}
+	for _, sub := range c.Commands() {
+		deprecateTree(sub)
+	}
 }
 
 // engineExecPath resolves the binary for --engine/--exec-path. --engine has no
@@ -135,11 +183,29 @@ func stdinIsTTY() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
+// outputStarted tracks whether the run has printed anything yet; the first
+// output line gets one leading blank, separating it from the shell prompt.
+var outputStarted bool
+
+func leadIn(w *os.File) {
+	if !outputStarted {
+		outputStarted = true
+		_, _ = fmt.Fprintln(w)
+	}
+}
+
 // outln / outf write progress output to stdout, ignoring the write error: this
 // is best-effort CLI reporting where a failed stdout write is not actionable
 // and must not mask the command's real result.
-func outln(a ...any)               { _, _ = fmt.Fprintln(os.Stdout, a...) }
-func outf(format string, a ...any) { _, _ = fmt.Fprintf(os.Stdout, format, a...) }
+func outln(a ...any) {
+	leadIn(os.Stdout)
+	_, _ = fmt.Fprintln(os.Stdout, a...)
+}
+
+func outf(format string, a ...any) {
+	leadIn(os.Stdout)
+	_, _ = fmt.Fprintf(os.Stdout, format, a...)
+}
 
 // displayPath renders p relative to base when p is under base, else absolute.
 func displayPath(base, p string) string {

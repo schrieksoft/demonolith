@@ -118,6 +118,9 @@ func runRefactorMap(f refactorFlags) (*manifest.Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.LegacyMove {
+		deprecationf("`@demono:move` is deprecated (will be removed at latest in v1.0.0), use `# @demono:split <module>` instead.")
+	}
 
 	opts := manifest.BuildOpts{Monorepo: f.monorepo, Bootstrap: !f.noBootstrap}
 	if !f.noBackend {
@@ -326,7 +329,7 @@ func runRefactorPipeline(ctx context.Context, f refactorFlags) error {
 	if f.interactive {
 		return runRefactorInteractivePipeline(ctx, f)
 	}
-	outf("\n%s\n\n", banner("── refactor map ──"))
+	outf("%s\n\n", banner("── refactor map ──"))
 	mf := f
 	mf.interactive = true // suppress the standalone "review it, then run" hint
 	if _, err := runRefactorMap(mf); err != nil {

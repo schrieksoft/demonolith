@@ -70,7 +70,7 @@ resource "fake_other" "consumer" {
   ref = data.fake_lookup.goes_data.id
 }
 
-# @demono:move ../elsewhere
+# @demono:move ../shared
 resource "fake_thing" "goes_far" {
   size = 1
 }
@@ -78,23 +78,23 @@ resource "fake_thing" "goes_far" {
 
 func TestBuildPlan_SelfContainedSelection(t *testing.T) {
 	dir := writeSourceRoot(t, map[string]string{"main.tf": sourceSrc}, "shared", "elsewhere")
-	plan, err := BuildPlan(dir)
+	plan, err := BuildPlan(dir, "")
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
-	if len(plan.Receivers) != 2 {
-		t.Fatalf("want 2 receivers, got %v", plan.Receivers)
+	if len(plan.Receivers) != 1 {
+		t.Fatalf("want 1 receiver, got %v", plan.Receivers)
 	}
 	sh := plan.Receivers["../shared"]
 	if sh == nil {
 		t.Fatal("receiver shared missing")
 	}
-	wantBlocks := []string{"data.fake_lookup.goes_data", "fake_other.consumer", "fake_thing.goes"}
+	wantBlocks := []string{"data.fake_lookup.goes_data", "fake_other.consumer", "fake_thing.goes", "fake_thing.goes_far"}
 	if !equalStrings(sh.Blocks, wantBlocks) {
 		t.Fatalf("shared blocks: %v", sh.Blocks)
 	}
 	// The data source travels in code but carries no state move.
-	wantMoves := []string{"fake_other.consumer", "fake_thing.goes"}
+	wantMoves := []string{"fake_other.consumer", "fake_thing.goes", "fake_thing.goes_far"}
 	if !equalStrings(sh.Moves, wantMoves) {
 		t.Fatalf("shared moves: %v", sh.Moves)
 	}
@@ -102,9 +102,25 @@ func TestBuildPlan_SelfContainedSelection(t *testing.T) {
 	if !equalStrings(sh.Structural.VarNames, []string{"size"}) || !equalStrings(sh.Structural.LocalNames, []string{"len"}) {
 		t.Fatalf("structural carve: vars=%v locals=%v", sh.Structural.VarNames, sh.Structural.LocalNames)
 	}
-	far := plan.Receivers["../elsewhere"]
-	if far == nil || !equalStrings(far.Blocks, []string{"fake_thing.goes_far"}) {
-		t.Fatalf("elsewhere receiver: %+v", far)
+}
+
+// TestBuildPlan_RefusesTwoReceivers: blocks naming two receivers are refused;
+// a transfer has one.
+func TestBuildPlan_RefusesTwoReceivers(t *testing.T) {
+	dir := writeSourceRoot(t, map[string]string{"main.tf": `
+# @demono:move ../shared
+resource "fake_thing" "a" {
+  size = 1
+}
+
+# @demono:move ../elsewhere
+resource "fake_thing" "b" {
+  size = 1
+}
+`}, "shared", "elsewhere")
+	_, err := BuildPlan(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "one receiver") {
+		t.Fatalf("two receivers must refuse, got: %v", err)
 	}
 }
 
@@ -119,7 +135,7 @@ resource "fake_thing" "goes" {
   size = 1
 }
 `}, "shared")
-	plan, err := BuildPlan(dir)
+	plan, err := BuildPlan(dir, "")
 	if err != nil {
 		t.Fatalf("a cross value edge must be wired, not refused: %v", err)
 	}
@@ -152,7 +168,7 @@ resource "fake_thing" "goes" {
   depends_on = [fake_thing.stays]
 }
 `}, "shared")
-	plan, err := BuildPlan(dir)
+	plan, err := BuildPlan(dir, "")
 	if err != nil {
 		t.Fatalf("a cross ordering edge must be wired, not refused: %v", err)
 	}
@@ -180,7 +196,7 @@ resource "fake_thing" "goes" {
   ref = data.fake_lookup.both.id
 }
 `})
-	_, err := BuildPlan(dir)
+	_, err := BuildPlan(dir, "")
 	if err == nil || !strings.Contains(err.Error(), "both sides") {
 		t.Fatalf("want both-sides data refusal, got: %v", err)
 	}
@@ -192,7 +208,7 @@ resource "fake_thing" "stays" {
   size = 1
 }
 `})
-	_, err := BuildPlan(dir)
+	_, err := BuildPlan(dir, "")
 	if err == nil || !strings.Contains(err.Error(), "no blocks are decorated") {
 		t.Fatalf("want empty-selection refusal, got: %v", err)
 	}
@@ -200,7 +216,7 @@ resource "fake_thing" "stays" {
 
 func TestMatchesMap(t *testing.T) {
 	dir := writeSourceRoot(t, map[string]string{"main.tf": sourceSrc}, "shared", "elsewhere")
-	plan, err := BuildPlan(dir)
+	plan, err := BuildPlan(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +243,7 @@ func TestMatchesMap(t *testing.T) {
 
 func TestValidateReceiverDir(t *testing.T) {
 	dir := writeSourceRoot(t, map[string]string{"main.tf": sourceSrc}, "shared", "elsewhere")
-	plan, err := BuildPlan(dir)
+	plan, err := BuildPlan(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +267,7 @@ func TestValidateReceiverDir(t *testing.T) {
 
 func TestReceiverFiles(t *testing.T) {
 	dir := writeSourceRoot(t, map[string]string{"main.tf": sourceSrc}, "shared", "elsewhere")
-	plan, err := BuildPlan(dir)
+	plan, err := BuildPlan(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +287,7 @@ func TestReceiverFiles(t *testing.T) {
 	if strings.Contains(main, "@demono") {
 		t.Fatalf("decorators must be stripped:\n%s", main)
 	}
-	if strings.Contains(main, "goes_far") || strings.Contains(main, `"stays"`) {
+	if strings.Contains(main, `"stays"`) {
 		t.Fatalf("main.tf must only carry its own blocks:\n%s", main)
 	}
 	if _, ok := files["outputs.tf"]; ok {
@@ -299,7 +315,7 @@ func TestAppendToFile(t *testing.T) {
 
 func TestRemoveFromSource(t *testing.T) {
 	dir := writeRoot(t, map[string]string{"main.tf": sourceSrc})
-	moved := map[string]bool{"fake_thing.goes": true, "data.fake_lookup.goes_data": true, "fake_other.consumer": true}
+	moved := map[string]bool{"fake_thing.goes": true, "data.fake_lookup.goes_data": true, "fake_other.consumer": true, "fake_thing.goes_far": true}
 	receivers := map[string]bool{"../shared": true}
 	if err := RemoveFromSource(dir, moved, receivers); err != nil {
 		t.Fatal(err)
@@ -309,13 +325,12 @@ func TestRemoveFromSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(got)
-	for _, gone := range []string{`"goes"`, "goes_data", `"consumer"`, "@demono:move ../shared"} {
+	for _, gone := range []string{`"goes"`, "goes_data", `"consumer"`, "goes_far", "@demono"} {
 		if strings.Contains(src, gone) {
 			t.Fatalf("source still contains %q:\n%s", gone, src)
 		}
 	}
-	// Blocks and decorators for other receivers stay.
-	for _, kept := range []string{`resource "fake_thing" "stays"`, `variable "size"`, "locals {", "@demono:move ../elsewhere", "goes_far"} {
+	for _, kept := range []string{`resource "fake_thing" "stays"`, `variable "size"`, "locals {"} {
 		if !strings.Contains(src, kept) {
 			t.Fatalf("source lost %q:\n%s", kept, src)
 		}
@@ -471,26 +486,21 @@ func TestRoleOf(t *testing.T) {
 func TestBuildPlan_RefusesBasenameCollision(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "source")
-	for _, d := range []string{src, filepath.Join(base, "shared"), filepath.Join(base, "deep", "shared")} {
+	for _, d := range []string{src, filepath.Join(base, "deep", "source")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	main := `
-# @demono:move ../shared
+# @demono:move ../deep/source
 resource "fake_thing" "a" {
-  size = 1
-}
-
-# @demono:move ../deep/shared
-resource "fake_thing" "b" {
   size = 1
 }
 `
 	if err := os.WriteFile(filepath.Join(src, "main.tf"), []byte(main), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := BuildPlan(src)
+	_, err := BuildPlan(src, "")
 	if err == nil || !strings.Contains(err.Error(), "directory name") {
 		t.Fatalf("basename collision must refuse, got: %v", err)
 	}
@@ -554,8 +564,54 @@ resource "fake_thing" "goes" {
   size = 1
 }
 `}, "shared")
-	_, err := BuildPlan(dir)
+	_, err := BuildPlan(dir, "")
 	if err == nil || !strings.Contains(err.Error(), "relative directory") {
 		t.Fatalf("bare-name target must refuse, got: %v", err)
+	}
+}
+
+// TestBuildPlan_BareTransferDecorator: bare `@demono:transfer` blocks all land
+// in the receiver named by the transfer target.
+func TestBuildPlan_BareTransferDecorator(t *testing.T) {
+	dir := writeSourceRoot(t, map[string]string{"main.tf": `
+resource "fake_thing" "stays" {
+  size = 1
+}
+
+# @demono:transfer
+resource "fake_thing" "goes" {
+  size = 1
+}
+
+# @demono:transfer
+resource "fake_other" "goes_too" {
+  size = 1
+}
+`}, "shared")
+	plan, err := BuildPlan(dir, "../shared")
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if plan.LegacyMove {
+		t.Fatal("bare decorators must not be flagged legacy")
+	}
+	if len(plan.Receivers) != 1 || plan.Receivers["../shared"] == nil {
+		t.Fatalf("receivers: %v", plan.Receivers)
+	}
+	if !equalStrings(plan.Receivers["../shared"].Moves, []string{"fake_other.goes_too", "fake_thing.goes"}) {
+		t.Fatalf("moves: %v", plan.Receivers["../shared"].Moves)
+	}
+}
+
+// TestBuildPlan_LegacyMoveStillWorks: `@demono:move <dir>` decorators keep
+// working without a transfer target, flagged for the deprecation notice.
+func TestBuildPlan_LegacyMoveStillWorks(t *testing.T) {
+	dir := writeSourceRoot(t, map[string]string{"main.tf": sourceSrc}, "shared", "elsewhere")
+	plan, err := BuildPlan(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.LegacyMove {
+		t.Fatal("move decorators must be flagged legacy")
 	}
 }

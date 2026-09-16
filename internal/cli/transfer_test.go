@@ -60,7 +60,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	copyState(t, filepath.Join(testsupport.InDir("transfer"), "shared"), recv)
 
 	// refactor map (pure, offline)
-	if err := run(t, "transfer", "refactor", "map", "--root-dir", source); err != nil {
+	if err := run(t, "transfer", "refactor", "map", "--transfer-target", "../shared", "--root-dir", source); err != nil {
 		t.Fatalf("transfer refactor map: %v", err)
 	}
 	m, err := transfer.LoadMap(source)
@@ -109,12 +109,12 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	if err := run(t, "transfer", "refactor", "diff", "--root-dir", recv); err != nil {
 		t.Fatalf("transfer refactor diff (receiver slice): %v", err)
 	}
-	if err := run(t, "transfer", "refactor", "diff", "--all", "--root-dir", source); err != nil {
+	if err := run(t, "transfer", "refactor", "diff", "--both", "--root-dir", source); err != nil {
 		t.Fatalf("transfer refactor diff: %v", err)
 	}
 
 	// migrate map (pull, pin, apply moves to local copies), then prove
-	if err := run(t, "transfer", "migrate", "map", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "map", "--both", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate map: %v", err)
 	}
 	for _, dir := range []string{source, recv} {
@@ -122,7 +122,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 			t.Fatalf("load slice pin in %s: %v", dir, err)
 		}
 	}
-	if err := run(t, "transfer", "migrate", "prove", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "prove", "--both", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate prove: %v", err)
 	}
 	rec, err := transfer.LoadReceipt(source, transfer.ProveReceiptFile)
@@ -131,7 +131,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	}
 
 	// migrate run (the state move)
-	if err := run(t, "transfer", "migrate", "run", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "run", "--both", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate run: %v", err)
 	}
 	sourceRes := stateResources(t, source)
@@ -144,7 +144,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	}
 
 	// migrate verify
-	if err := run(t, "transfer", "migrate", "verify", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "verify", "--both", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate verify: %v", err)
 	}
 	vrec, err := transfer.LoadReceipt(source, transfer.VerifyReceiptFile)
@@ -153,7 +153,7 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	}
 
 	// migrate run again: pure no-op (idempotent retry)
-	if err := run(t, "transfer", "migrate", "run", "--all", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "run", "--both", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("second transfer migrate run: %v", err)
 	}
 	rrec, err := transfer.LoadReceipt(source, transfer.RunReceiptFile)
@@ -181,7 +181,7 @@ func TestTransfer_WiredEndToEnd(t *testing.T) {
 	copyState(t, filepath.Join(testsupport.InDir("transfer-wired"), "source"), source)
 	copyState(t, filepath.Join(testsupport.InDir("transfer-wired"), "shared"), recv)
 
-	if err := run(t, "transfer", "refactor", "-y", "--root-dir", source); err != nil {
+	if err := run(t, "transfer", "refactor", "-y", "--transfer-target", "../shared", "--root-dir", source); err != nil {
 		t.Fatalf("transfer refactor: %v", err)
 	}
 	m, err := transfer.LoadMap(source)
@@ -218,7 +218,7 @@ func TestTransfer_WiredEndToEnd(t *testing.T) {
 	}
 
 	// The migrate half proves with the producer value threaded, then moves.
-	if err := run(t, "transfer", "migrate", "--all", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
+	if err := run(t, "transfer", "migrate", "--both", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("transfer migrate: %v", err)
 	}
 	if got := stateResources(t, source); len(got) != 1 || got[0] != "random_pet.keep" {
@@ -240,14 +240,14 @@ func TestTransfer_BarePipelines(t *testing.T) {
 	copyState(t, filepath.Join(testsupport.InDir("transfer"), "shared"), recv)
 
 	// Without a TTY and without -y, the pause refuses and nothing is written.
-	if err := run(t, "transfer", "refactor", "--root-dir", source); err == nil || !strings.Contains(err.Error(), "-y") {
+	if err := run(t, "transfer", "refactor", "--transfer-target", "../shared", "--root-dir", source); err == nil || !strings.Contains(err.Error(), "-y") {
 		t.Fatalf("bare refactor without -y must refuse at the pause, got: %v", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(recv, "main.tf")); err != nil || strings.Contains(string(b), "move_me") {
 		t.Fatal("the pause refusal must not have moved code")
 	}
 
-	if err := run(t, "transfer", "refactor", "-y", "--root-dir", source); err != nil {
+	if err := run(t, "transfer", "refactor", "-y", "--transfer-target", "../shared", "--root-dir", source); err != nil {
 		t.Fatalf("bare transfer refactor: %v", err)
 	}
 	if err := run(t, "transfer", "migrate", "--all", "-y", "--root-dir", source, "--exec-path", execPath); err != nil {
@@ -273,7 +273,7 @@ func TestTransfer_SliceEndToEnd(t *testing.T) {
 	copyState(t, filepath.Join(testsupport.InDir("transfer-wired"), "source"), source)
 	copyState(t, filepath.Join(testsupport.InDir("transfer-wired"), "shared"), recv)
 
-	if err := run(t, "transfer", "refactor", "-y", "--root-dir", source); err != nil {
+	if err := run(t, "transfer", "refactor", "-y", "--transfer-target", "../shared", "--root-dir", source); err != nil {
 		t.Fatalf("transfer refactor: %v", err)
 	}
 
