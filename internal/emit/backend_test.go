@@ -11,9 +11,9 @@ import (
 	"github.com/schrieksoft/demonolith/internal/emit"
 )
 
-// renderRootTF builds the module's root.tf content the way emit composes it:
-// a terraform{} block wrapping the derived backend block.
-func renderRootTF(t *testing.T, b *emit.BackendBlock, module string) string {
+// renderBackendTF builds the module's backend.tf content the way emit composes
+// it: a terraform{} block wrapping the derived backend block.
+func renderBackendTF(t *testing.T, b *emit.BackendBlock, module string) string {
 	t.Helper()
 	blk, err := b.BackendHCL(module)
 	if err != nil {
@@ -72,10 +72,10 @@ terraform {
 		t.Errorf("derived = %q / %v", mono, byModule)
 	}
 
-	s := renderRootTF(t, b, "networking")
+	s := renderBackendTF(t, b, "networking")
 	for _, want := range []string{`backend "s3"`, `key    = "prod/terraform-networking.tfstate"`, `bucket = "my-bucket"`, `region = "eu-west-1"`} {
 		if !strings.Contains(s, want) {
-			t.Errorf("root.tf missing %q:\n%s", want, s)
+			t.Errorf("backend.tf missing %q:\n%s", want, s)
 		}
 	}
 }
@@ -94,10 +94,10 @@ terraform {
 	if err != nil || b == nil {
 		t.Fatal(err)
 	}
-	s := renderRootTF(t, b, "db")
+	s := renderBackendTF(t, b, "db")
 	for _, want := range []string{"state/mono-db\"", "mono-db/lock\"", "mono-db/unlock\""} {
 		if !strings.Contains(s, want) {
-			t.Errorf("root.tf missing derived %q:\n%s", want, s)
+			t.Errorf("backend.tf missing derived %q:\n%s", want, s)
 		}
 	}
 }
@@ -180,9 +180,9 @@ func TestBackend_ResolvedConfigFallbackAndEnv(t *testing.T) {
 	}
 
 	modDir := t.TempDir()
-	bt := renderRootTF(t, b, "app")
+	bt := renderBackendTF(t, b, "app")
 	if !strings.Contains(bt, "state/mono-app\"") || strings.Contains(bt, "hunter2") {
-		t.Errorf("root.tf must carry derived locations and never credentials:\n%s", bt)
+		t.Errorf("backend.tf must carry derived locations and never credentials:\n%s", bt)
 	}
 
 	wrote, err := emit.WriteEnvFile(modDir, b.CredentialEnv())
@@ -231,7 +231,7 @@ func TestParseBackend_AllTypes(t *testing.T) {
 	}
 }
 
-// TestParseBackend_RemoteWritesNestedWorkspaces asserts the emitted root.tf
+// TestParseBackend_RemoteWritesNestedWorkspaces asserts the emitted backend.tf
 // carries the derived name inside a workspaces block, not as a flat attribute.
 func TestParseBackend_RemoteWritesNestedWorkspaces(t *testing.T) {
 	dir := writeBackendFixture(t, "terraform {\n  backend \"remote\" {\n    hostname = \"tfe.example.com\"\n    organization = \"acme\"\n    workspaces {\n      name = \"mono\"\n    }\n  }\n}\n")
@@ -239,10 +239,10 @@ func TestParseBackend_RemoteWritesNestedWorkspaces(t *testing.T) {
 	if err != nil || b == nil {
 		t.Fatal(err)
 	}
-	s := renderRootTF(t, b, "networking")
+	s := renderBackendTF(t, b, "networking")
 	for _, want := range []string{"workspaces {", `name = "mono-networking"`, `organization = "acme"`, `hostname     = "tfe.example.com"`} {
 		if !strings.Contains(s, want) {
-			t.Errorf("root.tf missing %q:\n%s", want, s)
+			t.Errorf("backend.tf missing %q:\n%s", want, s)
 		}
 	}
 	if strings.Contains(s, "workspaces.name") {

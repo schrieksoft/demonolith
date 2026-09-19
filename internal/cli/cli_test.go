@@ -556,12 +556,12 @@ func TestMigrate_DeclaredBackend(t *testing.T) {
 		t.Errorf("derived location = %q, want monolith-a.tfstate", m.Backend.Modules["a"])
 	}
 	for _, mod := range []string{"a", "b", "legacy"} {
-		bt, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, "root.tf"))
+		bt, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, "backend.tf"))
 		if err != nil {
-			t.Fatalf("module %s missing root.tf: %v", mod, err)
+			t.Fatalf("module %s missing backend.tf: %v", mod, err)
 		}
 		if !strings.Contains(string(bt), "monolith-"+mod+".tfstate") {
-			t.Errorf("module %s root.tf missing derived path:\n%s", mod, bt)
+			t.Errorf("module %s backend.tf missing derived path:\n%s", mod, bt)
 		}
 	}
 

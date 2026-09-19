@@ -5,8 +5,10 @@
 //     rewritten to var.<input>;
 //   - generated variable blocks for the module's boundary inputs;
 //   - generated output blocks for the module's boundary outputs;
-//   - a root.tf holding the terraform{} block: required_providers propagated
-//     from the root, plus the derived backend when one is configured.
+//   - a root.tf holding the terraform{} block with required_providers
+//     propagated from the root;
+//   - a backend.tf holding the derived backend when one is configured, kept
+//     separate so it can be replaced wholesale.
 //
 // The emitted roots are detached: snapcd_* wiring is the bootstrap package's job.
 package emit
@@ -57,8 +59,8 @@ type Emitter struct {
 	// directories instead of copying them. Default false: carved roots are
 	// standalone and shippable to separate repos.
 	Monorepo bool
-	// Backend, when set, writes the derived backend into each module's root.tf
-	// (the monolith's block with per-module state locations).
+	// Backend, when set, writes the derived backend into each module's
+	// backend.tf (the monolith's block with per-module state locations).
 	Backend *BackendBlock
 	// PathBase, when set, replaces OutDir as the directory relative
 	// module-source paths are computed against in monorepo mode - verify
@@ -177,29 +179,31 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 	}
 
 	// root.tf - the terraform{} block, following the common root convention:
-	// required_providers propagated from the source, plus the module's derived
-	// backend when one is configured.
-	if reqProviders != nil || e.Backend != nil {
+	// required_providers propagated from the source.
+	if reqProviders != nil {
 		rootFile := hclwrite.NewEmptyFile()
-		var tfb *hclwrite.Block
-		if reqProviders != nil {
-			tfb = cloneBlock(reqProviders)
-			rootFile.Body().AppendBlock(tfb)
-		} else {
-			tfb = rootFile.Body().AppendNewBlock("terraform", nil)
-		}
-		if e.Backend != nil {
-			bb, err := e.Backend.BackendHCL(module)
-			if err != nil {
-				return EmittedModule{}, err
-			}
-			tfb.Body().AppendNewline()
-			tfb.Body().AppendBlock(bb)
-		}
+		rootFile.Body().AppendBlock(cloneBlock(reqProviders))
 		if err := os.WriteFile(filepath.Join(dir, "root.tf"), hclwrite.Format(rootFile.Bytes()), 0o644); err != nil {
 			return EmittedModule{}, err
 		}
 		em.Files = append(em.Files, "root.tf")
+	}
+
+	// backend.tf - the module's derived backend, alone in its own file so that
+	// a deployment supplying the backend out of band can replace the whole file
+	// without regenerating the providers alongside it.
+	if e.Backend != nil {
+		bb, err := e.Backend.BackendHCL(module)
+		if err != nil {
+			return EmittedModule{}, err
+		}
+		backendFile := hclwrite.NewEmptyFile()
+		tfb := backendFile.Body().AppendNewBlock("terraform", nil)
+		tfb.Body().AppendBlock(bb)
+		if err := os.WriteFile(filepath.Join(dir, "backend.tf"), hclwrite.Format(backendFile.Bytes()), 0o644); err != nil {
+			return EmittedModule{}, err
+		}
+		em.Files = append(em.Files, "backend.tf")
 	}
 
 	if err := WriteGitignore(dir); err != nil {
