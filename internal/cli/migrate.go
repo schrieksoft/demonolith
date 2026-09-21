@@ -330,15 +330,22 @@ func mapReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, 
 // provider pin, so refreshing it means regenerating that file rather than
 // replacing one.
 func rederiveBackends(rootDir string, m *manifest.Manifest) error {
-	if m.Backend == nil {
-		return verdictf("the map records no backend; there is nothing to re-derive")
-	}
 	block, err := emit.ParseBackend(rootDir)
 	if err != nil {
 		return err
 	}
 	if block == nil {
-		return verdictf("the map derives backends but the source has no backend block")
+		return verdictf("the source has no backend block; there is nothing to derive one from")
+	}
+
+	// The map records what the source had when it was carved. A monolith whose backend is
+	// supplied out of band had none then and has one now, which is the case this flag is for,
+	// so the record is created rather than required.
+	if m.Backend == nil {
+		m.Backend = &manifest.Backend{Modules: map[string]string{}}
+	}
+	if m.Backend.Modules == nil {
+		m.Backend.Modules = map[string]string{}
 	}
 
 	changed := map[string]string{}

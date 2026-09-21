@@ -1,11 +1,5 @@
 package cli
 
-import (
-	"os"
-
-	"golang.org/x/term"
-)
-
 // Semantic color roles, mapped onto the terminal's OWN 16-color palette so
 // they follow the user's theme on any background - never RGB values, never
 // background colors:
@@ -28,14 +22,14 @@ import (
 // dim; a padded name is padded first, colored second (ANSI bytes count
 // against printf widths).
 //
-// colorEnabled gates ANSI output: a real terminal on stdout, NO_COLOR unset,
-// and a capable TERM. Computed once at startup.
-var colorEnabled = func() bool {
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
-		return false
-	}
-	return term.IsTerminal(int(os.Stdout.Fd()))
-}()
+// colorEnabled gates ANSI output. On unless --no-color is passed, which is the
+// only thing that turns it off: every other demonolith setting is a flag, and
+// an environment variable that silently changes the output would be the one
+// exception.
+//
+// Not gated on stdout being a terminal: the report is as often read through a
+// pipe - a CI log, a job log rendered as HTML - as on one.
+var colorEnabled = true
 
 func colorize(code, s string) string {
 	if !colorEnabled {

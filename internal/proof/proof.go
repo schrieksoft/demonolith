@@ -183,7 +183,9 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 			return nil, nil, err
 		}
 		defer restore()
-		initOpts := []tfexec.InitOption{tfexec.Backend(true)}
+		// Reconfigure, never reuse: a re-run rewrites backend.tf to a new address, and an init that
+		// trusts .terraform's cached backend would pull from the previous one.
+		initOpts := []tfexec.InitOption{tfexec.Backend(true), tfexec.Reconfigure(true)}
 		for _, bc := range opts.BackendConfig {
 			initOpts = append(initOpts, tfexec.BackendConfig(bc))
 		}

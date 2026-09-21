@@ -77,7 +77,7 @@ func Root() *cobra.Command {
 			}
 		},
 	}
-	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (the NO_COLOR environment variable works too)")
+	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	root.AddCommand(splitCmd())
 	legacyRefactor := refactorCmd()
 	deprecateTree(legacyRefactor)

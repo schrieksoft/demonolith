@@ -317,7 +317,9 @@ func seedBackend(ctx context.Context, m *manifest.Manifest, rootDir, module, car
 	if err != nil {
 		return out, err
 	}
-	initOpts := []tfexec.InitOption{tfexec.Backend(true)}
+	// Reconfigure, never reuse: a re-run rewrites backend.tf to a new address, and an init that
+	// trusts .terraform's cached backend would pull from the previous one.
+	initOpts := []tfexec.InitOption{tfexec.Backend(true), tfexec.Reconfigure(true)}
 	for _, bc := range f.backendConfig {
 		initOpts = append(initOpts, tfexec.BackendConfig(bc))
 	}
