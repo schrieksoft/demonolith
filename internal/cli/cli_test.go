@@ -723,3 +723,71 @@ func TestSplitCommandAndAliases(t *testing.T) {
 		t.Fatal("diff on a planned-only manifest must refuse under the alias too")
 	}
 }
+
+// TestMigrate_RederiveBackend: the carve writes one backend, the monolith is
+// then repointed at another, and `migrate run --rederive-backend` pushes to the
+// new location rather than the one the carve recorded. Without the flag the
+// stale location would be used, so the assertion is that state exists at the
+// new path and not at the old one.
+func TestMigrate_RederiveBackend(t *testing.T) {
+	execPath := testsupport.RequireEngine(t)
+
+	base := testsupport.OutDir(t, "statefix", "cli-rederive-backend")
+	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
+	backendPath := filepath.Join(srcDir, "backend.tf")
+	if err := os.WriteFile(backendPath,
+		[]byte("terraform {\n  backend \"local\" {\n    path = \"monolith.tfstate\"\n  }\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testsupport.ApplyRoot(t, srcDir)
+
+	if err := run(t, "refactor", "-y", "--root-dir", srcDir, "--out", "modules"); err != nil {
+		t.Fatalf("refactor failed: %v", err)
+	}
+
+	// The monolith moves to a different state location after the carve.
+	if err := os.WriteFile(backendPath,
+		[]byte("terraform {\n  backend \"local\" {\n    path = \"moved.tfstate\"\n  }\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(srcDir, "monolith.tfstate"), filepath.Join(srcDir, "moved.tfstate")); err != nil {
+		t.Fatal(err)
+	}
+	// Repointing a backend means re-initializing; drop the record of the old one
+	// so the monolith resolves the new location, as it would for an operator.
+	if err := os.RemoveAll(filepath.Join(srcDir, ".terraform")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run(t, "migrate", "-y", "--root-dir", srcDir, "--exec-path", execPath, "--rederive-backend"); err != nil {
+		t.Fatalf("migrate --rederive-backend failed: %v", err)
+	}
+
+	for _, mod := range []string{"a", "b", "legacy"} {
+		bt, err := os.ReadFile(filepath.Join(srcDir, "modules", mod, "backend.tf"))
+		if err != nil {
+			t.Fatalf("module %s missing backend.tf: %v", mod, err)
+		}
+		if !strings.Contains(string(bt), "moved-"+mod+".tfstate") {
+			t.Errorf("module %s backend.tf was not re-derived:\n%s", mod, bt)
+		}
+		if _, err := os.Stat(filepath.Join(srcDir, "modules", mod, "moved-"+mod+".tfstate")); err != nil {
+			t.Errorf("module %s state not pushed to the re-derived location: %v", mod, err)
+		}
+		if _, err := os.Stat(filepath.Join(srcDir, "modules", mod, "monolith-"+mod+".tfstate")); err == nil {
+			t.Errorf("module %s state pushed to the stale location", mod)
+		}
+	}
+
+	// The map must agree with what was written, or every later step refuses it.
+	m, err := manifest.Load(manifest.Path(srcDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Backend.Modules["a"]; got != "moved-a.tfstate" {
+		t.Errorf("map location for a = %q, want moved-a.tfstate", got)
+	}
+	if err := run(t, "migrate", "verify", "--root-dir", srcDir, "--exec-path", execPath); err != nil {
+		t.Errorf("a bare verify after a re-derived run must load the map: %v", err)
+	}
+}

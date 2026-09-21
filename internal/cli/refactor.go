@@ -258,7 +258,7 @@ func runRefactorRun(rootDir string, overwrite bool) error {
 		if !overwrite {
 			return fmt.Errorf("target module directories already exist: %s - refactor run owns them entirely: delete them, or pass --overwrite to delete and rewrite them (everything inside is lost, engine artifacts and any local state included)", strings.Join(existing, ", "))
 		}
-		fmt.Fprintf(os.Stderr, "%s\n\n", warn(fmt.Sprintf("WARNING: --overwrite: deleting existing module directories and everything in them: %s", strings.Join(existing, ", "))))
+		warnf("WARNING: --overwrite: deleting existing module directories and everything in them: %s", strings.Join(existing, ", "))
 		for _, d := range targets {
 			if err := os.RemoveAll(d); err != nil {
 				return err

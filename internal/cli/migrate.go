@@ -31,6 +31,7 @@ type migrateFlags struct {
 	varFiles      []string
 	vars          []string
 	backendConfig []string
+	rederive      bool
 	unproven      bool
 	force         bool
 	yes           bool
@@ -55,6 +56,7 @@ func migrateCmd() *cobra.Command {
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
+	flags.BoolVar(&f.rederive, "rederive-backend", false, "re-derive each carved root's backend.tf from the monolith's current backend before pushing, instead of using the one the carve wrote")
 	flags.BoolVar(&f.force, "force", false, "replace a destination whose existing state does not match this migration (state push -force); the existing state is lost - default refuses")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: engine, state source, variable values and their sources, backend config, ambient credentials - then the pipeline")
 	flags.BoolVarP(&f.yes, "yes", "y", false, "approve the migration automatically instead of pausing for confirmation after prove")
@@ -78,6 +80,7 @@ func migrateMapCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringVar(&f.stateFile, "state-file", "", "split this local state file instead of pulling from the configured backend")
+	flags.BoolVar(&f.rederive, "rederive-backend", false, "re-derive each carved root's backend.tf from the monolith's current backend before pushing, instead of using the one the carve wrote")
 	flags.BoolVarP(&f.interactive, "interactive", "i", false, "guided walkthrough: prompt for root/engine/state source, preview the moves, confirm")
 	return cmd
 }
@@ -160,6 +163,11 @@ func runMigrateMap(ctx context.Context, f migrateFlags) error {
 	m, err := loadRunManifest(rootDir)
 	if err != nil {
 		return err
+	}
+	if f.rederive {
+		if err := rederiveBackends(rootDir, m); err != nil {
+			return err
+		}
 	}
 
 	if f.interactive {
@@ -310,6 +318,84 @@ func mapReceiptStates(rootDir string, m *manifest.Manifest) (*manifest.Receipt, 
 		return nil, nil, "", fmt.Errorf("state backup missing (%s); re-run `demonolith migrate map`", backup)
 	}
 	return receipt, states, backup, nil
+}
+
+// rederiveBackends rewrites each carved root's backend.tf from the monolith's
+// current backend, so a migration targets the backend the monolith is
+// configured with rather than the one it was carved against. The manifest's
+// emit checksum is recomputed to match, since the guard on every migrate step
+// covers the file just rewritten.
+//
+// The bootstrap root is left alone: its backend lives in its root.tf beside the
+// provider pin, so refreshing it means regenerating that file rather than
+// replacing one.
+func rederiveBackends(rootDir string, m *manifest.Manifest) error {
+	if m.Backend == nil {
+		return verdictf("the map records no backend; there is nothing to re-derive")
+	}
+	block, err := emit.ParseBackend(rootDir)
+	if err != nil {
+		return err
+	}
+	if block == nil {
+		return verdictf("the map derives backends but the source has no backend block")
+	}
+
+	changed := map[string]string{}
+	for name, dir := range m.ModuleDirs(rootDir) {
+		derived, err := block.DerivedLocation(name)
+		if err != nil {
+			return err
+		}
+		if was := m.Backend.Modules[name]; was != derived {
+			changed[name] = was
+		}
+		if err := block.WriteBackendFile(dir, name); err != nil {
+			return err
+		}
+		m.Backend.Modules[name] = derived
+	}
+	mono, _, err := block.DerivedLocations([]string{})
+	if err != nil {
+		return err
+	}
+	m.Backend.Type = block.Type
+	m.Backend.Monolith = mono
+
+	// The rewrite changes the generated output the staleness guard hashes;
+	// without this every later migrate step refuses the map as stale.
+	sum, err := manifest.Checksum(m.ChecksumDirs(rootDir))
+	if err != nil {
+		return err
+	}
+	m.EmitChecksum = sum
+	if err := manifest.Write(m, manifest.Path(rootDir)); err != nil {
+		return err
+	}
+
+	reportRederived(m, changed)
+	return nil
+}
+
+// reportRederived names every module whose state location moved. A rewritten
+// state address is never a silent act, even behind an explicit flag.
+func reportRederived(m *manifest.Manifest, changed map[string]string) {
+	if len(changed) == 0 {
+		outln("Backends re-derived; every module's state location is unchanged.")
+		outln()
+		return
+	}
+	outln(heading("Backends re-derived - state locations changed:"))
+	names := make([]string, 0, len(changed))
+	for name := range changed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		outf("  %s %s\n", emphasis(fmt.Sprintf("%-16s", name)), changed[name])
+		outf("  %s %s\n", fmt.Sprintf("%-16s", ""), m.Backend.Modules[name])
+	}
+	outln()
 }
 
 // materializeBackendEnv writes each module's gitignored .env from the root's

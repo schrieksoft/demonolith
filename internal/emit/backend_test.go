@@ -261,3 +261,37 @@ func TestRequiredProviderNames(t *testing.T) {
 		t.Errorf("names = %v, want [random snapcd]", names)
 	}
 }
+
+// TestWriteBackendFile_MatchesEmit asserts the shared writer produces exactly
+// what a carve writes, so a re-derivation at migrate time cannot drift from
+// the file the carve produced.
+func TestWriteBackendFile_MatchesEmit(t *testing.T) {
+	dir := writeBackendFixture(t, `
+terraform {
+  backend "s3" {
+    bucket = "my-bucket"
+    key    = "prod/terraform.tfstate"
+    region = "eu-west-1"
+  }
+}
+`)
+	b, err := emit.ParseBackend(dir)
+	if err != nil || b == nil {
+		t.Fatalf("ParseBackend: %v, %v", b, err)
+	}
+
+	out := t.TempDir()
+	if err := b.WriteBackendFile(out, "networking"); err != nil {
+		t.Fatalf("WriteBackendFile: %v", err)
+	}
+	written, err := os.ReadFile(filepath.Join(out, emit.BackendFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(written), renderBackendTF(t, b, "networking"); got != want {
+		t.Errorf("WriteBackendFile output differs from the composed block:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if !strings.Contains(string(written), `key    = "prod/terraform-networking.tfstate"`) {
+		t.Errorf("written backend.tf missing the derived key:\n%s", written)
+	}
+}

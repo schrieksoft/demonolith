@@ -32,6 +32,7 @@ func migrateProveCmd() *cobra.Command {
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable; overrides the root's auto-loaded files)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable; overrides tfvars files and TF_VAR_*)")
+	flags.BoolVar(&f.rederive, "rederive-backend", false, "re-derive each carved root's backend.tf from the monolith's current backend before pushing, instead of using the one the carve wrote")
 	return cmd
 }
 
@@ -89,6 +90,11 @@ func runMigrateProve(ctx context.Context, f migrateFlags) error {
 	m, err := loadRunManifest(rootDir)
 	if err != nil {
 		return err
+	}
+	if f.rederive {
+		if err := rederiveBackends(rootDir, m); err != nil {
+			return err
+		}
 	}
 	a, err := analyzeMatching(rootDir, m)
 	if err != nil {

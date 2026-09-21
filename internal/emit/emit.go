@@ -193,17 +193,10 @@ func (e *Emitter) emitModule(module string, reqProviders *hclwrite.Block, sb *so
 	// a deployment supplying the backend out of band can replace the whole file
 	// without regenerating the providers alongside it.
 	if e.Backend != nil {
-		bb, err := e.Backend.BackendHCL(module)
-		if err != nil {
+		if err := e.Backend.WriteBackendFile(dir, module); err != nil {
 			return EmittedModule{}, err
 		}
-		backendFile := hclwrite.NewEmptyFile()
-		tfb := backendFile.Body().AppendNewBlock("terraform", nil)
-		tfb.Body().AppendBlock(bb)
-		if err := os.WriteFile(filepath.Join(dir, "backend.tf"), hclwrite.Format(backendFile.Bytes()), 0o644); err != nil {
-			return EmittedModule{}, err
-		}
-		em.Files = append(em.Files, "backend.tf")
+		em.Files = append(em.Files, BackendFileName)
 	}
 
 	if err := WriteGitignore(dir); err != nil {
