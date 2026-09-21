@@ -102,11 +102,17 @@ func splitCmd() *cobra.Command {
 	return cmd
 }
 
-// deprecationf prints a deprecation notice: the warn role, on stderr, so
-// pipeable report output stays clean.
+// warnf prints a warning: the warn role, on stdout beside the report it
+// annotates. Warnings are not errors, and a consumer that treats any stderr
+// output as a failure must not fail a command that succeeded.
+func warnf(format string, a ...any) {
+	leadIn(os.Stdout)
+	_, _ = fmt.Fprintf(os.Stdout, "%s\n\n", warn(fmt.Sprintf(format, a...)))
+}
+
+// deprecationf prints a deprecation notice.
 func deprecationf(format string, a ...any) {
-	leadIn(os.Stderr)
-	fmt.Fprintf(os.Stderr, "%s\n\n", warn(fmt.Sprintf(format, a...)))
+	warnf(format, a...)
 }
 
 // deprecateTree hides a command and all its descendants from help and prints

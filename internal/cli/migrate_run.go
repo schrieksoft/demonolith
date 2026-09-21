@@ -34,6 +34,7 @@ func migrateRunCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required unless the monolith has no backend)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
+	flags.BoolVar(&f.rederive, "rederive-backend", false, "re-derive each carved root's backend.tf from the monolith's current backend before pushing, instead of using the one the carve wrote")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
@@ -92,6 +93,11 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 
+	if f.rederive {
+		if err := rederiveBackends(rootDir, m); err != nil {
+			return err
+		}
+	}
 	a, err := analyzeMatching(rootDir, m)
 	if err != nil {
 		return err
@@ -193,7 +199,7 @@ func runMigrateRun(ctx context.Context, f migrateFlags) error {
 		}
 	}
 	if len(overwrote) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%s\n", warn(fmt.Sprintf("WARNING: --force replaced non-matching state at %d destination(s): %s. The previous state there is gone.", len(overwrote), strings.Join(overwrote, ", "))))
+		warnf("WARNING: --force replaced non-matching state at %d destination(s): %s. The previous state there is gone.", len(overwrote), strings.Join(overwrote, ", "))
 	}
 
 	// The graph tfvars are a post-migration artifact for detached use, not an

@@ -32,6 +32,11 @@ type BackendBlock struct {
 // migrate steps and sourced around each module's backend operations.
 const EnvFileName = "demono.env"
 
+// BackendFileName is the per-module file holding the derived backend block. It
+// is separate from root.tf so that it can be replaced whole, without
+// regenerating the required_providers beside it.
+const BackendFileName = "backend.tf"
+
 // locationAttrs names, per backend type, the attributes that distinguish one
 // state location from another - every built-in backend type of the
 // open-source lineage. A dotted name ("workspaces.name") addresses an
@@ -216,6 +221,30 @@ func (b *BackendBlock) BackendHCL(module string) (*hclwrite.Block, error) {
 		out.Body().SetAttributeValue(name, cty.StringVal(derived))
 	}
 	return out, nil
+}
+
+// DerivedLocation returns one module's derived primary location, validating the
+// block the same way DerivedLocations does.
+func (b *BackendBlock) DerivedLocation(module string) (string, error) {
+	_, byModule, err := b.DerivedLocations([]string{module})
+	if err != nil {
+		return "", err
+	}
+	return byModule[module], nil
+}
+
+// WriteBackendFile writes the module's derived backend to backend.tf in dir,
+// replacing any existing file. Shared by the carve, which writes it once, and
+// by a re-derivation at migrate time, so both produce the same bytes.
+func (b *BackendBlock) WriteBackendFile(dir, module string) error {
+	bb, err := b.BackendHCL(module)
+	if err != nil {
+		return err
+	}
+	f := hclwrite.NewEmptyFile()
+	tfb := f.Body().AppendNewBlock("terraform", nil)
+	tfb.Body().AppendBlock(bb)
+	return os.WriteFile(filepath.Join(dir, BackendFileName), hclwrite.Format(f.Bytes()), 0o644)
 }
 
 // StripBackend removes backend blocks from every terraform{} block in src,

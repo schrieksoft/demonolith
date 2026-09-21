@@ -26,6 +26,7 @@ func migrateVerifyCmd() *cobra.Command {
 	flags.StringVar(&f.engine, "engine", "", "state engine: terraform or tofu (required)")
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.StringArrayVar(&f.backendConfig, "backend-config", nil, "extra backend config passed to init, as key=value (repeatable; for settings that live outside the backend block)")
+	flags.BoolVar(&f.rederive, "rederive-backend", false, "re-derive each carved root's backend.tf from the monolith's current backend before pushing, instead of using the one the carve wrote")
 	flags.StringArrayVar(&f.varFiles, "var-file", nil, "additional tfvars file for external inputs (repeatable)")
 	flags.StringArrayVar(&f.vars, "var", nil, "external input value as name=value (repeatable)")
 	flags.BoolVar(&f.noTfvars, "no-tfvars", false, "do not write demono.root.tfvars/demono.graph.tfvars; pass all values in memory only (for tests)")
@@ -55,6 +56,11 @@ func runMigrateVerify(ctx context.Context, f migrateFlags) error {
 	}
 	if runReceipt == nil || !runReceipt.Complete {
 		return fmt.Errorf("no completed migrate run for this map; run `demonolith migrate run` first")
+	}
+	if f.rederive {
+		if err := rederiveBackends(rootDir, m); err != nil {
+			return err
+		}
 	}
 	a, err := analyzeMatching(rootDir, m)
 	if err != nil {
