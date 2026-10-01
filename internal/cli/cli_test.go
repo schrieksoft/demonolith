@@ -159,6 +159,79 @@ func TestRefactorValidate(t *testing.T) {
 	}
 }
 
+// TestRefactorValidate_StaleBackendCache: -backend=false keeps whatever backend
+// a directory was last initialized against, so a tree written over an older run
+// is validated against that backend and fails without credentials.
+// --reset-backend-cache forgets it, and leaves the provider cache alone.
+func TestRefactorValidate_StaleBackendCache(t *testing.T) {
+	execPath := testsupport.RequireEngine(t)
+	base := testsupport.OutDir(t, "statefix", "cli-validate-stale-backend")
+	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
+
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules"); err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if err := run(t, "refactor", "run", "--root-dir", srcDir); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	// Stand in for a directory an earlier job initialized against a backend that
+	// is now unreachable: the address only has to be refused, not served.
+	m, err := manifest.Load(manifest.Path(srcDir))
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	dirs := m.ChecksumDirs(srcDir)
+	if len(dirs) == 0 {
+		t.Fatal("no module directories to seed")
+	}
+	const cached = `{"version":3,"serial":1,"lineage":"ff5fd132-444e-f440-a0bc-0eacaa75d526",` +
+		`"backend":{"type":"http","config":{"address":"https://127.0.0.1:1/state/nowhere"},"hash":1}}`
+	for _, dir := range dirs {
+		tfDir := filepath.Join(dir, ".terraform")
+		if err := os.MkdirAll(tfDir, 0o755); err != nil {
+			t.Fatalf("seed %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(tfDir, "terraform.tfstate"), []byte(cached), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", dir, err)
+		}
+	}
+
+	if err := run(t, "refactor", "validate", "--root-dir", srcDir, "--exec-path", execPath); err == nil {
+		t.Error("validate against a stale backend cache should fail")
+	}
+
+	if err := run(t, "refactor", "validate", "--root-dir", srcDir, "--exec-path", execPath,
+		"--reset-backend-cache"); err != nil {
+		t.Errorf("validate with --reset-backend-cache should pass, got: %v", err)
+	}
+
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(dir, ".terraform", "providers")); err != nil {
+			t.Errorf("provider cache should survive the reset in %s: %v", dir, err)
+		}
+	}
+}
+
+// TestRefactorValidate_ResetWithoutCache: the flag is harmless where there is
+// nothing to forget, which is every run inside the pipeline.
+func TestRefactorValidate_ResetWithoutCache(t *testing.T) {
+	execPath := testsupport.RequireEngine(t)
+	base := testsupport.OutDir(t, "statefix", "cli-validate-reset-clean")
+	srcDir := testsupport.CopyInto(t, filepath.Join(base, "src"), testsupport.InDir("statefix"))
+
+	if err := run(t, "refactor", "map", "--root-dir", srcDir, "--out", "modules"); err != nil {
+		t.Fatalf("map failed: %v", err)
+	}
+	if err := run(t, "refactor", "run", "--root-dir", srcDir); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if err := run(t, "refactor", "validate", "--root-dir", srcDir, "--exec-path", execPath,
+		"--reset-backend-cache"); err != nil {
+		t.Errorf("--reset-backend-cache on a fresh tree should pass, got: %v", err)
+	}
+}
+
 // TestRefactorDiff_Gate: diff passes on a clean tree, fails with a verdict
 // after an emitted root is edited; --silent carries no message.
 func TestRefactorDiff_Gate(t *testing.T) {

@@ -24,6 +24,8 @@ type transferFlags struct {
 	yes            bool
 	all            bool
 	transferTarget string
+	noReceipts     bool
+	reuseBackend   bool
 }
 
 func transferCmd() *cobra.Command {
@@ -186,6 +188,14 @@ func transferMigrateCmd() *cobra.Command {
 			RunE:  func(cmd *cobra.Command, args []string) error { return fn(cmd.Context(), cf) },
 		}
 		transferCommonFlags(c, &cf, true, true)
+		if use == "verify" {
+			c.Flags().BoolVar(&cf.reuseBackend, "reuse-backend", false,
+				"init against the backend already configured in .terraform instead of reconfiguring it; for an orchestrator that initialised the root itself and supplies no backend block of its own")
+		}
+		if use == "run" {
+			c.Flags().BoolVar(&cf.noReceipts, "no-receipt-check", false,
+				"write the source's state without requiring the receivers' run receipts; an orchestrator that tracks what moved may run both sides at once, and accepts that the moved addresses are briefly in neither state")
+		}
 		return c
 	}
 	cmd.AddCommand(
@@ -1023,7 +1033,7 @@ func runTransferMigrateRun(ctx context.Context, f transferFlags) error {
 		outln(heading("Writing states (receivers first, source last):"))
 		for _, name := range a.src.m.ReceiverNames() {
 			s := a.sliceFor(name)
-			if err := migrateRunSlice(ctx, execPath, s, false); err != nil {
+			if err := migrateRunSlice(ctx, execPath, s, false, false); err != nil {
 				return err
 			}
 			if _, err := transfer.EnsureWorkDir(a.src.dir); err != nil {
@@ -1033,7 +1043,7 @@ func runTransferMigrateRun(ctx context.Context, f transferFlags) error {
 				return err
 			}
 		}
-		if err := migrateRunSlice(ctx, execPath, a.src, false); err != nil {
+		if err := migrateRunSlice(ctx, execPath, a.src, false, false); err != nil {
 			return err
 		}
 		outln("\n" + heading("Receipts:"))
@@ -1044,10 +1054,10 @@ func runTransferMigrateRun(ctx context.Context, f transferFlags) error {
 	if err != nil {
 		return verdictf("%v", err)
 	}
-	return migrateRunSlice(ctx, execPath, s, true)
+	return migrateRunSlice(ctx, execPath, s, true, f.noReceipts)
 }
 
-func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, showReceipts bool) error {
+func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, showReceipts, noReceipts bool) error {
 	if err := requireStateSlice(s); err != nil {
 		return verdictf("%v", err)
 	}
@@ -1060,8 +1070,10 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 		return verdictf("no clean proof for this pin generation; run `demonolith transfer migrate prove` here first")
 	}
 	// The source is stripped last: it demands every receiver's run receipt -
-	// the claim that the moved addresses already live in their new homes.
-	if s.role.Kind == "source" {
+	// the claim that the moved addresses already live in their new homes. An
+	// orchestrator that tracks the moves itself can waive it with
+	// --no-receipt-check and run both sides at once.
+	if s.role.Kind == "source" && !noReceipts {
 		for _, name := range s.m.ReceiverNames() {
 			base := filepath.Base(name)
 			rr, err := transfer.LoadReceipt(s.work, "run-"+base+".yaml")
@@ -1093,7 +1105,7 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 		moves = s.m.Receivers[s.role.Key].Moves
 	}
 
-	rec := &transfer.Receipt{Version: 1, Created: nowStamp(), Tool: toolString(), Step: "run", MapHash: s.hash, Role: s.role.Base, Pin: pin.Pin, OK: true, Roots: map[string]string{}}
+	rec := &transfer.Receipt{Version: 1, Created: nowStamp(), Tool: toolString(), Step: "run", MapHash: s.hash, Role: s.role.Base, Pin: pin.Pin, OK: true, Roots: map[string]string{}, TransferredAddresses: moves}
 	if meta.Lineage != pin.Pin.Lineage || meta.Serial != pin.Pin.Serial {
 		present, absent, err := transfer.ContainsAddrs(runState, moves)
 		if err != nil {
@@ -1177,7 +1189,7 @@ func runTransferMigrateVerify(ctx context.Context, f transferFlags) error {
 		outln(heading("Verifying (against the real backends, producer values threaded):"))
 		for _, module := range a.order {
 			s := a.sliceFor(module)
-			if err := migrateVerifySlice(ctx, execPath, s, false); err != nil {
+			if err := migrateVerifySlice(ctx, execPath, s, false, f.reuseBackend); err != nil {
 				return err
 			}
 			if err := distributeOutputs(a, s); err != nil {
@@ -1191,10 +1203,10 @@ func runTransferMigrateVerify(ctx context.Context, f transferFlags) error {
 	if err != nil {
 		return verdictf("%v", err)
 	}
-	return migrateVerifySlice(ctx, execPath, s, true)
+	return migrateVerifySlice(ctx, execPath, s, true, f.reuseBackend)
 }
 
-func migrateVerifySlice(ctx context.Context, execPath string, s *transferSlice, showReceipts bool) error {
+func migrateVerifySlice(ctx context.Context, execPath string, s *transferSlice, showReceipts, reuseBackend bool) error {
 	if err := requireStateSlice(s); err != nil {
 		return verdictf("%v", err)
 	}
@@ -1209,7 +1221,8 @@ func migrateVerifySlice(ctx context.Context, execPath string, s *transferSlice, 
 		outln(heading("Verifying (against the real backend, producer values threaded):"))
 	}
 	outf("  %s ", emphasis(fmt.Sprintf("%-16s", s.role.Base)))
-	mp, outs, err := proof.PlanDir(ctx, s.dir, "", vars, proof.Options{ExecPath: execPath, UseBackend: true})
+	mp, outs, err := proof.PlanDir(ctx, s.dir, "", vars,
+		proof.Options{ExecPath: execPath, UseBackend: true, ReuseBackend: reuseBackend})
 	if err != nil {
 		outln(fail("plan FAILED"))
 		return err

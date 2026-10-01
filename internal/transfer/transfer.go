@@ -144,6 +144,9 @@ type Receipt struct {
 	OK      bool   `yaml:"ok"`
 	// Roots records the per-root outcome ("zero changes", "pushed", ...).
 	Roots map[string]string `yaml:"roots"`
+	// TransferredAddresses are the addresses this root's state gave up or took
+	// on; Role says which.
+	TransferredAddresses []string `yaml:"transferred_addresses,omitempty"`
 }
 
 // FileSHA256 hashes a file for the map's receiver-file checksum.
