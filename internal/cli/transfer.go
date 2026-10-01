@@ -288,8 +288,8 @@ func loadTransferAll(rootDir string) (*transferAll, error) {
 	if err != nil {
 		return nil, err
 	}
-	modules := []string{src.m.Remainder}
-	modules = append(modules, src.m.ReceiverNames()...)
+	modules := []string{transfer.SourceModule}
+	modules = append(modules, src.m.ReceiverDir)
 	order, err := proof.TopoOrder(modules, transfer.BoundaryFromMap(src.m))
 	if err != nil {
 		return nil, err
@@ -300,7 +300,7 @@ func loadTransferAll(rootDir string) (*transferAll, error) {
 // sliceFor builds a receiver's slice view from the source's map - --all needs
 // no distributed copies to act, only to gate (refactor diff checks them).
 func (a *transferAll) sliceFor(module string) *transferSlice {
-	if module == a.src.m.Remainder {
+	if module == transfer.SourceModule {
 		return a.src
 	}
 	dir := a.paths[module]
@@ -322,8 +322,13 @@ func sliceThreadVars(s *transferSlice) (map[string]string, error) {
 		if e.Consumer != mod {
 			continue
 		}
-		pbase := transfer.BaseForModule(s.m, e.Producer)
-		oa, err := transfer.LoadOutputs(s.work, pbase)
+		// The file is written under the producing root's directory name, which is
+		// what the source is called on disk rather than how an edge names it.
+		pbase := filepath.Base(e.Producer)
+		if e.Producer == transfer.SourceModule {
+			pbase = s.m.SourceDir
+		}
+		oa, err := transfer.LoadOutputs(s.work)
 		if err != nil {
 			return nil, fmt.Errorf("input %q needs outputs-%s.yaml in %s - `demonolith transfer migrate prove` at %s writes it; bring it here", e.Input, pbase, transfer.WorkDirName, pbase)
 		}
@@ -410,11 +415,11 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 		return verdictf("%v", err)
 	}
 
-	m := &transfer.Map{Version: transfer.MapVersion, Created: nowStamp(), Tool: toolString(), Remainder: plan.Remainder, SourceDir: filepath.Base(filepath.Clean(rootDir))}
+	m := &transfer.Map{Version: transfer.MapVersion, Created: nowStamp(), Tool: toolString(), SourceDir: filepath.Base(filepath.Clean(rootDir))}
 	m.CrossEdges, m.OrderingEdges = plan.Edges()
 	for _, name := range names {
 		pr := plan.Receivers[name]
-		m.ReceiverName = name
+		m.ReceiverDir = name
 		m.Receiver = transfer.Receiver{
 			Blocks:    pr.Blocks,
 			Moves:     pr.Moves,
@@ -491,7 +496,7 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 
 // displayRoot renders a map module name for humans: the remainder is "source".
 func displayRoot(m *transfer.Map, name string) string {
-	if name == m.Remainder {
+	if name == transfer.SourceModule {
 		return "source"
 	}
 	return name
@@ -522,9 +527,7 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 	if m.IsRun() {
 		if err := transfer.CodeMoved(rootDir, m, paths); err == nil {
 			dsts := make([]string, 0, len(paths)+1)
-			for _, name := range m.ReceiverNames() {
-				dsts = append(dsts, paths[name])
-			}
+			dsts = append(dsts, paths[m.ReceiverDir])
 			if m.Snapcd != nil {
 				if d, err := snapcdDirForMap(); err == nil && d != "" {
 					dsts = append(dsts, d)
@@ -538,10 +541,7 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 		}
 	}
 
-	target := ""
-	if names := m.ReceiverNames(); len(names) == 1 {
-		target = names[0]
-	}
+	target := m.ReceiverDir
 	plan, err := transfer.BuildPlan(rootDir, target)
 	if err != nil {
 		return verdictf("%v", err)
@@ -552,7 +552,8 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 
 	// Validate and render everything before writing anything.
 	contents := map[string]map[string]string{}
-	for _, name := range m.ReceiverNames() {
+	{
+		name := m.ReceiverDir
 		pr := plan.Receivers[name]
 		if err := transfer.ValidateReceiverDir(paths[name], pr.Structural, pr.Inputs, pr.Outputs); err != nil {
 			return verdictf("%v", err)
@@ -604,7 +605,8 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 	// skipped on retry), never orphaned code. A receiver that already holds
 	// every moved address is such a retry and is left alone.
 	outln(heading("Code move:"))
-	for _, name := range m.ReceiverNames() {
+	{
+		name := m.ReceiverDir
 		have, err := transfer.DirAddrs(paths[name])
 		if err != nil {
 			return err
@@ -619,19 +621,19 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 		}
 		if already {
 			outf("  %s: %s\n", emphasis(name), warn("already holds the moved blocks (skip)"))
-			continue
+		} else {
+			sums, err := appendAll(paths[name], contents[name])
+			if err != nil {
+				return err
+			}
+			m.Receiver.FileChecksums = sums
+			outf("  %s: %s %s\n", emphasis(name), strings.Join(sortedFiles(contents[name]), ", "), success("appended"))
 		}
-		sums, err := appendAll(paths[name], contents[name])
-		if err != nil {
-			return err
-		}
-		m.Receiver.FileChecksums = sums
-		outf("  %s: %s %s\n", emphasis(name), strings.Join(sortedFiles(contents[name]), ", "), success("appended"))
 	}
 	moved := map[string]bool{}
 	receivers := map[string]bool{}
-	if m.ReceiverName != "" {
-		receivers[m.ReceiverName] = true
+	if m.ReceiverDir != "" {
+		receivers[m.ReceiverDir] = true
 		for _, b := range m.Receiver.Blocks {
 			moved[b] = true
 		}
@@ -694,9 +696,7 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 	// Distribute the finalized map into every touched root: each repo's change
 	// carries the whole transfer, and the copies' shared hash is its identity.
 	dsts := make([]string, 0, len(paths)+1)
-	for _, name := range m.ReceiverNames() {
-		dsts = append(dsts, paths[name])
-	}
+	dsts = append(dsts, paths[m.ReceiverDir])
 	if snapcdDir != "" {
 		dsts = append(dsts, snapcdDir)
 	}
@@ -761,19 +761,16 @@ func runTransferRefactorDiff(ctx context.Context, f transferFlags) error {
 	if err := transfer.CodeMoved(rootDir, m, paths); err != nil {
 		return verdictf("%v", err)
 	}
-	for _, name := range m.ReceiverNames() {
-		recv, _ := m.ReceiverFor(name)
-		if err := checkSums("receiver "+name, paths[name], recv.FileChecksums); err != nil {
+	{
+		recv, _ := m.ReceiverFor(m.ReceiverDir)
+		if err := checkSums("receiver "+m.ReceiverDir, paths[m.ReceiverDir], recv.FileChecksums); err != nil {
 			return verdictf("%v", err)
 		}
 	}
 	if err := checkSums("the source root", rootDir, m.SourceFileChecksums); err != nil {
 		return verdictf("%v", err)
 	}
-	copies := map[string]string{}
-	for _, name := range m.ReceiverNames() {
-		copies["receiver "+name] = paths[name]
-	}
+	copies := map[string]string{"receiver " + m.ReceiverDir: paths[m.ReceiverDir]}
 	if m.Snapcd != nil {
 		snapcdDir, err := transfer.ResolveSnapcdRoot(rootDir, m.Snapcd.Dir, true)
 		if err != nil {
@@ -809,16 +806,15 @@ func runTransferMigrateMap(ctx context.Context, f transferFlags) error {
 		if err := migrateMapSlice(ctx, execPath, a.src, false); err != nil {
 			return err
 		}
-		for _, name := range a.src.m.ReceiverNames() {
-			s := a.sliceFor(name)
+		{
+			s := a.sliceFor(a.src.m.ReceiverDir)
 			if _, err := transfer.EnsureWorkDir(s.dir); err != nil {
 				return err
 			}
-			base := s.role.Base
-			if err := transfer.CopyFile(transfer.FragmentStateFile(a.src.work, base), transfer.FragmentStateFile(s.work, base)); err != nil {
+			if err := transfer.CopyFile(transfer.FragmentStateFile(a.src.work), transfer.FragmentStateFile(s.work)); err != nil {
 				return err
 			}
-			if err := transfer.CopyFile(transfer.FragmentMetaFile(a.src.work, base), transfer.FragmentMetaFile(s.work, base)); err != nil {
+			if err := transfer.CopyFile(transfer.FragmentMetaFile(a.src.work), transfer.FragmentMetaFile(s.work)); err != nil {
 				return err
 			}
 			if err := migrateMapSlice(ctx, execPath, s, false); err != nil {
@@ -870,33 +866,29 @@ func migrateMapSlice(ctx context.Context, execPath string, s *transferSlice, sho
 
 	switch s.role.Kind {
 	case "source":
-		var frags []string
-		for _, name := range s.m.ReceiverNames() {
-			base := filepath.Base(name)
-			fragState := transfer.FragmentStateFile(work, base)
-			_ = os.Remove(fragState)
-			recv, _ := s.m.ReceiverFor(name)
-			if err := transfer.ApplyMoves(ctx, s.dir, post, fragState, recv.Moves, execPath); err != nil {
-				return err
-			}
-			fm := &transfer.FragmentMeta{Version: 1, Created: nowStamp(), Tool: toolString(), MapHash: s.hash, Receiver: base, SourcePin: pin, Moves: recv.Moves}
-			if err := transfer.WriteFragmentMeta(fm, work); err != nil {
-				return err
-			}
-			frags = append(frags, base)
+		base := filepath.Base(s.m.ReceiverDir)
+		fragState := transfer.FragmentStateFile(work)
+		_ = os.Remove(fragState)
+		recv, _ := s.m.ReceiverFor(s.m.ReceiverDir)
+		if err := transfer.ApplyMoves(ctx, s.dir, post, fragState, recv.Moves, execPath); err != nil {
+			return err
 		}
-		outf("%s%s\n", success("pulled + pinned"), dim(" (fragments written for "+strings.Join(frags, ", ")+")"))
+		fm := &transfer.FragmentMeta{Version: 1, Created: nowStamp(), Tool: toolString(), MapHash: s.hash, Receiver: base, SourcePin: pin, Moves: recv.Moves}
+		if err := transfer.WriteFragmentMeta(fm, work); err != nil {
+			return err
+		}
+		outf("%s%s\n", success("pulled + pinned"), dim(" (fragment written for "+base+")"))
 	case "receiver":
 		base := s.role.Base
-		fm, err := transfer.LoadFragmentMeta(work, base)
+		fm, err := transfer.LoadFragmentMeta(work)
 		if err != nil {
 			return verdictf("no state fragment for this receiver in %s - `demonolith transfer migrate map` at the source (%s) writes fragment-%s.tfstate and fragment-%s.yaml; bring both into this root's %s", transfer.WorkDirName, s.m.SourceDir, base, base, transfer.WorkDirName)
 		}
 		if fm.MapHash != s.hash {
 			return verdictf("the fragment in %s belongs to a different transfer (map hash mismatch); refresh both fragment files from the source", transfer.WorkDirName)
 		}
-		inject := transfer.FragmentStateFile(work, base) + ".inject"
-		if err := transfer.CopyFile(transfer.FragmentStateFile(work, base), inject); err != nil {
+		inject := transfer.FragmentStateFile(work) + ".inject"
+		if err := transfer.CopyFile(transfer.FragmentStateFile(work), inject); err != nil {
 			return verdictf("the fragment meta is present but fragment-%s.tfstate is not; bring both files from the source", base)
 		}
 		if err := transfer.ApplyMoves(ctx, s.dir, inject, post, fm.Moves, execPath); err != nil {
@@ -948,7 +940,7 @@ func runTransferMigrateProve(ctx context.Context, f transferFlags) error {
 // distributeOutputs copies a producer slice's outputs artifact into every
 // other slice's workdir, the way an external orchestrator would.
 func distributeOutputs(a *transferAll, from *transferSlice) error {
-	src := transfer.OutputsFile(from.work, from.role.Base)
+	src := transfer.OutputsFile(from.work)
 	if _, err := os.Stat(src); err != nil {
 		return nil
 	}
@@ -960,7 +952,7 @@ func distributeOutputs(a *transferAll, from *transferSlice) error {
 		if _, err := transfer.EnsureWorkDir(s.dir); err != nil {
 			return err
 		}
-		if err := transfer.CopyFile(src, transfer.OutputsFile(s.work, from.role.Base)); err != nil {
+		if err := transfer.CopyFile(src, transfer.OutputsFile(s.work)); err != nil {
 			return err
 		}
 	}
@@ -1030,16 +1022,16 @@ func runTransferMigrateRun(ctx context.Context, f transferFlags) error {
 		if err != nil {
 			return verdictf("%v", err)
 		}
-		outln(heading("Writing states (receivers first, source last):"))
-		for _, name := range a.src.m.ReceiverNames() {
-			s := a.sliceFor(name)
+		outln(heading("Writing states (the receiver first, the source last):"))
+		{
+			s := a.sliceFor(a.src.m.ReceiverDir)
 			if err := migrateRunSlice(ctx, execPath, s, false, false); err != nil {
 				return err
 			}
 			if _, err := transfer.EnsureWorkDir(a.src.dir); err != nil {
 				return err
 			}
-			if err := transfer.CopyFile(filepath.Join(s.dir, transfer.RunReceiptFile), transfer.RecvRunReceiptFile(a.src.work, s.role.Base)); err != nil {
+			if err := transfer.CopyFile(filepath.Join(s.dir, transfer.RunReceiptFile), transfer.RecvRunReceiptFile(a.src.work)); err != nil {
 				return err
 			}
 		}
@@ -1074,15 +1066,13 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 	// orchestrator that tracks the moves itself can waive it with
 	// --no-receipt-check and run both sides at once.
 	if s.role.Kind == "source" && !noReceipts {
-		for _, name := range s.m.ReceiverNames() {
-			base := filepath.Base(name)
-			rr, err := transfer.LoadReceipt(s.work, "run-"+base+".yaml")
-			if err != nil {
-				return verdictf("missing run receipt for receiver %s - the source's state is written last: run `demonolith transfer migrate run` at %s, then bring its %s into this root's %s as run-%s.yaml", base, base, transfer.RunReceiptFile, transfer.WorkDirName, base)
-			}
-			if rr.MapHash != s.hash || !rr.OK {
-				return verdictf("the run receipt for receiver %s does not show a completed write for this transfer; re-run `demonolith transfer migrate run` there and refresh it", base)
-			}
+		base := filepath.Base(s.m.ReceiverDir)
+		rr, err := transfer.LoadReceipt(s.work, filepath.Base(transfer.RecvRunReceiptFile("")))
+		if err != nil {
+			return verdictf("missing the receiver's run receipt - the source's state is written last: run `demonolith transfer migrate run` at %s, then bring its %s into this root's %s as %s", base, transfer.RunReceiptFile, transfer.WorkDirName, filepath.Base(transfer.RecvRunReceiptFile("")))
+		}
+		if rr.MapHash != s.hash || !rr.OK {
+			return verdictf("the receiver's run receipt does not show a completed write for this transfer; re-run `demonolith transfer migrate run` at %s and refresh it", base)
 		}
 	}
 	if showReceipts {
@@ -1135,8 +1125,8 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 	}
 	switch s.role.Kind {
 	case "receiver":
-		inject := transfer.FragmentStateFile(s.work, s.role.Base) + ".inject"
-		if err := transfer.CopyFile(transfer.FragmentStateFile(s.work, s.role.Base), inject); err != nil {
+		inject := transfer.FragmentStateFile(s.work) + ".inject"
+		if err := transfer.CopyFile(transfer.FragmentStateFile(s.work), inject); err != nil {
 			return verdictf("no state fragment in %s; run `demonolith transfer migrate map` here again", transfer.WorkDirName)
 		}
 		if err := transfer.ApplyMoves(ctx, s.dir, inject, push, moves, execPath); err != nil {
@@ -1144,10 +1134,10 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 		}
 		_ = os.Remove(inject)
 	case "source":
-		for _, name := range s.m.ReceiverNames() {
-			discard := filepath.Join(s.work, "discard-"+filepath.Base(name)+".tfstate")
+		{
+			discard := filepath.Join(s.work, "discard.tfstate")
 			_ = os.Remove(discard)
-			recv, _ := s.m.ReceiverFor(name)
+			recv, _ := s.m.ReceiverFor(s.m.ReceiverDir)
 			if err := transfer.ApplyMoves(ctx, s.dir, push, discard, recv.Moves, execPath); err != nil {
 				return err
 			}

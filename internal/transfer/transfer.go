@@ -102,6 +102,11 @@ type Snapcd struct {
 // half. `transfer refactor run` finalizes it with the receiver file checksums
 // and distributes a byte-identical copy into every touched root; the file's
 // sha256 is the transfer's identity across slices.
+// SourceModule is how a transfer map's edges name the source root. The analysis
+// that finds the edges calls it by the split's catchall name, which means
+// nothing here: a transfer has a source and a receiver and no leftover.
+const SourceModule = "source"
+
 // MapVersion is the transfer map's format. A map is read only by the version
 // that wrote it: the shape changes between versions, and an older one parses
 // into the current struct without complaint, keeping whatever matches and
@@ -112,14 +117,13 @@ type Map struct {
 	Version   int    `yaml:"version"`
 	Created   string `yaml:"created"`
 	Tool      string `yaml:"tool"`
-	Remainder string `yaml:"remainder"`
 	// SourceDir is the source root's directory basename - how a distributed
 	// copy tells a slice which role its directory holds.
 	SourceDir string              `yaml:"source_dir,omitempty"`
-	// ReceiverName is how the map's edges name the receiving root; Receiver is
-	// what moves into it. A transfer has one of each.
-	ReceiverName string   `yaml:"receiver_name"`
-	Receiver     Receiver `yaml:"receiver"`
+	// ReceiverDir is the receiving root's path as the source names it, and is how
+	// the map's edges refer to it. Receiver is what moves in.
+	ReceiverDir string   `yaml:"receiver_dir"`
+	Receiver    Receiver `yaml:"receiver"`
 	// CrossEdges and OrderingEdges are the wiring the transfer creates across
 	// the boundary; the migrate half threads values along them.
 	CrossEdges    []CrossEdge    `yaml:"cross_edges,omitempty"`
@@ -132,7 +136,7 @@ type Map struct {
 
 // IsRun reports whether the code half has executed (the map is finalized).
 func (m *Map) IsRun() bool {
-	return m.ReceiverName != "" && len(m.Receiver.FileChecksums) > 0
+	return m.ReceiverDir != "" && len(m.Receiver.FileChecksums) > 0
 }
 
 // Receipt records one migrate-half step of one slice, tied to the transfer by
@@ -208,19 +212,10 @@ func LoadReceipt(rootDir, file string) (*Receipt, error) {
 	return &r, nil
 }
 
-// ReceiverNames returns the map's receiver label. A transfer has one receiver;
-// the slice shape is kept while callers are still written as loops.
-func (m *Map) ReceiverNames() []string {
-	if m.ReceiverName == "" {
-		return nil
-	}
-	return []string{m.ReceiverName}
-}
-
 // ReceiverFor returns the receiver a name refers to, and whether it is this
 // map's. Replaces indexing a map that no longer exists.
 func (m *Map) ReceiverFor(name string) (Receiver, bool) {
-	if name != m.ReceiverName || m.ReceiverName == "" {
+	if name != m.ReceiverDir || m.ReceiverDir == "" {
 		return Receiver{}, false
 	}
 	return m.Receiver, true
@@ -353,6 +348,16 @@ func (plan *Plan) SourceWiring() (inputs, outputs []string) {
 
 // Edges converts the analysis's boundary edges into the map's form, with the
 // remainder standing in for the source root.
+// edgeName is how the map names a module in its edges. The boundary analysis
+// calls the source by the split's catchall name, which a transfer has no use
+// for: it has two parties and names the source as the source.
+func (plan *Plan) edgeName(module string) string {
+	if module == plan.Remainder {
+		return SourceModule
+	}
+	return module
+}
+
 func (plan *Plan) Edges() (cross []CrossEdge, ordering []OrderingEdge) {
 	seen := map[string]bool{}
 	for _, e := range plan.Analysis.Boundary.CrossEdges {
@@ -361,7 +366,9 @@ func (plan *Plan) Edges() (cross []CrossEdge, ordering []OrderingEdge) {
 			continue
 		}
 		seen[key] = true
-		cross = append(cross, CrossEdge{Consumer: e.ConsumerModule, Input: e.InputName, Producer: e.ProducerModule, Output: e.OutputName})
+		cross = append(cross, CrossEdge{
+			Consumer: plan.edgeName(e.ConsumerModule), Input: e.InputName,
+			Producer: plan.edgeName(e.ProducerModule), Output: e.OutputName})
 	}
 	sort.Slice(cross, func(i, j int) bool {
 		return cross[i].Consumer+cross[i].Input < cross[j].Consumer+cross[j].Input
@@ -373,7 +380,9 @@ func (plan *Plan) Edges() (cross []CrossEdge, ordering []OrderingEdge) {
 			continue
 		}
 		seenO[key] = true
-		ordering = append(ordering, OrderingEdge{Consumer: e.ConsumerModule, Producer: e.ProducerModule})
+		ordering = append(ordering, OrderingEdge{
+			Consumer: plan.edgeName(e.ConsumerModule),
+			Producer: plan.edgeName(e.ProducerModule)})
 	}
 	sort.Slice(ordering, func(i, j int) bool {
 		return ordering[i].Consumer+ordering[i].Producer < ordering[j].Consumer+ordering[j].Producer
@@ -392,10 +401,8 @@ func BoundaryFromMap(m *Map) *boundary.Result {
 		}
 		return res.Boundaries[name]
 	}
-	get(m.Remainder)
-	for _, name := range m.ReceiverNames() {
-		get(name)
-	}
+	get(SourceModule)
+	get(m.ReceiverDir)
 	for _, e := range m.CrossEdges {
 		get(e.Consumer).Inputs[e.Input] = boundary.Input{Name: e.Input, FromModule: e.Producer, FromOutput: e.Output}
 		get(e.Producer).Outputs[e.Output] = boundary.Output{Name: e.Output}
@@ -432,12 +439,12 @@ func ResolveReceiverPath(rootDir, target string) (string, error) {
 // ResolveReceivers resolves every map receiver against the source root.
 func ResolveReceivers(m *Map, rootDir string) (map[string]string, error) {
 	out := map[string]string{}
-	for _, name := range m.ReceiverNames() {
-		abs, err := ResolveReceiverPath(rootDir, name)
+	if m.ReceiverDir != "" {
+		abs, err := ResolveReceiverPath(rootDir, m.ReceiverDir)
 		if err != nil {
 			return nil, err
 		}
-		out[name] = abs
+		out[m.ReceiverDir] = abs
 	}
 	return out, nil
 }
@@ -458,7 +465,11 @@ func Slug(target string) string {
 // MatchesMap reports whether the plan's selection equals the map's - the
 // staleness gate every later step runs before touching anything.
 func (plan *Plan) MatchesMap(m *Map) error {
-	if len(plan.Receivers) != len(m.ReceiverNames()) {
+	mapReceivers := 0
+	if m.ReceiverDir != "" {
+		mapReceivers = 1
+	}
+	if len(plan.Receivers) != mapReceivers {
 		return fmt.Errorf("the source's decorated selection no longer matches %s; re-run `demonolith transfer map`", MapFile)
 	}
 	for name, pr := range plan.Receivers {
@@ -724,7 +735,8 @@ func CodeMoved(rootDir string, m *Map, paths map[string]string) error {
 		return err
 	}
 	var problems []string
-	for _, name := range m.ReceiverNames() {
+	{
+		name := m.ReceiverDir
 		recvAddrs, err := DirAddrs(paths[name])
 		if err != nil {
 			return err

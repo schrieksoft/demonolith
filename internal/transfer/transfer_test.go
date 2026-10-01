@@ -144,7 +144,7 @@ resource "fake_thing" "goes" {
 		t.Fatalf("edges: cross=%v ordering=%v", cross, ordering)
 	}
 	e := cross[0]
-	if e.Consumer != plan.Remainder || e.Producer != "../shared" || e.Input == "" || e.Output == "" {
+	if e.Consumer != SourceModule || e.Producer != "../shared" || e.Input == "" || e.Output == "" {
 		t.Fatalf("cross edge: %+v", e)
 	}
 	srcIn, srcOut := plan.SourceWiring()
@@ -176,7 +176,7 @@ resource "fake_thing" "goes" {
 	if len(cross) != 0 || len(ordering) != 1 {
 		t.Fatalf("edges: cross=%v ordering=%v", cross, ordering)
 	}
-	if ordering[0].Consumer != "../shared" || ordering[0].Producer != plan.Remainder {
+	if ordering[0].Consumer != "../shared" || ordering[0].Producer != SourceModule {
 		t.Fatalf("ordering edge: %+v", ordering[0])
 	}
 }
@@ -222,7 +222,7 @@ func TestMatchesMap(t *testing.T) {
 	}
 	m := &Map{}
 	for name, pr := range plan.Receivers {
-		m.ReceiverName = name
+		m.ReceiverDir = name
 		m.Receiver = Receiver{Blocks: pr.Blocks, Moves: pr.Moves}
 	}
 	if err := plan.MatchesMap(m); err != nil {
@@ -234,7 +234,7 @@ func TestMatchesMap(t *testing.T) {
 		t.Fatalf("changed blocks must mismatch, got: %v", err)
 	}
 
-	m.ReceiverName = ""
+	m.ReceiverDir = ""
 	if err := plan.MatchesMap(m); err == nil {
 		t.Fatal("missing receiver must mismatch")
 	}
@@ -340,7 +340,7 @@ func TestCodeMoved(t *testing.T) {
 	source := writeRoot(t, map[string]string{"main.tf": sourceSrc})
 	recv := writeRoot(t, map[string]string{"main.tf": `resource "fake_thing" "mine" {}`})
 	m := &Map{
-		ReceiverName: "../shared",
+		ReceiverDir: "../shared",
 		Receiver:     Receiver{Blocks: []string{"fake_thing.goes"}},
 	}
 	paths := map[string]string{"../shared": recv}
@@ -412,8 +412,8 @@ func TestContainsAddrs(t *testing.T) {
 
 func TestMapPinsReceiptRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	m := &Map{Version: MapVersion, Created: "2026-08-24T00:00:00Z", Tool: "test", Remainder: "legacy",
-		ReceiverName: "../shared",
+	m := &Map{Version: MapVersion, Created: "2026-08-24T00:00:00Z", Tool: "test",
+		ReceiverDir: "../shared",
 		Receiver:     Receiver{Blocks: []string{"a.b"}, Moves: []string{"a.b"}}}
 	if m.IsRun() {
 		t.Fatal("map without checksums must not be run")
@@ -422,7 +422,7 @@ func TestMapPinsReceiptRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := LoadMap(dir)
-	if err != nil || len(got.Receiver.Blocks) != 1 || got.ReceiverName != "../shared" {
+	if err != nil || len(got.Receiver.Blocks) != 1 || got.ReceiverDir != "../shared" {
 		t.Fatalf("map round-trip: %+v err=%v", got, err)
 	}
 	m.Receiver.FileChecksums = map[string]string{"main.tf": "deadbeef"}
@@ -450,8 +450,8 @@ func TestMapPinsReceiptRoundTrip(t *testing.T) {
 }
 
 func TestRoleOf(t *testing.T) {
-	m := &Map{Remainder: "legacy", SourceDir: "platform",
-		ReceiverName: "../deep/storage",
+	m := &Map{SourceDir: "platform",
+		ReceiverDir: "../deep/storage",
 		Snapcd:       &Snapcd{Dir: "snapcd"}}
 	cases := []struct{ dir, kind, key, base string }{
 		{"/work/platform", "source", "", "platform"},
@@ -468,17 +468,12 @@ func TestRoleOf(t *testing.T) {
 	if _, err := RoleOf(m, "/work/unrelated"); err == nil || !strings.Contains(err.Error(), "not part of this transfer") {
 		t.Fatalf("unrelated dir must refuse, got: %v", err)
 	}
-	if _, err := RoleOf(&Map{Remainder: "legacy"}, "/work/platform"); err == nil || !strings.Contains(err.Error(), "does not name its source root") {
+	if _, err := RoleOf(&Map{}, "/work/platform"); err == nil || !strings.Contains(err.Error(), "does not name its source root") {
 		t.Fatalf("map without source_dir must refuse, got: %v", err)
 	}
-	if got := (Role{Kind: "source"}).Module(m); got != "legacy" {
+	// An edge names the source by the sentinel, not by the split's catchall name.
+	if got := (Role{Kind: "source"}).Module(m); got != SourceModule {
 		t.Fatalf("source module = %q", got)
-	}
-	if got := BaseForModule(m, "legacy"); got != "platform" {
-		t.Fatalf("BaseForModule(remainder) = %q", got)
-	}
-	if got := BaseForModule(m, "../network"); got != "network" {
-		t.Fatalf("BaseForModule(receiver) = %q", got)
 	}
 }
 
@@ -508,8 +503,8 @@ resource "fake_thing" "a" {
 func TestMapHashAndDistribute(t *testing.T) {
 	src := t.TempDir()
 	recv := t.TempDir()
-	m := &Map{Version: MapVersion, Remainder: "legacy", SourceDir: "source",
-		ReceiverName: "../shared", Receiver: Receiver{Blocks: []string{"a.b"}}}
+	m := &Map{Version: MapVersion, SourceDir: "source",
+		ReceiverDir: "../shared", Receiver: Receiver{Blocks: []string{"a.b"}}}
 	if err := WriteMap(m, src); err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +536,7 @@ func TestFragmentAndOutputsRoundTrip(t *testing.T) {
 	if err := WriteFragmentMeta(fm, work); err != nil {
 		t.Fatal(err)
 	}
-	gf, err := LoadFragmentMeta(work, "network")
+	gf, err := LoadFragmentMeta(work)
 	if err != nil || gf.MapHash != "abc" || gf.SourcePin != fm.SourcePin || len(gf.Moves) != 1 {
 		t.Fatalf("fragment meta round-trip: %+v err=%v", gf, err)
 	}
@@ -549,7 +544,7 @@ func TestFragmentAndOutputsRoundTrip(t *testing.T) {
 	if err := WriteOutputs(oa, work); err != nil {
 		t.Fatal(err)
 	}
-	go2, err := LoadOutputs(work, "network")
+	go2, err := LoadOutputs(work)
 	if err != nil || go2.Outputs["vpc_name"] != "quiet-owl" || go2.MapHash != "abc" {
 		t.Fatalf("outputs round-trip: %+v err=%v", go2, err)
 	}
