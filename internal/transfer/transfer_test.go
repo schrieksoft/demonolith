@@ -615,3 +615,31 @@ func TestBuildPlan_LegacyMoveStillWorks(t *testing.T) {
 		t.Fatal("move decorators must be flagged legacy")
 	}
 }
+
+// A map is read only by the version that wrote it: an older one parses into the
+// current struct without complaint, keeping what matches and dropping the rest.
+func TestLoadMapRefusesAnotherVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, MapFile),
+		[]byte("version: 99\nreceivers: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadMap(dir)
+	if err == nil {
+		t.Fatal("expected a version 99 map to be refused")
+	}
+	if !strings.Contains(err.Error(), "re-run") {
+		t.Fatalf("the error should say how to fix it, got: %v", err)
+	}
+}
+
+func TestLoadMapAcceptsItsOwnVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, MapFile),
+		[]byte("version: 1\nreceivers: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMap(dir); err != nil {
+		t.Fatalf("a current map should load: %v", err)
+	}
+}

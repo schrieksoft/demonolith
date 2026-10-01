@@ -102,6 +102,12 @@ type Snapcd struct {
 // half. `transfer refactor run` finalizes it with the receiver file checksums
 // and distributes a byte-identical copy into every touched root; the file's
 // sha256 is the transfer's identity across slices.
+// MapVersion is the transfer map's format. A map is read only by the version
+// that wrote it: the shape changes between versions, and an older one parses
+// into the current struct without complaint, keeping whatever matches and
+// silently dropping the rest.
+const MapVersion = 1
+
 type Map struct {
 	Version   int    `yaml:"version"`
 	Created   string `yaml:"created"`
@@ -175,6 +181,11 @@ func LoadMap(rootDir string) (*Map, error) {
 	var m Map
 	if err := yaml.Unmarshal(b, &m); err != nil {
 		return nil, err
+	}
+	if m.Version != MapVersion {
+		return nil, fmt.Errorf(
+			"%s is version %d and this demonolith reads version %d; re-run `demonolith transfer refactor` at the source to regenerate it",
+			MapFile, m.Version, MapVersion)
 	}
 	return &m, nil
 }

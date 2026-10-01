@@ -413,7 +413,7 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 		return verdictf("%v", err)
 	}
 
-	m := &transfer.Map{Version: 1, Created: nowStamp(), Tool: toolString(), Remainder: plan.Remainder, SourceDir: filepath.Base(filepath.Clean(rootDir)), Receivers: map[string]transfer.Receiver{}}
+	m := &transfer.Map{Version: transfer.MapVersion, Created: nowStamp(), Tool: toolString(), Remainder: plan.Remainder, SourceDir: filepath.Base(filepath.Clean(rootDir)), Receivers: map[string]transfer.Receiver{}}
 	m.CrossEdges, m.OrderingEdges = plan.Edges()
 	for _, name := range names {
 		pr := plan.Receivers[name]
