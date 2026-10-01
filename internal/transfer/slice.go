@@ -241,14 +241,16 @@ func CodeMovedSlice(dir string, m *Map, role Role) error {
 	switch role.Kind {
 	case "source":
 		for _, name := range m.ReceiverNames() {
-			for _, b := range m.Receivers[name].Blocks {
+			r, _ := m.ReceiverFor(name)
+			for _, b := range r.Blocks {
 				if addrs[b] {
 					problems = append(problems, fmt.Sprintf("%s still present in the source", b))
 				}
 			}
 		}
 	case "receiver":
-		for _, b := range m.Receivers[role.Key].Blocks {
+		recv, _ := m.ReceiverFor(role.Key)
+		for _, b := range recv.Blocks {
 			if !addrs[b] {
 				problems = append(problems, fmt.Sprintf("%s missing from this receiver", b))
 			}

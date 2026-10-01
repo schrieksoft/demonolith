@@ -106,7 +106,7 @@ type Snapcd struct {
 // that wrote it: the shape changes between versions, and an older one parses
 // into the current struct without complaint, keeping whatever matches and
 // silently dropping the rest.
-const MapVersion = 1
+const MapVersion = 2
 
 type Map struct {
 	Version   int    `yaml:"version"`
@@ -116,7 +116,10 @@ type Map struct {
 	// SourceDir is the source root's directory basename - how a distributed
 	// copy tells a slice which role its directory holds.
 	SourceDir string              `yaml:"source_dir,omitempty"`
-	Receivers map[string]Receiver `yaml:"receivers"`
+	// ReceiverName is how the map's edges name the receiving root; Receiver is
+	// what moves into it. A transfer has one of each.
+	ReceiverName string   `yaml:"receiver_name"`
+	Receiver     Receiver `yaml:"receiver"`
 	// CrossEdges and OrderingEdges are the wiring the transfer creates across
 	// the boundary; the migrate half threads values along them.
 	CrossEdges    []CrossEdge    `yaml:"cross_edges,omitempty"`
@@ -129,12 +132,7 @@ type Map struct {
 
 // IsRun reports whether the code half has executed (the map is finalized).
 func (m *Map) IsRun() bool {
-	for _, r := range m.Receivers {
-		if len(r.FileChecksums) == 0 {
-			return false
-		}
-	}
-	return len(m.Receivers) > 0
+	return m.ReceiverName != "" && len(m.Receiver.FileChecksums) > 0
 }
 
 // Receipt records one migrate-half step of one slice, tied to the transfer by
@@ -210,14 +208,22 @@ func LoadReceipt(rootDir, file string) (*Receipt, error) {
 	return &r, nil
 }
 
-// ReceiverNames returns the map's receiver labels, sorted.
+// ReceiverNames returns the map's receiver label. A transfer has one receiver;
+// the slice shape is kept while callers are still written as loops.
 func (m *Map) ReceiverNames() []string {
-	out := make([]string, 0, len(m.Receivers))
-	for n := range m.Receivers {
-		out = append(out, n)
+	if m.ReceiverName == "" {
+		return nil
 	}
-	sort.Strings(out)
-	return out
+	return []string{m.ReceiverName}
+}
+
+// ReceiverFor returns the receiver a name refers to, and whether it is this
+// map's. Replaces indexing a map that no longer exists.
+func (m *Map) ReceiverFor(name string) (Receiver, bool) {
+	if name != m.ReceiverName || m.ReceiverName == "" {
+		return Receiver{}, false
+	}
+	return m.Receiver, true
 }
 
 // Analysis validation ------------------------------------------------------
@@ -452,11 +458,11 @@ func Slug(target string) string {
 // MatchesMap reports whether the plan's selection equals the map's - the
 // staleness gate every later step runs before touching anything.
 func (plan *Plan) MatchesMap(m *Map) error {
-	if len(plan.Receivers) != len(m.Receivers) {
+	if len(plan.Receivers) != len(m.ReceiverNames()) {
 		return fmt.Errorf("the source's decorated selection no longer matches %s; re-run `demonolith transfer map`", MapFile)
 	}
 	for name, pr := range plan.Receivers {
-		mr, ok := m.Receivers[name]
+		mr, ok := m.ReceiverFor(name)
 		if !ok || !equalStrings(pr.Blocks, mr.Blocks) || !equalStrings(pr.Moves, mr.Moves) {
 			return fmt.Errorf("the source's decorated selection for %q no longer matches %s; re-run `demonolith transfer map`", name, MapFile)
 		}
@@ -723,7 +729,8 @@ func CodeMoved(rootDir string, m *Map, paths map[string]string) error {
 		if err != nil {
 			return err
 		}
-		for _, addr := range m.Receivers[name].Blocks {
+		recv, _ := m.ReceiverFor(name)
+		for _, addr := range recv.Blocks {
 			if sourceAddrs[addr] {
 				problems = append(problems, fmt.Sprintf("%s still present in the source", addr))
 			}

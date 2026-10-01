@@ -235,9 +235,6 @@ func loadRunTransferMap(rootDir string) (*transfer.Map, error) {
 	if !m.IsRun() {
 		return nil, fmt.Errorf("the transfer map has not been run yet; run `demonolith transfer refactor` first")
 	}
-	if len(m.Receivers) > 1 {
-		return nil, fmt.Errorf("this map has %d receivers; a transfer has one receiver - re-run the refactor as one transfer per receiver", len(m.Receivers))
-	}
 	return m, nil
 }
 
@@ -413,11 +410,12 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 		return verdictf("%v", err)
 	}
 
-	m := &transfer.Map{Version: transfer.MapVersion, Created: nowStamp(), Tool: toolString(), Remainder: plan.Remainder, SourceDir: filepath.Base(filepath.Clean(rootDir)), Receivers: map[string]transfer.Receiver{}}
+	m := &transfer.Map{Version: transfer.MapVersion, Created: nowStamp(), Tool: toolString(), Remainder: plan.Remainder, SourceDir: filepath.Base(filepath.Clean(rootDir))}
 	m.CrossEdges, m.OrderingEdges = plan.Edges()
 	for _, name := range names {
 		pr := plan.Receivers[name]
-		m.Receivers[name] = transfer.Receiver{
+		m.ReceiverName = name
+		m.Receiver = transfer.Receiver{
 			Blocks:    pr.Blocks,
 			Moves:     pr.Moves,
 			Variables: pr.Structural.VarNames,
@@ -460,7 +458,7 @@ func runTransferRefactorMap(ctx context.Context, f transferFlags) error {
 
 	outln(heading("Transfer plan:"))
 	for _, name := range names {
-		r := m.Receivers[name]
+		r, _ := m.ReceiverFor(name)
 		outf("  -> %s %s\n", emphasis(name), dim("("+paths[name]+")"))
 		for _, b := range r.Blocks {
 			outf("       %s\n", b)
@@ -612,7 +610,8 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 			return err
 		}
 		already := true
-		for _, b := range m.Receivers[name].Blocks {
+		recv, _ := m.ReceiverFor(name)
+		for _, b := range recv.Blocks {
 			if !have[b] {
 				already = false
 				break
@@ -626,16 +625,14 @@ func runTransferRefactorRun(ctx context.Context, f transferFlags) error {
 		if err != nil {
 			return err
 		}
-		r := m.Receivers[name]
-		r.FileChecksums = sums
-		m.Receivers[name] = r
+		m.Receiver.FileChecksums = sums
 		outf("  %s: %s %s\n", emphasis(name), strings.Join(sortedFiles(contents[name]), ", "), success("appended"))
 	}
 	moved := map[string]bool{}
 	receivers := map[string]bool{}
-	for name, r := range m.Receivers {
-		receivers[name] = true
-		for _, b := range r.Blocks {
+	if m.ReceiverName != "" {
+		receivers[m.ReceiverName] = true
+		for _, b := range m.Receiver.Blocks {
 			moved[b] = true
 		}
 	}
@@ -737,7 +734,8 @@ func runTransferRefactorDiff(ctx context.Context, f transferFlags) error {
 		case "source":
 			sums = s.m.SourceFileChecksums
 		case "receiver":
-			sums = s.m.Receivers[s.role.Key].FileChecksums
+			recv, _ := s.m.ReceiverFor(s.role.Key)
+			sums = recv.FileChecksums
 		case "snapcd":
 			sums = s.m.Snapcd.FileChecksums
 		}
@@ -764,7 +762,8 @@ func runTransferRefactorDiff(ctx context.Context, f transferFlags) error {
 		return verdictf("%v", err)
 	}
 	for _, name := range m.ReceiverNames() {
-		if err := checkSums("receiver "+name, paths[name], m.Receivers[name].FileChecksums); err != nil {
+		recv, _ := m.ReceiverFor(name)
+		if err := checkSums("receiver "+name, paths[name], recv.FileChecksums); err != nil {
 			return verdictf("%v", err)
 		}
 	}
@@ -876,10 +875,11 @@ func migrateMapSlice(ctx context.Context, execPath string, s *transferSlice, sho
 			base := filepath.Base(name)
 			fragState := transfer.FragmentStateFile(work, base)
 			_ = os.Remove(fragState)
-			if err := transfer.ApplyMoves(ctx, s.dir, post, fragState, s.m.Receivers[name].Moves, execPath); err != nil {
+			recv, _ := s.m.ReceiverFor(name)
+			if err := transfer.ApplyMoves(ctx, s.dir, post, fragState, recv.Moves, execPath); err != nil {
 				return err
 			}
-			fm := &transfer.FragmentMeta{Version: 1, Created: nowStamp(), Tool: toolString(), MapHash: s.hash, Receiver: base, SourcePin: pin, Moves: s.m.Receivers[name].Moves}
+			fm := &transfer.FragmentMeta{Version: 1, Created: nowStamp(), Tool: toolString(), MapHash: s.hash, Receiver: base, SourcePin: pin, Moves: recv.Moves}
 			if err := transfer.WriteFragmentMeta(fm, work); err != nil {
 				return err
 			}
@@ -1098,11 +1098,10 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 	}
 	var moves []string
 	if s.role.Kind == "source" {
-		for _, name := range s.m.ReceiverNames() {
-			moves = append(moves, s.m.Receivers[name].Moves...)
-		}
+		moves = append(moves, s.m.Receiver.Moves...)
 	} else {
-		moves = s.m.Receivers[s.role.Key].Moves
+		recv, _ := s.m.ReceiverFor(s.role.Key)
+		moves = recv.Moves
 	}
 
 	rec := &transfer.Receipt{Version: 1, Created: nowStamp(), Tool: toolString(), Step: "run", MapHash: s.hash, Role: s.role.Base, Pin: pin.Pin, OK: true, Roots: map[string]string{}, TransferredAddresses: moves}
@@ -1148,7 +1147,8 @@ func migrateRunSlice(ctx context.Context, execPath string, s *transferSlice, sho
 		for _, name := range s.m.ReceiverNames() {
 			discard := filepath.Join(s.work, "discard-"+filepath.Base(name)+".tfstate")
 			_ = os.Remove(discard)
-			if err := transfer.ApplyMoves(ctx, s.dir, push, discard, s.m.Receivers[name].Moves, execPath); err != nil {
+			recv, _ := s.m.ReceiverFor(name)
+			if err := transfer.ApplyMoves(ctx, s.dir, push, discard, recv.Moves, execPath); err != nil {
 				return err
 			}
 		}

@@ -67,7 +67,10 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load map: %v", err)
 	}
-	r := m.Receivers["../shared"]
+	r, ok := m.ReceiverFor("../shared")
+	if !ok {
+		t.Fatalf("map should name ../shared as its receiver, got %q", m.ReceiverName)
+	}
 	if len(r.Moves) != 2 || len(r.Blocks) != 2 {
 		t.Fatalf("map should record 2 moved blocks, got %+v", r)
 	}

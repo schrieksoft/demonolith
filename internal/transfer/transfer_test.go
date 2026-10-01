@@ -220,22 +220,21 @@ func TestMatchesMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &Map{Receivers: map[string]Receiver{}}
+	m := &Map{}
 	for name, pr := range plan.Receivers {
-		m.Receivers[name] = Receiver{Blocks: pr.Blocks, Moves: pr.Moves}
+		m.ReceiverName = name
+		m.Receiver = Receiver{Blocks: pr.Blocks, Moves: pr.Moves}
 	}
 	if err := plan.MatchesMap(m); err != nil {
 		t.Fatalf("identical selection must match: %v", err)
 	}
 
-	changed := m.Receivers["../shared"]
-	changed.Blocks = append([]string{}, changed.Blocks[1:]...)
-	m.Receivers["../shared"] = changed
+	m.Receiver.Blocks = append([]string{}, m.Receiver.Blocks[1:]...)
 	if err := plan.MatchesMap(m); err == nil || !strings.Contains(err.Error(), "re-run") {
 		t.Fatalf("changed blocks must mismatch, got: %v", err)
 	}
 
-	delete(m.Receivers, "../shared")
+	m.ReceiverName = ""
 	if err := plan.MatchesMap(m); err == nil {
 		t.Fatal("missing receiver must mismatch")
 	}
@@ -340,9 +339,10 @@ func TestRemoveFromSource(t *testing.T) {
 func TestCodeMoved(t *testing.T) {
 	source := writeRoot(t, map[string]string{"main.tf": sourceSrc})
 	recv := writeRoot(t, map[string]string{"main.tf": `resource "fake_thing" "mine" {}`})
-	m := &Map{Receivers: map[string]Receiver{
-		"../shared": {Blocks: []string{"fake_thing.goes"}},
-	}}
+	m := &Map{
+		ReceiverName: "../shared",
+		Receiver:     Receiver{Blocks: []string{"fake_thing.goes"}},
+	}
 	paths := map[string]string{"../shared": recv}
 
 	err := CodeMoved(source, m, paths)
@@ -412,8 +412,9 @@ func TestContainsAddrs(t *testing.T) {
 
 func TestMapPinsReceiptRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	m := &Map{Version: 1, Created: "2026-08-24T00:00:00Z", Tool: "test", Remainder: "legacy",
-		Receivers: map[string]Receiver{"../shared": {Blocks: []string{"a.b"}, Moves: []string{"a.b"}}}}
+	m := &Map{Version: MapVersion, Created: "2026-08-24T00:00:00Z", Tool: "test", Remainder: "legacy",
+		ReceiverName: "../shared",
+		Receiver:     Receiver{Blocks: []string{"a.b"}, Moves: []string{"a.b"}}}
 	if m.IsRun() {
 		t.Fatal("map without checksums must not be run")
 	}
@@ -421,12 +422,10 @@ func TestMapPinsReceiptRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := LoadMap(dir)
-	if err != nil || len(got.Receivers["../shared"].Blocks) != 1 {
+	if err != nil || len(got.Receiver.Blocks) != 1 || got.ReceiverName != "../shared" {
 		t.Fatalf("map round-trip: %+v err=%v", got, err)
 	}
-	r := m.Receivers["../shared"]
-	r.FileChecksums = map[string]string{"main.tf": "deadbeef"}
-	m.Receivers["../shared"] = r
+	m.Receiver.FileChecksums = map[string]string{"main.tf": "deadbeef"}
 	if !m.IsRun() {
 		t.Fatal("map with checksums must be run")
 	}
@@ -452,11 +451,11 @@ func TestMapPinsReceiptRoundTrip(t *testing.T) {
 
 func TestRoleOf(t *testing.T) {
 	m := &Map{Remainder: "legacy", SourceDir: "platform",
-		Receivers: map[string]Receiver{"../network": {}, "../deep/storage": {}},
-		Snapcd:    &Snapcd{Dir: "snapcd"}}
+		ReceiverName: "../deep/storage",
+		Snapcd:       &Snapcd{Dir: "snapcd"}}
 	cases := []struct{ dir, kind, key, base string }{
 		{"/work/platform", "source", "", "platform"},
-		{"/work/network", "receiver", "../network", "network"},
+		// A receiver is matched by basename, so its depth in the map does not matter.
 		{"/elsewhere/storage", "receiver", "../deep/storage", "storage"},
 		{"/work/snapcd", "snapcd", "", "snapcd"},
 	}
@@ -509,7 +508,8 @@ resource "fake_thing" "a" {
 func TestMapHashAndDistribute(t *testing.T) {
 	src := t.TempDir()
 	recv := t.TempDir()
-	m := &Map{Version: 1, Remainder: "legacy", SourceDir: "source", Receivers: map[string]Receiver{"../shared": {Blocks: []string{"a.b"}}}}
+	m := &Map{Version: MapVersion, Remainder: "legacy", SourceDir: "source",
+		ReceiverName: "../shared", Receiver: Receiver{Blocks: []string{"a.b"}}}
 	if err := WriteMap(m, src); err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestLoadMapRefusesAnotherVersion(t *testing.T) {
 func TestLoadMapAcceptsItsOwnVersion(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, MapFile),
-		[]byte("version: 1\nreceivers: {}\n"), 0o644); err != nil {
+		[]byte("version: 2\nreceiver: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadMap(dir); err != nil {
