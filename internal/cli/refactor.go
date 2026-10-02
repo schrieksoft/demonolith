@@ -34,6 +34,8 @@ type refactorFlags struct {
 	execPath    string
 	overwrite   bool
 	yes         bool
+
+	resetBackendCache bool
 }
 
 func refactorCmd() *cobra.Command {

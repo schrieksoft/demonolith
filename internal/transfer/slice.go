@@ -37,17 +37,15 @@ func RoleOf(m *Map, dir string) (Role, error) {
 	if base == m.SourceDir {
 		return Role{Kind: "source", Base: base}, nil
 	}
-	for _, name := range m.ReceiverNames() {
-		if filepath.Base(name) == base {
-			return Role{Kind: "receiver", Key: name, Base: base}, nil
-		}
+	if m.ReceiverDir != "" && filepath.Base(m.ReceiverDir) == base {
+		return Role{Kind: "receiver", Key: m.ReceiverDir, Base: base}, nil
 	}
 	if m.Snapcd != nil && filepath.Base(m.Snapcd.Dir) == base {
 		return Role{Kind: "snapcd", Base: base}, nil
 	}
 	known := []string{m.SourceDir}
-	for _, name := range m.ReceiverNames() {
-		known = append(known, filepath.Base(name))
+	if m.ReceiverDir != "" {
+		known = append(known, filepath.Base(m.ReceiverDir))
 	}
 	if m.Snapcd != nil {
 		known = append(known, filepath.Base(m.Snapcd.Dir))
@@ -59,17 +57,9 @@ func RoleOf(m *Map, dir string) (Role, error) {
 // stands in for the source, receivers go by their map key.
 func (r Role) Module(m *Map) string {
 	if r.Kind == "source" {
-		return m.Remainder
+		return SourceModule
 	}
 	return r.Key
-}
-
-// BaseForModule maps an edge's module name to the artifact-name base.
-func BaseForModule(m *Map, module string) string {
-	if module == m.Remainder {
-		return m.SourceDir
-	}
-	return filepath.Base(module)
 }
 
 // MapHash is the transfer's identity: the sha256 of the map file's bytes.
@@ -124,15 +114,20 @@ func SliceStateFile(workDir string) string { return filepath.Join(workDir, "stat
 func SlicePostFile(workDir string) string  { return filepath.Join(workDir, "state-post.tfstate") }
 func SliceRunFile(workDir string) string   { return filepath.Join(workDir, "state-run.tfstate") }
 func SlicePushFile(workDir string) string  { return filepath.Join(workDir, "state-push.tfstate") }
-func FragmentStateFile(workDir, base string) string {
-	return filepath.Join(workDir, "fragment-"+base+".tfstate")
+// A transfer has one receiver and one producer of threaded values, so none of
+// these is named for whose it is.
+func FragmentStateFile(workDir string) string {
+	return filepath.Join(workDir, "fragment.tfstate")
 }
-func FragmentMetaFile(workDir, base string) string {
-	return filepath.Join(workDir, "fragment-"+base+".yaml")
+func FragmentMetaFile(workDir string) string {
+	return filepath.Join(workDir, "fragment.yaml")
 }
-func OutputsFile(workDir, base string) string { return filepath.Join(workDir, "outputs-"+base+".yaml") }
-func RecvRunReceiptFile(workDir, base string) string {
-	return filepath.Join(workDir, "run-"+base+".yaml")
+func OutputsFile(workDir string) string { return filepath.Join(workDir, "outputs.yaml") }
+
+// RecvRunReceiptFile is the receiver's run receipt, copied into the source's
+// working directory: the claim the source checks before stripping its state.
+func RecvRunReceiptFile(workDir string) string {
+	return filepath.Join(workDir, "receiver-run.yaml")
 }
 
 // FragmentMeta identifies a state fragment: which transfer, which receiver,
@@ -152,11 +147,11 @@ func WriteFragmentMeta(fm *FragmentMeta, workDir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(FragmentMetaFile(workDir, fm.Receiver), b, 0o644)
+	return os.WriteFile(FragmentMetaFile(workDir), b, 0o644)
 }
 
-func LoadFragmentMeta(workDir, base string) (*FragmentMeta, error) {
-	b, err := os.ReadFile(FragmentMetaFile(workDir, base))
+func LoadFragmentMeta(workDir string) (*FragmentMeta, error) {
+	b, err := os.ReadFile(FragmentMetaFile(workDir))
 	if err != nil {
 		return nil, err
 	}
@@ -183,11 +178,11 @@ func WriteOutputs(oa *OutputsArtifact, workDir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(OutputsFile(workDir, oa.Role), b, 0o644)
+	return os.WriteFile(OutputsFile(workDir), b, 0o644)
 }
 
-func LoadOutputs(workDir, base string) (*OutputsArtifact, error) {
-	b, err := os.ReadFile(OutputsFile(workDir, base))
+func LoadOutputs(workDir string) (*OutputsArtifact, error) {
+	b, err := os.ReadFile(OutputsFile(workDir))
 	if err != nil {
 		return nil, err
 	}
@@ -240,15 +235,17 @@ func CodeMovedSlice(dir string, m *Map, role Role) error {
 	var problems []string
 	switch role.Kind {
 	case "source":
-		for _, name := range m.ReceiverNames() {
-			for _, b := range m.Receivers[name].Blocks {
+		{
+			r, _ := m.ReceiverFor(m.ReceiverDir)
+			for _, b := range r.Blocks {
 				if addrs[b] {
 					problems = append(problems, fmt.Sprintf("%s still present in the source", b))
 				}
 			}
 		}
 	case "receiver":
-		for _, b := range m.Receivers[role.Key].Blocks {
+		recv, _ := m.ReceiverFor(role.Key)
+		for _, b := range recv.Blocks {
 			if !addrs[b] {
 				problems = append(problems, fmt.Sprintf("%s missing from this receiver", b))
 			}

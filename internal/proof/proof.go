@@ -39,6 +39,11 @@ type Options struct {
 	// UseBackend plans each root against its configured real backend (full
 	// init, no state staging) - migrate verify's mode.
 	UseBackend bool
+	// ReuseBackend inits against whatever .terraform already holds rather than
+	// reconfiguring. For a caller that initialised the root itself and keeps the
+	// backend outside the code, where there is nothing to reconfigure from.
+	ReuseBackend bool
+
 	// BackendConfig passes -backend-config values through to init when
 	// UseBackend is set (out-of-band backend settings never stored in HCL).
 	BackendConfig []string
@@ -183,9 +188,10 @@ func planModule(ctx context.Context, dir, statePath string, vars map[string]stri
 			return nil, nil, err
 		}
 		defer restore()
-		// Reconfigure, never reuse: a re-run rewrites backend.tf to a new address, and an init that
-		// trusts .terraform's cached backend would pull from the previous one.
-		initOpts := []tfexec.InitOption{tfexec.Backend(true), tfexec.Reconfigure(true)}
+		// Reconfigure by default: a re-run rewrites backend.tf to a new address, and an init that
+		// trusts .terraform's cached backend would pull from the previous one. A caller that keeps
+		// the backend outside the code has nothing to reconfigure from, and says so.
+		initOpts := []tfexec.InitOption{tfexec.Backend(true), tfexec.Reconfigure(!opts.ReuseBackend)}
 		for _, bc := range opts.BackendConfig {
 			initOpts = append(initOpts, tfexec.BackendConfig(bc))
 		}

@@ -125,7 +125,7 @@ func SnapcdFileHCL(m *Map) string {
 		return ""
 	}
 	modName := func(root string) string {
-		if root == m.Remainder {
+		if root == SourceModule {
 			return m.Snapcd.Modules["source"]
 		}
 		return m.Snapcd.Modules[root]
@@ -160,7 +160,7 @@ func SnapcdWiringAddrs(m *Map) []string {
 		return nil
 	}
 	modName := func(root string) string {
-		if root == m.Remainder {
+		if root == SourceModule {
 			return m.Snapcd.Modules["source"]
 		}
 		return m.Snapcd.Modules[root]

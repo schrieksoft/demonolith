@@ -54,13 +54,12 @@ resource "snapcd_module" "network" {
 
 func TestSnapcdFileHCL(t *testing.T) {
 	m := &Map{
-		Remainder: "legacy",
-		Receivers: map[string]Receiver{"../network": {}},
+		ReceiverDir: "../network",
 		CrossEdges: []CrossEdge{
-			{Consumer: "legacy", Input: "vpc_id_result", Producer: "../network", Output: "vpc_id_result"},
+			{Consumer: SourceModule, Input: "vpc_id_result", Producer: "../network", Output: "vpc_id_result"},
 		},
 		OrderingEdges: []OrderingEdge{
-			{Consumer: "../network", Producer: "legacy"},
+			{Consumer: "../network", Producer: SourceModule},
 		},
 		Snapcd: &Snapcd{Dir: "snapcd", Modules: map[string]string{"source": "platform", "../network": "network"}},
 	}

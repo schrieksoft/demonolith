@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -26,6 +28,7 @@ func refactorValidateCmd() *cobra.Command {
 	flags.StringVar(&f.execPath, "exec-path", "", "explicit terraform/tofu binary path (overrides --engine)")
 	flags.BoolVarP(&f.quiet, "quiet", "q", false, "verdict only; skip the per-module listing")
 	flags.BoolVar(&f.silent, "silent", false, "no output at all; the result is the exit code")
+	flags.BoolVar(&f.resetBackendCache, "reset-backend-cache", false, "forget each directory's previously initialized backend before validating")
 	return cmd
 }
 
@@ -40,6 +43,13 @@ type validateReport struct {
 // runRefactorValidate runs `init -backend=false` + `validate` on each written
 // directory (bootstrap included): engine-grade validity without touching any
 // state backend; only the provider registry is contacted.
+//
+// -backend=false disables backend initialization and uses whatever was
+// initialized before, so a directory carrying an earlier run's cache is
+// validated against that backend and fails without credentials. Inside the
+// pipeline run has just deleted these directories, so there is nothing to
+// forget; --reset-backend-cache is for validating directories someone else
+// wrote.
 func runRefactorValidate(ctx context.Context, rootDir string, f refactorFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -61,6 +71,14 @@ func runRefactorValidate(ctx context.Context, rootDir string, f refactorFlags) e
 	}
 	sort.Strings(names)
 	rep.Modules = names
+
+	if f.resetBackendCache {
+		for _, dir := range dirs {
+			if err := forgetBackendCache(dir); err != nil {
+				return err
+			}
+		}
+	}
 
 	verbose := !f.quiet && !f.silent
 	for _, name := range names {
@@ -97,6 +115,17 @@ func runRefactorValidate(ctx context.Context, rootDir string, f refactorFlags) e
 	}
 	rep.Valid = len(rep.InvalidModules) == 0
 	return reportRefactorValidate(rep, f)
+}
+
+// forgetBackendCache removes the record of a previously initialized backend,
+// leaving the provider and module caches beside it: those cost a re-download
+// and have nothing to do with which backend the directory was pointed at.
+func forgetBackendCache(dir string) error {
+	err := os.Remove(filepath.Join(dir, ".terraform", "terraform.tfstate"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func reportRefactorValidate(rep validateReport, f refactorFlags) error {

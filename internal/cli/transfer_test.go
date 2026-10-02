@@ -67,7 +67,10 @@ func TestTransfer_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load map: %v", err)
 	}
-	r := m.Receivers["../shared"]
+	r, ok := m.ReceiverFor("../shared")
+	if !ok {
+		t.Fatalf("map should name ../shared as its receiver, got %q", m.ReceiverDir)
+	}
 	if len(r.Moves) != 2 || len(r.Blocks) != 2 {
 		t.Fatalf("map should record 2 moved blocks, got %+v", r)
 	}
@@ -310,8 +313,8 @@ func TestTransfer_SliceEndToEnd(t *testing.T) {
 	if err := run(t, "transfer", "migrate", "map", "--root-dir", recv, "--exec-path", execPath); err == nil || !strings.Contains(err.Error(), "fragment") {
 		t.Fatalf("receiver map without the fragment must refuse, got: %v", err)
 	}
-	copyArtifact(transfer.FragmentStateFile(srcWork, "shared"), transfer.FragmentStateFile(recvWork, "shared"))
-	copyArtifact(transfer.FragmentMetaFile(srcWork, "shared"), transfer.FragmentMetaFile(recvWork, "shared"))
+	copyArtifact(transfer.FragmentStateFile(srcWork), transfer.FragmentStateFile(recvWork))
+	copyArtifact(transfer.FragmentMetaFile(srcWork), transfer.FragmentMetaFile(recvWork))
 	if err := run(t, "transfer", "migrate", "map", "--root-dir", recv, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate map (receiver slice): %v", err)
 	}
@@ -323,7 +326,7 @@ func TestTransfer_SliceEndToEnd(t *testing.T) {
 	if err := run(t, "transfer", "migrate", "prove", "--root-dir", recv, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate prove (receiver slice): %v", err)
 	}
-	copyArtifact(transfer.OutputsFile(recvWork, "shared"), transfer.OutputsFile(srcWork, "shared"))
+	copyArtifact(transfer.OutputsFile(recvWork), transfer.OutputsFile(srcWork))
 	if err := run(t, "transfer", "migrate", "prove", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate prove (source slice): %v", err)
 	}
@@ -335,7 +338,7 @@ func TestTransfer_SliceEndToEnd(t *testing.T) {
 	if err := run(t, "transfer", "migrate", "run", "--root-dir", recv, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate run (receiver slice): %v", err)
 	}
-	copyArtifact(filepath.Join(recv, transfer.RunReceiptFile), transfer.RecvRunReceiptFile(srcWork, "shared"))
+	copyArtifact(filepath.Join(recv, transfer.RunReceiptFile), transfer.RecvRunReceiptFile(srcWork))
 	if err := run(t, "transfer", "migrate", "run", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate run (source slice): %v", err)
 	}
@@ -350,7 +353,7 @@ func TestTransfer_SliceEndToEnd(t *testing.T) {
 	if err := run(t, "transfer", "migrate", "verify", "--root-dir", recv, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate verify (receiver slice): %v", err)
 	}
-	copyArtifact(transfer.OutputsFile(recvWork, "shared"), transfer.OutputsFile(srcWork, "shared"))
+	copyArtifact(transfer.OutputsFile(recvWork), transfer.OutputsFile(srcWork))
 	if err := run(t, "transfer", "migrate", "verify", "--root-dir", source, "--exec-path", execPath); err != nil {
 		t.Fatalf("migrate verify (source slice): %v", err)
 	}
